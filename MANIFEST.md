@@ -4,15 +4,16 @@
 
 - **Public upstream:** MindReset/read_pico_firmware
 - **Baseline commit:** `6a247cc` (`feat/native-demo-0.16` — improve ISR handling for audio playback during screen refresh)
-- **Local PROJECT_VER:** `0.39.0-dev66` (`CMakeLists.txt` `set(PROJECT_VER ...)`)
+- **Local PROJECT_VER:** `0.39.0-dev67` (`CMakeLists.txt` `set(PROJECT_VER ...)`)
 - **Source root (local, not pushed):** `.../work/read_pico_firmware`
 - **Staging clone:** `.../work/lingxi-readpico-private-staging` → origin `XHFO/lingxi-readpico-private` (private only)
 - **Import date (Asia/Shanghai):** 2026-10-26
 
 
-## Stretch (dev66)
+## Stretch (dev67)
 
 - Thin host + `pico_home_pga` bridge + `apps/tools/home-link.pga` v10100 (HA UI/config/CF fields via host ABI).
+- PGA config/snapshot/tokens live in one PSRAM block (dev66 internal BSS ~52 KiB broke USB MSC with `usb_error` 257 / `ESP_ERR_NO_MEM`).
 - Manage home/printer/bambu still 503 `home_module_missing`.
 - Printer MQTT / Bambu live path still stub in PGA bridge (UI slots only).
 - Do not claim HA usable until CF/local fetch verified with PGA on TF.
