@@ -12,10 +12,10 @@
 
 ## Stretch (dev67)
 
-- Thin host + `pico_home_pga` bridge + `apps/tools/home-link.pga` v10100 (HA UI/config/CF fields via host ABI).
+- Thin host + `pico_home_pga` bridge + `apps/tools/home-link.pga` v10101 (HA UI/config/CF fields via host ABI, LAN QR portal).
 - PGA config/snapshot/tokens live in one PSRAM block (dev66 internal BSS ~52 KiB broke USB MSC with `usb_error` 257 / `ESP_ERR_NO_MEM`).
-- Manage home/printer/bambu still 503 `home_module_missing`.
-- Printer MQTT / Bambu live path still stub in PGA bridge (UI slots only).
+- `home_link_mode` is `pga`: exact manage home/printers persist `pico_home_pga`; bambu stays 503 `home_module_missing`. Readback is `portal` plus the existing public fields. See `docs/HOME-LINK-CONTRACT.md`.
+- Printer MQTT / Bambu live path still stub in PGA bridge (UI slots only; phone/manage PUT source 2–4 is `unsupported_source`).
 - Do not claim HA usable until CF/local fetch verified with PGA on TF.
 
 ## Copied paths (relative under `read_pico_firmware_slices/`)

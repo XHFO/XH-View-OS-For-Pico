@@ -37,6 +37,21 @@ static int test_fflush(FILE*),test_fclose(FILE*),test_fsync(int),test_mkdir(cons
 #define stat(...) test_stat(__VA_ARGS__)
 #define fstat test_fstat
 #include "pico_desktop.c"
+void ps_home_portal_register(void) {}
+void ps_home_portal_status_suffix(char *out, size_t capacity) {
+    if (!out || !capacity) return;
+    snprintf(out, capacity,
+             ",\"home_portal\":{\"active\":false,\"phase\":\"idle\",\"revision\":0,\"seconds_left\":0,\"writer\":\"device\"}");
+}
+int ps_home_portal_mac_handle(const char *method, char *out, size_t capacity) {
+    if (!out || !capacity) return 500;
+    if (!method || strcmp(method, "GET")) {
+        snprintf(out, capacity, "{\"error\":\"method\"}");
+        return 405;
+    }
+    snprintf(out, capacity, "{\"ok\":true,\"home_link_mode\":\"pga\",\"writer\":\"device\"}");
+    return 200;
+}
 #undef fopen
 #undef fwrite
 #undef fread

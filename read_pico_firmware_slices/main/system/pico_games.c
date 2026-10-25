@@ -12,6 +12,7 @@
 #include "pico_weread.h"
 #include "pico_weread_cover.h"
 #include "pico_home_pga.h"
+#include "pico_home_portal.h"
 #include "ui_wifi_qr.h"
 #include "pico_app_sdk.h"
 #include "pico_app_package.h"
@@ -248,6 +249,14 @@ static bool home_link_active(void){return s_app&&s_app->kind==PGA_HOME_LINK;}
 static bool host_home_link(uint32_t command,pico_app_home_status_t *out){
     if(!home_link_active()||!out)return false;
     if(!out->bytes)out->bytes=sizeof(*out);
+    if(command==PGA_HOME_OPEN_SETUP){
+        bool ok=ps_home_portal_start(PS_HOME_PORTAL_OWNER_GAMES);
+        ps_home_portal_view_t view;ps_home_portal_view(&view);
+        if(ok&&(!view.url[0]||!ui_wifi_qr_prepare_url(view.url))){ps_home_portal_stop();ok=false;}
+        if(ok){s_home_portal=true;ps_dirty();}
+        (void)ps_home_pga_command(PGA_HOME_STATUS,out);
+        return ok;
+    }
     return ps_home_pga_command(command,out);
 }
 static bool host_home_link_config(uint32_t command,pico_app_home_config_t *cfg){
@@ -269,6 +278,13 @@ static bool host_home_link_control(const char *entity_id,const char *action,floa
     return home_link_active()&&ps_home_pga_control(entity_id,action,value);
 }
 static bool s_home_edit;
+static bool s_home_portal;
+static void home_portal_dismiss(void) {
+    if (!s_home_portal) return;
+    s_home_portal = false;
+    ps_home_portal_stop();
+    ui_wifi_qr_clear();
+}
 static void home_input_done(const char *text){
     if(!home_link_active()||!s_home_edit)return;
     ps_home_pga_input_done(text);s_home_edit=false;
@@ -292,6 +308,7 @@ static bool host_weread_cover(uint32_t request_id,uint8_t *fb,int x,int y,int wi
 }
 static void weread_child_clear(void){
     if(s_weread_link)ui_wifi_qr_clear();
+    home_portal_dismiss();
     s_weread_edit=s_weread_input_ready=s_weread_link=false;memset(s_weread_input,0,sizeof(s_weread_input));s_home_edit=false;ps_home_pga_input(PGA_HOME_INPUT_CANCEL,NULL,0);
 }
 static const pico_app_host_t s_host={
@@ -571,6 +588,7 @@ bool ps_games_power_prepare(void) {
     if(s_in_call)return false;
     // stop()取消并join搜索，保留代码和静态局面；落盘在join之后，不与AI并行读写。
     // stop() cancels/joins search while retaining code/state; persist after joining, never alongside AI.
+    if(s_home_portal){s_home_portal=false;ui_wifi_qr_clear();ps_home_portal_stop();}
     s_power_paused=true;s_app->stop();
     if(s_worker||!s_app->save()){
         s_power_paused=false;s_pinned=true;error("应用尚未保存，暂不休眠");clear_pending();recover_active();return false;
@@ -581,6 +599,16 @@ void ps_games_power_resume(void) { s_power_paused=false; }
 void ps_games_render(uint8_t *fb) {
     if(game_route(ps_route())&&s_app){s_app->render(fb);ps_view_t v=ps_view();s_ink_reference=true;s_ink_width=v.w;s_ink_height=v.h;}
     else draw_launcher(fb);
+    if(s_home_portal&&home_link_active()){
+        ps_home_portal_view_t portal;ps_home_portal_view(&portal);
+        ps_view_t v=ps_view();int side=v.landscape?180:220,x=(v.w-side)/2,y=v.landscape?88:132;
+        ps_fill(fb,0,0,v.w,v.h,15);ps_button(fb,16,20,72,36,"关闭",false);
+        ps_text(fb,100,26,20,"手机填写",0);
+        if(portal.active&&portal.url[0])ui_wifi_qr_draw(fb,ps_rect(x,y,side,side));
+        ps_center(fb,v.w/2,y+side+16,14,portal.active?"扫码打开局域网填写页":(portal.error[0]?portal.error:"门户已关闭"),0);
+        ps_wrap(fb,24,y+side+40,v.w-48,13,3,"请连接同一 Wi-Fi。酒店或客户端隔离的热点下，手机可能打不开。保存后配置留在设备上。",4);
+        if(portal.seconds_left){char left[32];snprintf(left,sizeof(left),"剩余 %u 秒",(unsigned)portal.seconds_left);ps_center(fb,v.w/2,v.h-28,12,left,5);}
+    }
     if(s_weread_link&&weread_active()){
         ps_view_t v=ps_view();int side=v.landscape?196:248,x=(v.w-side)/2,y=v.landscape?94:144;
         ps_fill(fb,0,0,v.w,v.h,15);ps_button(fb,16,20,58,32,"返回",false);
@@ -592,6 +620,10 @@ void ps_games_render(uint8_t *fb) {
     render_recovery(fb);
 }
 bool ps_games_event(const ps_event_t *event) {
+    if(s_home_portal){
+        if(event->type==PS_TAP||event->type==PS_SWIPE_R){home_portal_dismiss();ps_dirty();}
+        return true;
+    }
     if(s_weread_link){
         if(event->type==PS_TAP||event->type==PS_SWIPE_R){s_weread_link=false;ui_wifi_qr_clear();ps_dirty();}
         return true;
@@ -621,6 +653,7 @@ bool ps_games_event(const ps_event_t *event) {
     pico_app_event_t e={event->type,event->x0,event->y0,event->x,event->y,event->ms};s_in_call=true;bool changed=s_app->event(&e);finish_call();return changed;
 }
 bool ps_games_key(int key) {
+    if(s_home_portal){if(key==-1){home_portal_dismiss();ps_dirty();}return true;}
     if(s_weread_link){if(key==-1){s_weread_link=false;ui_wifi_qr_clear();ps_dirty();}return true;}
     if(key==-1&&s_discard){retain_active();return true;}
     if(key==-1&&s_pinned){clear_pending();recover_active();return true;}
@@ -630,6 +663,7 @@ bool ps_games_key(int key) {
 }
 bool ps_games_tick(void) {
     if(s_catalog_dirty&&!storage_held()&&ps_background_io_allowed()){ps_games_rescan();return true;}
+    if(s_home_portal)return ps_home_portal_tick();
     if(!s_app||!game_route(ps_route())||s_pinned||s_discard||s_power_paused||s_weread_link||!same_card())return false;
     if(s_active_info.kind>=128&&!ps_background_io_allowed())return false;
     s_in_call=true;bool changed=s_app->tick();finish_call();return changed;

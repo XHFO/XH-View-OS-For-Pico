@@ -1021,6 +1021,12 @@ void ps_home_init(void) {
 }
 void ps_home_enter(ps_route_t route) {
     ps_route_t previous=entered_route;bool changed=route!=previous;entered_route=route;
+    if(route!=PS_HA&&route!=PS_HA_SETTINGS&&route!=PS_PRINTERS&&route!=PS_PRINTER_SETTINGS){
+        ps_home_portal_stop_if_home();
+#if !(defined(PICO_HOME_LINK_FULL) && PICO_HOME_LINK_FULL)
+        if(thin_portal){thin_portal=false;ui_wifi_qr_clear();}
+#endif
+    }
     if(changed&&real_manage)real_manage_close();
     if(route==PS_SLEEP_SETTINGS&&changed){(void)ps_lock_image_prepare();ps_lock_image_release();}
     if(route==PS_HA){int list[ENTITY_COUNT],n=entity_list(list),per=entities_per_page();dashboard_page=clampi(dashboard_page,0,n?(n-1)/per:0);if(changed)climate_entity=-1;}
@@ -1067,6 +1073,9 @@ bool ps_home_event(const ps_event_t *e) {
 }
 bool ps_home_key(int key) {
     ps_route_t route=ps_route();if(route==PS_CLOCK||route==PS_QUOTES){wake_until=ps_now()+8000;mark_dirty();return true;}
+#if !(defined(PICO_HOME_LINK_FULL) && PICO_HOME_LINK_FULL)
+    if(key==-1&&thin_portal_back())return true;
+#endif
     if(key==-1){
         if(route==PS_HA&&real_room_picker){real_room_picker=false;return true;}
         if((route==PS_PRINTERS||route==PS_PRINTER_SETTINGS)&&real_import){real_import=false;return true;}
@@ -1086,6 +1095,7 @@ bool ps_home_tick(void) {
     ps_route_t route=ps_route();bool redraw=false;int64_t now=ps_now();
     if(real_manage){read_pico_management_tick();redraw=real_manage_sync();}
     if(route==PS_HA||route==PS_HA_SETTINGS||route==PS_PRINTERS||route==PS_PRINTER_SETTINGS){
+        if(ps_home_portal_tick())redraw=true;
         int wifi=ps_wifi_connected_index();
         bool at_home=wifi>=0&&*link_config.home_wifi&&!strcmp(link_config.home_wifi,ps_wifi_name(wifi));
         if(now>=link_due){read_pico_home_link_request(wifi>=0,at_home);link_due=now+30000;}

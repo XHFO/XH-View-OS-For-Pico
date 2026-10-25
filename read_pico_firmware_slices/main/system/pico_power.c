@@ -27,6 +27,7 @@
 #include "read_pico_connectivity.h"
 #include "read_pico_home_link.h"
 #include "pico_home_pga.h"
+#include "pico_home_portal.h"
 #include "read_pico_management.h"
 #include "display.h"
 #include "e0470_epaper_waveform.h"
@@ -235,6 +236,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
     }
     // 先禁止新的联网工作并请求现有后台收束，与必须落盘及绘制并行；最终仍检查真实完成。
     // Block new network work and request existing workers to stop in parallel with required saves/rendering; completion remains mandatory.
+    ps_home_portal_stop();
     (void)read_pico_home_link_suspend(0);(void)ps_home_pga_suspend(0);
     if(!board_lock)(void)read_pico_connectivity_quiesce(0);
     if(resume_frame){

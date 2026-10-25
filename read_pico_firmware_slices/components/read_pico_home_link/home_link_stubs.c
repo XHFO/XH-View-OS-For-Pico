@@ -1,13 +1,16 @@
 /*
  * SPDX-FileCopyrightText: 2026 XH Lab
  * SPDX-License-Identifier: Apache-2.0
- * 中文：家庭服务薄宿主桩；manage home/printer/bambu 一律 503 home_module_missing（PUT 不假成功、不写 NVS）。
- * English: Thin-host stubs; manage home/printer/bambu always 503 home_module_missing (PUT is not fake-ok, no NVS write).
+ * 中文：未注册 PGA 存储桥时，manage home/printer/bambu 仍 503 home_module_missing。
+ * English: Without a registered PGA store bridge, manage home/printer/bambu stay 503 home_module_missing.
+ * 中文：桥注册后，home/printers 读写 pico_home_pga；门户活动时 PUT/DELETE 为 409。bambu 始终 503。
+ * English: With the bridge, home/printers use pico_home_pga; PUT/DELETE is 409 while the portal is active. Bambu stays 503.
  * 模型解析由 home_link_model.c 提供给 PGA 宿主桥；本文件不实现 rp_home_parse/fetch。
  * Model parse/fetch live in home_link_model.c for the PGA host bridge; this file does not implement them.
  */
 #include "read_pico_home_link.h"
 #include "home_link_web.h"
+#include "home_link_portal.h"
 #include <string.h>
 
 static uint32_t s_revision = 1;
@@ -78,6 +81,9 @@ bool rp_home_web_handle(const rp_home_web_request_t *request, rp_home_web_respon
                         char *output, size_t capacity) {
     if (!request || !response || !output || capacity < 64 || !request->path) return false;
     const char *path = request->path;
+    if (rp_home_store_bridge_ready() &&
+        (!strcmp(path, "/api/manage/home") || !strcmp(path, "/api/manage/printers")))
+        return rp_portal_serve(request, response, output, capacity, true);
     if (strncmp(path, "/api/manage/home", 16) && strncmp(path, "/api/manage/printer", 19) &&
         strncmp(path, "/api/manage/bambu", 17))
         return false;

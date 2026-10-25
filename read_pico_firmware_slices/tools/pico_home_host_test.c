@@ -4,6 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 #define PICO_HOME_FIXTURE_CONTRACT 1
+#include "pico_home_portal.h"
+bool ps_home_portal_start(int owner) { (void)owner; return false; }
+void ps_home_portal_stop(void) {}
+void ps_home_portal_stop_if_home(void) {}
+bool ps_home_portal_tick(void) { return false; }
+void ps_home_portal_view(ps_home_portal_view_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->error, sizeof(out->error), "%s", "请先连接 Wi-Fi");
+}
 #include "../main/system/pico_home.c"
 
 static ps_route_t test_route;

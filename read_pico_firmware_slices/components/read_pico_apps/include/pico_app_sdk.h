@@ -53,7 +53,8 @@ typedef struct {
 enum { PGA_HOME_STATUS, PGA_HOME_SYNC, PGA_HOME_OPEN_SETUP };
 enum { PGA_HOME_CONFIG_GET, PGA_HOME_CONFIG_SET };
 enum { PGA_HOME_INPUT_OPEN, PGA_HOME_INPUT_TAKE, PGA_HOME_INPUT_CANCEL };
-enum { PGA_HOME_CFG=1u, PGA_HOME_WIFI=2u, PGA_HOME_BUSY=4u, PGA_HOME_EXTERNAL=8u, PGA_HOME_CF=16u };
+enum { PGA_HOME_CFG=1u, PGA_HOME_WIFI=2u, PGA_HOME_BUSY=4u, PGA_HOME_EXTERNAL=8u, PGA_HOME_CF=16u,
+       PGA_HOME_PORTAL=32u, PGA_HOME_MANAGE=64u };
 typedef struct {
     uint32_t bytes,flags,revision,entity_count,entity_total,printer_count;
     uint8_t result,busy,external,at_home,enabled,has_token,has_cf;
