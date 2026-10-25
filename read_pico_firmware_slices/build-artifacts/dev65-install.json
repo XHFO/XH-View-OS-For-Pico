@@ -1,0 +1,29 @@
+{
+  "version": "0.39.0-dev65",
+  "app_bytes": 4147136,
+  "app_sha256": "9525b4f09d32ab7e8c2a82fbe014dab25aec3dd4c50d5f1607f34e95d1e0283a",
+  "baseline_dev64_bytes": 4191424,
+  "delta_bytes": 44288,
+  "slot_free_bytes": 47168,
+  "write_start": "0x20000",
+  "flash_verified": true,
+  "boot_ui_ready_first_flash": true,
+  "boot2_home_routes_no_crash": true,
+  "pico_home_link_full": false,
+  "pga_path": "build/tool-packages-home-link/home-link.pga",
+  "pga_bytes": 36080,
+  "pga_sha256": "7125eea9444136e871690df1baaed9c72b5cddbc39c4bef0123950703a2a97b4",
+  "tf_installed": false,
+  "tf_install_note": "TF not USB-mounted this session. Copy build/tool-packages-home-link/home-link.pga to /sdcard/apps/tools/home-link.pga via device USB disk mode, safely eject, end transfer, then Settings→首页导航 or open 家庭工具包 on empty Home page.",
+  "flash_command": "IDF_PY -m esptool --chip esp32s3 --port /dev/cu.usbmodem1101 --baud 460800 --before default-reset --after hard-reset --connect-attempts 5 write-flash --flash-mode keep --flash-freq keep --flash-size keep 0x20000 build/dev65-device/Read_Pico.bin",
+  "key_paths": [
+    "apps/src/home_link.c",
+    "components/read_pico_home_link/home_link_stubs.c",
+    "components/read_pico_home_link/CMakeLists.txt",
+    "main/system/pico_home_link_ui_thin.inc",
+    "main/system/pico_home.c",
+    "main/CMakeLists.txt",
+    "tools/build_tool_packages.py",
+    "CMakeLists.txt"
+  ]
+}

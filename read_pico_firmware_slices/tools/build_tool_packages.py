@@ -19,6 +19,7 @@ TOOLS = (
     ("drawing-notes", "画板笔记", "画笔、橡皮和撤销 · 保存原稿后继续绘画", 128, "apps/src/drawing_notes.c", 10002, ()),
     ("weread", "微信读书", "在线搜书、图书资料、推荐与阅读统计 · 离线划线与想法", 129, "apps/src/weread.c", 10200,
      ("apps/include/weread_snapshot.h", "apps/include/weread_explore.h", "apps/include/weread_explore_json.h")),
+    ("home-link", "家庭连接", "Home Assistant 与打印机监看 · TF 可选工具包", 130, "apps/src/home_link.c", 10000, ()),
 )
 
 

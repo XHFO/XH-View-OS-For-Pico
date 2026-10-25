@@ -991,7 +991,11 @@ bool ps_home_storage_save(void) {
     for(int i=0;i<4;i++)if(!save_home_value(i))ok=false;
     return ok;
 }
+#if defined(PICO_HOME_LINK_FULL) && PICO_HOME_LINK_FULL
 #include "pico_home_link_ui.inc"
+#else
+#include "pico_home_link_ui_thin.inc"
+#endif
 
 void ps_home_init(void) {
     ps_home_storage_invalidate();
