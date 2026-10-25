@@ -50,10 +50,12 @@ typedef struct {
 
 
 /// 家庭连接可选服务；凭据与HTTPS属宿主，模块只读有界快照。/ Optional Home Link services; host owns credentials/HTTPS, modules read bounded snapshots.
-enum { PGA_HOME_STATUS, PGA_HOME_SYNC, PGA_HOME_OPEN_SETUP };
+enum { PGA_HOME_STATUS, PGA_HOME_SYNC, PGA_HOME_OPEN_SETUP, PGA_HOME_ENTRY };
 enum { PGA_HOME_CONFIG_GET, PGA_HOME_CONFIG_SET };
 enum { PGA_HOME_INPUT_OPEN, PGA_HOME_INPUT_TAKE, PGA_HOME_INPUT_CANCEL };
-enum { PGA_HOME_CFG=1u, PGA_HOME_WIFI=2u, PGA_HOME_BUSY=4u, PGA_HOME_EXTERNAL=8u, PGA_HOME_CF=16u };
+enum { PGA_HOME_CFG=1u, PGA_HOME_WIFI=2u, PGA_HOME_BUSY=4u, PGA_HOME_EXTERNAL=8u, PGA_HOME_CF=16u,
+       PGA_HOME_ENTRY_OK=32u };
+/* PGA_HOME_ENTRY result, valid only with PGA_HOME_ENTRY_OK: 0 monitor, 1 connection setup, 2 printers. */
 typedef struct {
     uint32_t bytes,flags,revision,entity_count,entity_total,printer_count;
     uint8_t result,busy,external,at_home,enabled,has_token,has_cf;

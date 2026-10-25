@@ -245,9 +245,32 @@ static bool host_weread_open_link(const char *url){
     s_weread_link=true;ps_dirty();return true;
 }
 static bool home_link_active(void){return s_app&&s_app->kind==PGA_HOME_LINK;}
+/* 0 monitor, 1 connection setup, 2 printers. 0xff means the next home-link open is not a deep link. */
+static uint8_t s_home_entry=0xff;
+static bool s_home_entry_armed;
+/* Swallow one later games-enter of the route that deep-linked HA, so the shell cannot unload the package it just opened. */
+static bool s_home_hold;
+static ps_route_t s_home_hold_route;
+static bool s_home_route_set;
+static ps_route_t s_home_route_hint;
+void ps_apps_expect_home_route(ps_route_t route){s_home_route_set=true;s_home_route_hint=route;}
+void ps_apps_prepare_home(uint8_t page){
+    if(page>2){s_home_entry=0xff;s_home_entry_armed=false;return;}
+    s_home_entry=page;s_home_entry_armed=true;
+}
 static bool host_home_link(uint32_t command,pico_app_home_status_t *out){
     if(!home_link_active()||!out)return false;
     if(!out->bytes)out->bytes=sizeof(*out);
+    if(command==PGA_HOME_ENTRY){
+        uint8_t page=s_home_entry;
+        s_home_entry=0xff;
+        if(out->bytes<sizeof(*out)||page>2)return false;
+        memset(out,0,sizeof(*out));
+        out->bytes=sizeof(*out);
+        out->result=page;
+        out->flags=PGA_HOME_ENTRY_OK;
+        return true;
+    }
     return ps_home_pga_command(command,out);
 }
 static bool host_home_link_config(uint32_t command,pico_app_home_config_t *cfg){
@@ -372,7 +395,9 @@ static bool open_package(pico_app_package_t info,const char *path) {
     if(read_pico_sd_get_info(&media)!=ESP_OK||!media.mounted){pico_app_code_close(code);return error("TF 卡状态已改变");}
     s_active_media_generation=media.media_generation;
     s_active_info=info;s_app=app;s_code=code;s_pinned=false;s_ink_reference=false;s_nav=-1;s_in_call=true;
-    if(!app->start(&s_host)){s_in_call=false;app->stop();if(!s_worker){pico_app_code_close(code);s_code=NULL;s_app=NULL;}return error("应用启动失败");}
+    if(!app->start(&s_host)){s_home_entry=0xff;s_in_call=false;app->stop();if(!s_worker){pico_app_code_close(code);s_code=NULL;s_app=NULL;}return error("应用启动失败");}
+    /* start() already applied a deep link. Drop a leftover so an older package cannot apply it on a later tick. */
+    s_home_entry=0xff;
     s_in_call=false;s_nav=-1;
     s_origin=ps_route()==PS_APPS?PS_APPS:info.kind>=128?PS_SHELF:PS_GAMES;
     ps_navigate(app_route(info.kind));return true;
@@ -388,13 +413,21 @@ bool ps_games_open_id(const char *id) {
     return error("应用已移除，请刷新应用集");
 }
 bool ps_apps_open(const char *id) {
-    if(!pico_app_id_valid(id)||!ready())return error("请插入并挂载 TF 卡");
+    bool armed=s_home_entry_armed&&id&&!strcmp(id,"home-link");
+    ps_route_t opened_from=s_home_route_set?s_home_route_hint:ps_route();
+    s_home_route_set=false;
+    s_home_entry_armed=false;
+    if(!armed)s_home_entry=0xff;
+    if(armed){s_home_hold=true;s_home_hold_route=opened_from;}
+    if(!pico_app_id_valid(id)||!ready()){s_home_entry=0xff;s_home_hold=false;return error("请插入并挂载 TF 卡");}
     char path[160];pico_app_package_t info;
     package_path(path,sizeof(path),id);struct stat conflict;
-    if(stat(path,&conflict)==0)return error("游戏与工具目录存在同名应用，请先解决冲突");
+    if(stat(path,&conflict)==0){s_home_entry=0xff;s_home_hold=false;return error("游戏与工具目录存在同名应用，请先解决冲突");}
     snprintf(path,sizeof(path),PICO_APP_TOOLS_DIRECTORY "/%s.pga",id);
-    if(!pico_app_package_read(path,&info,false,s_error,sizeof(s_error))||strcmp(info.id,id)||info.kind<128)return error("工具应用不可用，请重新导入");
-    return open_package(info,path);
+    if(!pico_app_package_read(path,&info,false,s_error,sizeof(s_error))||strcmp(info.id,id)||info.kind<128){s_home_entry=0xff;s_home_hold=false;return error("工具应用不可用，请重新导入");}
+    bool opened=open_package(info,path);
+    if(!opened){s_home_entry=0xff;s_home_hold=false;}
+    return opened;
 }
 static void launch_tool(uint16_t id) {
     for(unsigned i=0;i<s_tool_count;i++)if(s_tools[i].navigation==id){if(!ps_apps_open(s_tools[i].id))ps_toast(s_error);return;}
@@ -544,6 +577,12 @@ static void resolve_recovery(bool discard) {
 void ps_games_init(void) { s_catalog_dirty=true;s_scanned=false;s_tool_count=0; }
 void ps_games_enter(ps_route_t route) {
     if(s_in_call)return;
+    if(s_home_hold){
+        bool same=route==s_home_hold_route;
+        bool keep=s_app&&home_link_active()&&(same||game_route(route));
+        if(same||!keep)s_home_hold=false;
+        if(keep&&same)return;
+    }
     // 微信读书配置是活动模块的短暂子页；返回仍保留书架和阅读位置。
     // WeRead setup temporarily opens a child page while retaining the active shelf and reading position.
     if(s_weread_setup&&s_app&&!strcmp(s_active_info.id,"weread")&&(route==PS_WIRELESS_MANAGE||route==PS_WIFI||route==PS_EDITOR))return;

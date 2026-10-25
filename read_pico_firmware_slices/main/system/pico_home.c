@@ -1029,6 +1029,10 @@ void ps_home_enter(ps_route_t route) {
     if((route==PS_QUOTES||(route==PS_CLOCK&&clock_quotes))&&changed){wake_until=0;quote_paused=power_paused(false);advance_quote(!quote_paused);quote_due=ps_now()+(int64_t)ps_excerpt_interval_minutes()*60000;}
     if(route==PS_CLOCK&&clock_quotes&&quote_paused)clock_frame=6;
     if(route==PS_QUOTES)quote_segment=clampi(quote_segment,0,quote_segments()-1);
+#if !(defined(PICO_HOME_LINK_FULL) && PICO_HOME_LINK_FULL)
+    /* 包已安装时直接打开连接设置。失败则留在空状态，按钮仍可重试；不在滑动时弹 toast。 */
+    if(changed&&(route==PS_HA||route==PS_HA_SETTINGS)){ps_apps_expect_home_route(route);(void)thin_open_home(THIN_HOME_SETUP,false);}
+#endif
 }
 bool ps_home_launcher_visible(void) {
     return ps_route()==PS_HA?(!real_room_picker&&climate_entity<0):
