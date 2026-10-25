@@ -48,6 +48,39 @@ typedef struct {
     char error[24];
 } pico_app_weread_query_status_t;
 
+
+/// 家庭连接可选服务；凭据与HTTPS属宿主，模块只读有界快照。/ Optional Home Link services; host owns credentials/HTTPS, modules read bounded snapshots.
+enum { PGA_HOME_STATUS, PGA_HOME_SYNC, PGA_HOME_OPEN_SETUP };
+enum { PGA_HOME_CONFIG_GET, PGA_HOME_CONFIG_SET };
+enum { PGA_HOME_INPUT_OPEN, PGA_HOME_INPUT_TAKE, PGA_HOME_INPUT_CANCEL };
+enum { PGA_HOME_CFG=1u, PGA_HOME_WIFI=2u, PGA_HOME_BUSY=4u, PGA_HOME_EXTERNAL=8u, PGA_HOME_CF=16u };
+typedef struct {
+    uint32_t bytes,flags,revision,entity_count,entity_total,printer_count;
+    uint8_t result,busy,external,at_home,enabled,has_token,has_cf;
+    int http_status;
+    char error[32];
+} pico_app_home_status_t;
+typedef struct {
+    uint32_t bytes;
+    uint8_t enabled,external_enabled,external_control,has_token,has_cf_id,has_cf_secret;
+    uint8_t clear_token,clear_cf;
+    char local[192],external[192],home_wifi[48];
+    char ha_token[256];
+    char cf_access_client_id[96],cf_access_client_secret[64];
+} pico_app_home_config_t;
+typedef struct {
+    uint32_t bytes,index;
+    char id[96],name[64],state[48],unit[12],room[32];
+    uint8_t kind,available,on;
+    float number;
+} pico_app_home_entity_t;
+typedef struct {
+    uint32_t bytes,slot;
+    char name[48],state[40],task[96];
+    int percent,remaining_minutes;
+    uint8_t source,connected,has_data,result;
+    int http_status;
+} pico_app_home_printer_t;
 typedef struct {
     uint32_t abi,bytes;
     pico_app_view_t (*view)(void);
@@ -92,6 +125,14 @@ typedef struct {
     bool (*weread_open_link)(const char *url);
     /// 仅绘制同一已完成查询的封面缓存；无网络/文件访问。/ Paint the completed query's cached cover only, without network or file access.
     bool (*weread_cover)(uint32_t request_id,uint8_t *fb,int x,int y,int width,int height);
+    /// 可选 Home Link 尾部；先检查 bytes。/ Optional Home Link tail; check bytes first.
+    bool (*home_link)(uint32_t command,pico_app_home_status_t *status);
+    bool (*home_link_config)(uint32_t command,pico_app_home_config_t *config);
+    bool (*home_link_entity)(uint32_t index,pico_app_home_entity_t *out);
+    bool (*home_link_printer)(uint32_t slot,pico_app_home_printer_t *out);
+    bool (*home_link_control)(const char *entity_id,const char *action,float value);
+    /// OPEN/TAKE/CANCEL；令牌最多255字节。/ OPEN/TAKE/CANCEL; tokens at most 255 bytes.
+    bool (*home_link_input)(uint32_t command,char *value,size_t capacity);
 } pico_app_host_t;
 
 /// 旧八款应用所需的原始宿主前缀；追加能力不得改变ABI1。/ Original host prefix for the eight existing apps; optional additions preserve ABI1.

@@ -1,5 +1,5 @@
-# 共享模型与TLS适配；PICO_HOME_LINK_FULL=OFF 时仅薄宿主桩+JSON隔离器（manage 返回 home_module_missing）。
-# Shared model/TLS adapter; with PICO_HOME_LINK_FULL=OFF only thin-host stubs + JSON isolator (manage returns home_module_missing).
+# PICO_HOME_LINK_FULL=OFF：桩(manage 503)+JSON+模型（供 PGA 宿主桥）；不链 web/bambu/runtime 大块。
+# OFF: stubs (manage 503) + JSON + model (for PGA host bridge); no web/bambu/full runtime.
 if(NOT DEFINED PICO_HOME_LINK_FULL)
     set(PICO_HOME_LINK_FULL OFF CACHE BOOL "Statically link full Home Assistant/printer stack")
 endif()
@@ -7,8 +7,8 @@ if(PICO_HOME_LINK_FULL)
     set(HOME_LINK_SRCS "home_link_model.c" "home_link_json.c" "home_link_web.c" "bambu_auth.c" "read_pico_home_link.c")
     set(HOME_LINK_REQUIRES esp_http_client esp-tls mbedtls nvs_flash esp_timer espressif__cjson)
 else()
-    set(HOME_LINK_SRCS "home_link_stubs.c" "home_link_json.c")
-    set(HOME_LINK_REQUIRES nvs_flash esp_timer espressif__cjson)
+    set(HOME_LINK_SRCS "home_link_stubs.c" "home_link_json.c" "home_link_model.c")
+    set(HOME_LINK_REQUIRES nvs_flash esp_timer espressif__cjson esp_http_client esp-tls mbedtls)
 endif()
 idf_component_register(SRCS ${HOME_LINK_SRCS}
     INCLUDE_DIRS "include"

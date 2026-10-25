@@ -53,6 +53,7 @@ idf_component_register(
         "system/pico_draw.c"
         "system/pico_reader.c"
         "system/pico_home.c"
+        "system/pico_home_pga.c"
         "system/pico_games.c"
         "ui/ui_kit.c"
         "ui/ui_image.c"
@@ -121,6 +122,7 @@ add_dependencies(${COMPONENT_LIB} pico_boot_image_deflate)
 set_source_files_properties(
     "settings.c"
     "system/pico_home.c"
+        "system/pico_home_pga.c"
     "system/pico_navigation.c"
     "system/pico_connectivity.c"
     "system/pico_storage.c"

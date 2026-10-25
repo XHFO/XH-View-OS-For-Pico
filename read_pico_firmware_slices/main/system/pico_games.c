@@ -11,6 +11,7 @@
 #include "pico_connectivity.h"
 #include "pico_weread.h"
 #include "pico_weread_cover.h"
+#include "pico_home_pga.h"
 #include "ui_wifi_qr.h"
 #include "pico_app_sdk.h"
 #include "pico_app_package.h"
@@ -122,7 +123,7 @@ void ps_games_rescan(void) {
         s_items[s_count++].info=p;
     }closedir(d);qsort(s_items,s_count,sizeof(*s_items),compare_item);
     if(s_page>=(s_count+5)/6)s_page=0;
-    ps_apps_register_navigation();s_error[0]=0;ps_dirty();
+    ps_apps_register_navigation();ps_home_pga_init();s_error[0]=0;ps_dirty();
 }
 static pico_app_view_t host_view(void) { ps_view_t v=ps_view();return (pico_app_view_t){v.w,v.h,v.landscape}; }
 static int32_t host_page(void) { return s_active_info.kind>=128?PGA_PAGE_APP:s_active_info.kind>=PGA_2048?PGA_PAGE_ARCADE:PGA_PAGE_BOARD; }
@@ -241,6 +242,47 @@ static bool host_weread_open_link(const char *url){
     if(!weread_active()||!ui_wifi_qr_prepare_weread(url))return false;
     s_weread_link=true;ps_dirty();return true;
 }
+static bool home_link_active(void){return s_app&&s_app->kind==PGA_HOME_LINK;}
+static bool host_home_link(uint32_t command,pico_app_home_status_t *out){
+    if(!home_link_active()||!out)return false;
+    if(!out->bytes)out->bytes=sizeof(*out);
+    return ps_home_pga_command(command,out);
+}
+static bool host_home_link_config(uint32_t command,pico_app_home_config_t *cfg){
+    if(!home_link_active()||!cfg)return false;
+    if(!cfg->bytes)cfg->bytes=sizeof(*cfg);
+    return ps_home_pga_config(command,cfg);
+}
+static bool host_home_link_entity(uint32_t index,pico_app_home_entity_t *out){
+    if(!home_link_active()||!out)return false;
+    if(!out->bytes)out->bytes=sizeof(*out);
+    return ps_home_pga_entity(index,out);
+}
+static bool host_home_link_printer(uint32_t slot,pico_app_home_printer_t *out){
+    if(!home_link_active()||!out)return false;
+    if(!out->bytes)out->bytes=sizeof(*out);
+    return ps_home_pga_printer(slot,out);
+}
+static bool host_home_link_control(const char *entity_id,const char *action,float value){
+    return home_link_active()&&ps_home_pga_control(entity_id,action,value);
+}
+static bool s_home_edit;
+static void home_input_done(const char *text){
+    if(!home_link_active()||!s_home_edit)return;
+    ps_home_pga_input_done(text);s_home_edit=false;
+}
+static bool host_home_link_input(uint32_t command,char *value,size_t capacity){
+    if(!home_link_active())return false;
+    if(command==PGA_HOME_INPUT_CANCEL){s_home_edit=false;return ps_home_pga_input(command,value,capacity);}
+    if(command==PGA_HOME_INPUT_OPEN){
+        if(!value||s_home_edit)return false;
+        char seed[256];size_t n=capacity<sizeof(seed)?capacity:sizeof(seed);
+        snprintf(seed,n,"%s",value);
+        if(!ps_home_pga_input(PGA_HOME_INPUT_OPEN,seed,sizeof(seed)))return false;
+        s_home_edit=true;ps_edit("家庭连接输入",seed,sizeof(seed)-1,home_input_done);return true;
+    }
+    return ps_home_pga_input(command,value,capacity);
+}
 static bool host_weread_cover(uint32_t request_id,uint8_t *fb,int x,int y,int width,int height){
     ps_view_t v=ps_view();
     if(!weread_active()||x<0||y<0||width<=0||height<=0||width>v.w-x||height>v.h-y)return false;
@@ -248,7 +290,7 @@ static bool host_weread_cover(uint32_t request_id,uint8_t *fb,int x,int y,int wi
 }
 static void weread_child_clear(void){
     if(s_weread_link)ui_wifi_qr_clear();
-    s_weread_edit=s_weread_input_ready=s_weread_link=false;memset(s_weread_input,0,sizeof(s_weread_input));
+    s_weread_edit=s_weread_input_ready=s_weread_link=false;memset(s_weread_input,0,sizeof(s_weread_input));s_home_edit=false;ps_home_pga_input(PGA_HOME_INPUT_CANCEL,NULL,0);
 }
 static const pico_app_host_t s_host={
     .abi=PICO_APP_ABI,.bytes=sizeof(pico_app_host_t),.view=host_view,.page=host_page,.navigate=host_navigate,
@@ -257,7 +299,9 @@ static const pico_app_host_t s_host={
     .worker_create=host_worker_create,.worker_delete=host_worker_delete,.worker_suspend=host_worker_suspend,.worker_stack_free=host_worker_stack_free,
     .delay_ms=host_delay,.diagnostic=host_diagnostic,.format=snprintf,.copy=memcpy,.move=memmove,.set=memset,.compare=memcmp,.weread=host_weread,
     .weread_query=host_weread_query,.weread_query_read=host_weread_query_read,.weread_input=host_weread_input,.weread_open_link=host_weread_open_link,
-    .weread_cover=host_weread_cover
+    .weread_cover=host_weread_cover,
+    .home_link=host_home_link,.home_link_config=host_home_link_config,.home_link_entity=host_home_link_entity,
+    .home_link_printer=host_home_link_printer,.home_link_control=host_home_link_control,.home_link_input=host_home_link_input
 };
 static bool close_active(void) {
     if(!s_app)return true;

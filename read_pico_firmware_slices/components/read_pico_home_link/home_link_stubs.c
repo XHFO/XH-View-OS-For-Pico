@@ -1,86 +1,16 @@
 /*
  * SPDX-FileCopyrightText: 2026 XH Lab
  * SPDX-License-Identifier: Apache-2.0
- * 中文：家庭服务薄宿主桩；完整 HA/打印机逻辑迁至 TF tools/home-link.pga。
- * English: Thin-host stubs for home services; full HA/printer logic moves to TF tools/home-link.pga.
- * 冻结：不发明凭据或假连接；manage home/printer/bambu 一律 503 home_module_missing（PUT 不假成功、不写 NVS）；电源挂起始终可完成；不常驻大块配置/快照。
- * Frozen: Never invent credentials or fake links; manage home/printer/bambu always 503 home_module_missing (PUT is not fake-ok and does not persist); power suspend always completes; do not retain large config/snapshot BSS.
+ * 中文：家庭服务薄宿主桩；manage home/printer/bambu 一律 503 home_module_missing（PUT 不假成功、不写 NVS）。
+ * English: Thin-host stubs; manage home/printer/bambu always 503 home_module_missing (PUT is not fake-ok, no NVS write).
+ * 模型解析由 home_link_model.c 提供给 PGA 宿主桥；本文件不实现 rp_home_parse/fetch。
+ * Model parse/fetch live in home_link_model.c for the PGA host bridge; this file does not implement them.
  */
 #include "read_pico_home_link.h"
 #include "home_link_web.h"
 #include <string.h>
 
 static uint32_t s_revision = 1;
-
-bool rp_home_config_valid(const rp_home_config_t *config) {
-    return config && config->version == RP_HOME_CONFIG_VERSION;
-}
-bool rp_home_config_upgrade(rp_home_config_t *config) {
-    if (!config) return false;
-    if (!config->version) config->version = RP_HOME_CONFIG_VERSION;
-    return config->version == RP_HOME_CONFIG_VERSION;
-}
-bool rp_home_config_unpack_version(const void *data, size_t bytes, rp_home_config_t *out, uint32_t *stored_version) {
-    (void)data; (void)bytes;
-    if (out) { memset(out, 0, sizeof(*out)); out->version = RP_HOME_CONFIG_VERSION; }
-    if (stored_version) *stored_version = RP_HOME_CONFIG_VERSION;
-    return false;
-}
-size_t rp_home_config_pack(const rp_home_config_t *config, void *out, size_t capacity) {
-    (void)config; (void)out; (void)capacity;
-    return 0;
-}
-bool rp_home_config_unpack(const void *data, size_t bytes, rp_home_config_t *out) {
-    (void)data; (void)bytes;
-    if (out) { memset(out, 0, sizeof(*out)); out->version = RP_HOME_CONFIG_VERSION; }
-    return false;
-}
-rp_home_result_t rp_home_parse_ha(const char *json, size_t bytes, const rp_home_config_t *config,
-                                  rp_home_snapshot_t *out, int64_t now_ms) {
-    (void)json; (void)bytes; (void)config; (void)now_ms;
-    if (out) { memset(out, 0, sizeof(*out)); out->result = RP_HOME_UNSUPPORTED; }
-    return RP_HOME_UNSUPPORTED;
-}
-rp_home_result_t rp_home_parse_formlabs(const char *json, size_t bytes, const char *serial,
-                                        rp_home_printer_t *out, int64_t now_ms) {
-    (void)json; (void)bytes; (void)serial; (void)now_ms;
-    if (out) { memset(out, 0, sizeof(*out)); out->result = RP_HOME_UNSUPPORTED; }
-    return RP_HOME_UNSUPPORTED;
-}
-rp_home_result_t rp_home_parse_bambu(const char *json, size_t bytes, rp_home_printer_t *out, int64_t now_ms) {
-    (void)json; (void)bytes; (void)now_ms;
-    if (out) { memset(out, 0, sizeof(*out)); out->result = RP_HOME_UNSUPPORTED; }
-    return RP_HOME_UNSUPPORTED;
-}
-bool rp_home_form_body(const char *id, const char *secret, char *body, size_t capacity) {
-    (void)id; (void)secret; (void)body; (void)capacity;
-    return false;
-}
-rp_home_result_t rp_home_fetch(const rp_home_config_t *config, rp_home_snapshot_t *out,
-                               rp_home_token_t tokens[RP_HOME_PRINTERS], const rp_home_transport_t *transport,
-                               bool network_online, bool at_home, int64_t now_ms) {
-    (void)config; (void)tokens; (void)transport; (void)network_online; (void)at_home; (void)now_ms;
-    if (out) { memset(out, 0, sizeof(*out)); out->result = RP_HOME_UNSUPPORTED; }
-    return RP_HOME_UNSUPPORTED;
-}
-rp_home_result_t rp_home_control(const rp_home_config_t *config, const rp_home_entity_t *entity,
-                                 const char *action, float value, const rp_home_transport_t *transport,
-                                 bool at_home, int *http_status) {
-    (void)config; (void)entity; (void)action; (void)value; (void)transport; (void)at_home;
-    if (http_status) *http_status = 0;
-    return RP_HOME_UNSUPPORTED;
-}
-const char *rp_home_result_text(rp_home_result_t result) {
-    switch (result) {
-    case RP_HOME_EMPTY: return "未配置";
-    case RP_HOME_BUSY: return "同步中";
-    case RP_HOME_OK: return "已连接";
-    case RP_HOME_OFFLINE: return "离线";
-    case RP_HOME_AUTH: return "认证失败";
-    case RP_HOME_UNSUPPORTED: return "需要安装家庭工具包";
-    default: return "不可用";
-    }
-}
 
 void read_pico_home_link_init(void) {}
 

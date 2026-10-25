@@ -8,15 +8,15 @@
       "title": "家庭连接",
       "description": "Home Assistant 与打印机监看 · TF 可选工具包",
       "file": "home-link.pga",
-      "version": 10001,
+      "version": 10100,
       "abi": 1,
       "directory": "apps/tools",
-      "bytes": 36112,
-      "sha256": "69bb1d21027cdbcf420376c1619f8fbc0a5e00b0aff798391d7a37eec10fb46a",
-      "source_sha256": "fedbd5273dd933a5fc90ecddbd1ceafec30e340b9a96cb23895728c8665dc584",
+      "bytes": 43580,
+      "sha256": "ba48dfe291615d6f2d8c40b84a330d9e03f922461a0fb4f079112635b4a676ab",
+      "source_sha256": "a6f5a0f97cfabcc85da7748b82df38fbbef8fd5a150b7bbf0ad84ac2ab6ef828",
       "inputs": {
-        "apps/src/home_link.c": "e232e04594668285f7fa2e2d1de1b3250ff6f36acd742b3c3727ba3cae0b909b",
-        "components/read_pico_apps/include/pico_app_sdk.h": "d2dceaa0bd96e46a8d2ad2b850d9800dee7a702e0080d4571145c87b31f90aed"
+        "apps/src/home_link.c": "bcf37a905ad1a1eff048cb151ae814b59973eeda0f67d770fa2592fec35cb8b4",
+        "components/read_pico_apps/include/pico_app_sdk.h": "819f5f1b970383cb8dd086412980436ce4203a0210b67dca03ae43069b23edb8"
       },
       "targets": [
         "esp32s3-xtensa",
