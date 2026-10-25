@@ -7,12 +7,17 @@
  * Thin-host manage stays home_module_missing; this package uses on-device config + host HTTP.
  */
 #include "pico_app_sdk.h"
+#include "../../main/system/pico_scroll.h"
 
-enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10100 };
+enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10101 };
 enum { PAGE_MONITOR, PAGE_SETUP, PAGE_PRINTERS };
 
 static const pico_app_host_t *host;
 static unsigned page, entity_page, setup_field, last_revision;
+_Static_assert(PGA_PRESS == 0 && PGA_MOVE == 1 && PGA_RELEASE == 2 && PGA_TAP == 3 && PGA_LONG == 4 &&
+                   PGA_SWIPE_L == 5 && PGA_SWIPE_R == 6 && PGA_SWIPE_U == 7 && PGA_SWIPE_D == 8 && PGA_CANCEL == 9,
+               "pico_scroll.h event numbers");
+static ps_scroll_track_t entity_scroll;
 static bool waiting_input, need_sync;
 static pico_app_home_status_t status;
 static pico_app_home_config_t config;
@@ -337,8 +342,34 @@ static bool event_setup(const pico_app_event_t *e) {
     return false;
 }
 
+static bool monitor_scroll(const pico_app_event_t *e) {
+    if (page != PAGE_MONITOR || !has_home()) return false;
+    bool consume = false;
+    int d = ps_scroll_step(&entity_scroll, e->type, e->x0, e->y0, e->x, e->y, PS_SCROLL_AXIS_X, &consume);
+    if (!d && !consume) return false;
+    if (!d) return true;
+    int per = entities_per_page(host->view());
+    if (d > 0 && (entity_page + 1) * (unsigned)per < status.entity_count) {
+        entity_page++;
+        host->dirty();
+        return true;
+    }
+    if (d < 0) {
+        if (entity_page) {
+            entity_page--;
+            host->dirty();
+        } else
+            host->navigate(PGA_PAGE_LAUNCHER);
+        return true;
+    }
+    ps_scroll_disarm(&entity_scroll);
+    return false;
+}
+
 static bool event(const pico_app_event_t *e) {
     if (!e) return false;
+    // 实体列表在拖动达到阈值时翻页，松手合成事件不重复翻。/ The entity list pages when the drag crosses the threshold; the synthesized lift event does not page again.
+    if (monitor_scroll(e)) return true;
     if (e->type == PGA_TAP || e->type == PGA_SWIPE_L || e->type == PGA_SWIPE_R) {
         if (page == PAGE_SETUP) return event_setup(e);
         if (page == PAGE_PRINTERS) {

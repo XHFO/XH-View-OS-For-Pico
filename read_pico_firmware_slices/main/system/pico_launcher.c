@@ -6,12 +6,14 @@
  * Frozen: Never duplicate app implementations, access files while painting, invoke module code directly or alter saved navigation.
  */
 #include "pico_launcher.h"
+#include "pico_scroll.h"
 #include "pico_navigation.h"
 #include "pico_theme.h"
 #include <stdio.h>
 #include <string.h>
 
 static unsigned page;
+static ps_scroll_track_t launcher_scroll;
 // 首页已显示入口按用户顺序，其余入口仍可在应用集中发现。/ Use Home order first and keep hidden destinations discoverable in Apps.
 static const ps_navigation_entry_t *destination(unsigned index) {
     for(int i=0;i<ps_navigation_count();i++) {
@@ -79,7 +81,15 @@ static bool turn(int delta) {
 }
 bool ps_launcher_key(int key) {return key==0||key==2?turn(key==0?-1:1):false;}
 bool ps_launcher_event(const ps_event_t *e) {
-    if(e->type==PS_SWIPE_U||e->type==PS_SWIPE_D)return turn(e->type==PS_SWIPE_U?1:-1);
+    // 上下翻页跟手提交；左右滑动仍留给首页导航。/ Vertical paging commits with the finger; horizontal swipes stay with Home navigation.
+    bool consume=false;
+    int d=ps_scroll_step(&launcher_scroll,e->type,e->x0,e->y0,e->x,e->y,PS_SCROLL_AXIS_Y,&consume);
+    if(d){
+        if(turn(d))return true;
+        ps_scroll_disarm(&launcher_scroll);
+        return false;
+    }
+    if(consume)return true;
     if(e->type!=PS_TAP)return false;
     ps_view_t v=ps_view();
     if(ps_hit(e->x,e->y,v.w-80,85,64,29)){ps_launcher_enter();return true;}
