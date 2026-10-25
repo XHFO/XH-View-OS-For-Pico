@@ -16,6 +16,7 @@
  * Frozen: Re-entering lock retains a valid excerpt, fills an empty queue on demand, and advances only when due; low-battery pause never consumes it.
  */
 #include "pico_system.h"
+#include "pico_i18n.h"
 #include "pico_clock_digits_sparse.h"
 #include "pico_power.h"
 #include "pico_desktop.h"
@@ -998,6 +999,7 @@ bool ps_home_storage_save(void) {
 #endif
 
 void ps_home_init(void) {
+    ps_i18n_init();
     ps_home_storage_invalidate();
     real_manage_close();real_printer_cancel();
     read_pico_home_link_init();read_pico_home_link_get_config(&link_config);

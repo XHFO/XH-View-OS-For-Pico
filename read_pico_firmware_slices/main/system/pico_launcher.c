@@ -7,6 +7,7 @@
  */
 #include "pico_launcher.h"
 #include "pico_navigation.h"
+#include "pico_i18n.h"
 #include "pico_theme.h"
 #include <stdio.h>
 #include <string.h>
@@ -43,18 +44,18 @@ void ps_launcher_render(uint8_t *fb) {
     ps_view_t v=ps_view();unsigned n=destinations(),shown=effective_page();char text[56];
     ps_fill(fb,0,76,v.w,v.h-76,14);
     if(ps_navigation_index(PS_APPS)>=0) {
-        ps_tabs(fb,0);ps_text(fb,16,85,25,"应用集",1);
-    } else ps_heading(fb,"应用集",NULL);
-    ps_button(fb,v.w-80,85,64,29,"刷新",false);
-    if(!v.landscape){snprintf(text,sizeof(text),"系统与工具 %u · TF 游戏 %u",n,ps_games_count());ps_text(fb,18,122,11,text,5);}
+        ps_tabs(fb,0);ps_text(fb,16,85,25,ps_tr("launcher.title"),1);
+    } else ps_heading(fb,ps_tr("launcher.title"),NULL);
+    ps_button(fb,v.w-80,85,64,29,ps_tr("launcher.refresh"),false);
+    if(!v.landscape){snprintf(text,sizeof(text),ps_tr("launcher.summary"),n,ps_games_count());ps_text(fb,18,122,11,text,5);}
     for(unsigned slot=0;slot<6&&shown*6+slot<count();slot++) {
         unsigned index=shown*6+slot;EpdRect r=card(slot);
         const ps_navigation_entry_t *item=index<n?destination(index):NULL;
-        const char *id=NULL,*title="系统设置",*source="设置";ps_icon_t icon=PI_SETTINGS;
-        if(item){title=item->label;icon=item->icon;source=item->route==PS_APPLICATION?"TF 应用":"系统应用";}
+        const char *id=NULL,*title=ps_tr("launcher.settings"),*source=ps_tr("launcher.source.settings");ps_icon_t icon=PI_SETTINGS;
+        if(item){title=ps_navigation_label(item);icon=item->icon;source=ps_tr(item->route==PS_APPLICATION?"launcher.source.tf_app":"launcher.source.system");}
         else if(index<n+ps_games_count()) {
             if(!ps_games_item(index-n,&id,&title))continue;
-            (void)id;icon=PI_GAME;source="TF 游戏";
+            (void)id;icon=PI_GAME;source=ps_tr("launcher.source.tf_game");
         }
         ps_surface(fb,r.x,r.y,r.width,r.height,false);
         if(v.landscape) {
@@ -69,9 +70,9 @@ void ps_launcher_render(uint8_t *fb) {
         }
     }
     int y=v.h-64;
-    ps_button(fb,16,y,68,29,"上一页",false);
+    ps_button(fb,16,y,68,29,ps_tr("common.prev"),false);
     snprintf(text,sizeof(text),"%u / %u",shown+1,pages());ps_center(fb,v.w/2,y+8,11,text,5);
-    ps_button(fb,v.w-84,y,68,29,"下一页",false);
+    ps_button(fb,v.w-84,y,68,29,ps_tr("common.next"),false);
 }
 static bool turn(int delta) {
     unsigned last=pages();if(last<=1)return false;

@@ -10,8 +10,8 @@ static bool has_disk,fail_store;
 static int stores,backs,toasts,launches,draws;
 ps_view_t ps_view(void){return view;}
 ps_route_t ps_route(void){return PS_NAV_SETTINGS;}
-bool ps_load(const char *key,void *out,size_t bytes){assert(!strcmp(key,"navigation1"));assert(bytes==sizeof(disk));if(!has_disk)return false;memcpy(out,&disk,bytes);return true;}
-bool ps_store(const char *key,const void *data,size_t bytes){assert(!strcmp(key,"navigation1"));assert(bytes==sizeof(disk));stores++;if(fail_store)return false;memcpy(&disk,data,bytes);has_disk=true;return true;}
+bool ps_load(const char *key,void *out,size_t bytes){if(!strcmp(key,"uilocale"))return false;assert(!strcmp(key,"navigation1"));assert(bytes==sizeof(disk));if(!has_disk)return false;memcpy(out,&disk,bytes);return true;}
+bool ps_store(const char *key,const void *data,size_t bytes){if(!strcmp(key,"uilocale"))return true;assert(!strcmp(key,"navigation1"));assert(bytes==sizeof(disk));stores++;if(fail_store)return false;memcpy(&disk,data,bytes);has_disk=true;return true;}
 void ps_back(void){backs++;}
 void ps_toast(const char *text){assert(text&&*text);toasts++;}
 #ifndef PICO_NAVIGATION_REAL_RENDER
@@ -82,3 +82,4 @@ int main(void){
     disk.ids[1]=disk.ids[0];ps_navigation_init();assert(ps_navigation_count()==4&&ps_navigation_item(1)->id==PS_NAV_HOME);
     printf("navigation contracts passed: %d draws, %d save attempts, %d returns\n",draws,stores,backs);return 0;
 }
+#include "../main/system/pico_i18n.c"

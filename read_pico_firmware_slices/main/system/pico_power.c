@@ -15,6 +15,7 @@
  * User revision: Optional Lingxi Board lock retains networking only with PMU-confirmed external power; pushes never switch reading/drawing, and unplugging joins networking before light sleep.
  */
 #include "pico_power.h"
+#include "pico_i18n.h"
 #include "pico_datetime.h"
 #include "pico_sound.h"
 #include "../power_touch.h"
@@ -72,7 +73,7 @@ unsigned ps_power_auto_minutes(void){load_options();return auto_minutes;}
 bool ps_power_doubletap(void){load_options();return doubletap_enabled;}
 static bool save_options(uint8_t minutes,bool taps){
     uint8_t value[2]={minutes,taps?1:0};
-    if(!ps_store("powercfg",value,sizeof(value))){ps_toast("电源设置保存失败");return false;}
+    if(!ps_store("powercfg",value,sizeof(value))){ps_toast(ps_tr("settings.power.save_failed"));return false;}
     auto_minutes=minutes;doubletap_enabled=taps;power_options_loaded=true;ps_power_activity(ps_now());ps_dirty();return true;
 }
 bool ps_power_set_auto_minutes(unsigned minutes){
@@ -145,15 +146,15 @@ void ps_power_set_cover_layout(int layout) {
     if(layout<0||layout>4)return;
     uint8_t saved=(uint8_t)layout;
     if(ps_store("coverlayout",&saved,1))cover_layout=layout;
-    else ps_toast("封面布局保存失败");
+    else ps_toast(ps_tr("settings.power.cover_save_failed"));
     initialized=true;ps_dirty();
 }
 static void lock_hint(uint8_t *fb) {
     ps_view_t v=ps_view();int width=v.w>400?320:v.w-36,y=v.h-((style<=1&&ps_battery_percent()>=0&&ps_battery_percent()<=10&&!ps_charging())?88:53),x=(v.w-width)/2;
     ps_box(fb,x,y,width,36,6,15,true);ps_box(fb,x,y,width,36,6,5,false);
-    const char *label=power_state==4?"已关机 · 长按电源键开机":power_state==2?"已休眠 · 按电源键恢复":ps_power_doubletap()?"已锁屏 · 双击屏幕唤醒":"已锁屏 · 点按电源键唤醒";
+    const char *label=power_state==4?ps_tr("settings.power.off_state"):power_state==2?ps_tr("settings.power.sleeping"):ps_power_doubletap()?ps_tr("settings.power.locked.doubletap"):ps_tr("settings.power.locked.key");
     ps_center(fb,v.w/2,y+11,12,label,0);
-    if(low_power_limited){ps_fill(fb,0,0,v.w,24,15);ps_center(fb,v.w/2,7,10,"低功耗待机受限 · 电源键可唤醒",4);}
+    if(low_power_limited){ps_fill(fb,0,0,v.w,24,15);ps_center(fb,v.w/2,7,10,ps_tr("settings.power.low_power"),4);}
 }
 static bool paint_lock(app_ctx_t *ctx,bool full) {
     // 原页与已提交基准完全一致、且没有余相或浮层债务时，只驱动新增锁屏标识。
@@ -196,7 +197,7 @@ static void restore(app_ctx_t *ctx) {
 }
 bool ps_power_key_long(app_ctx_t *ctx,const app_desc_t *current) {
     (void)current;
-    if(ps_storage_busy()||ps_usb_busy()||ps_usb_held()||ps_content_held()){ps_toast("请先结束存储操作");return true;}
+    if(ps_storage_busy()||ps_usb_busy()||ps_usb_held()||ps_content_held()){ps_toast(ps_tr("settings.power.toast.storage"));return true;}
     if(power_state==4){
 #ifdef PICO_NATIVE_PREVIEW
         // 只模拟长按开机后的首页；不声称重置了硬件，不重置用户持久数据。
@@ -221,8 +222,8 @@ static bool abort_begin(app_ctx_t *ctx,const char *message,bool resume_network) 
     ps_toast(message);return false;
 }
 static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
-    if(ps_storage_busy()||ps_usb_busy()||ps_usb_held()||ps_content_held()||ps_transfer_prepared()){ps_toast("请先结束存储操作或文件传输");return false;}
-    if(!ps_weread_pause()){ps_toast("请先结束微信读书同步");return false;}
+    if(ps_storage_busy()||ps_usb_busy()||ps_usb_held()||ps_content_held()||ps_transfer_prepared()){ps_toast(ps_tr("settings.power.toast.storage_transfer"));return false;}
+    if(!ps_weread_pause()){ps_toast(ps_tr("settings.power.toast.weread"));return false;}
     const int64_t started=esp_timer_get_time();
     int chosen=style_override>=0?style_override:ps_sleep_style();
     board_lock=action==PS_POWER_LOCK&&chosen==5&&ps_external_power();board_stopping=false;
@@ -231,7 +232,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
     if(board_lock){(void)ps_desktop_tick();board_lock=ps_desktop_prepare();}
     if(action<=PS_POWER_SLEEP||action==PS_POWER_OFF) {
         resume_frame=heap_caps_malloc(FRAME_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-        if(!resume_frame)return abort_begin(ctx,"锁屏内存不足，请稍后重试",false);
+        if(!resume_frame)return abort_begin(ctx,ps_tr("settings.power.toast.memory"),false);
     }
     // 先禁止新的联网工作并请求现有后台收束，与必须落盘及绘制并行；最终仍检查真实完成。
     // Block new network work and request existing workers to stop in parallel with required saves/rendering; completion remains mandatory.
@@ -249,19 +250,19 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
         memcpy(resume_frame,source,FRAME_BYTES);
     }
     const int64_t captured=esp_timer_get_time();
-    if(current==&app_book&&!app_book_power_prepare())return abort_begin(ctx,"阅读进度未能保存，请检查TF卡",true);
+    if(current==&app_book&&!app_book_power_prepare())return abort_begin(ctx,ps_tr("settings.power.toast.progress"),true);
     if(!ps_games_power_prepare()||!ps_reader_power_save()||!ps_home_storage_save())
-        return abort_begin(ctx,"内容未保存，暂不进入电源状态",true);
+        return abort_begin(ctx,ps_tr("settings.power.toast.unsaved"),true);
     const int64_t saved=esp_timer_get_time();
-    if(!read_pico_home_link_suspend(2500)||!ps_home_pga_suspend(2500))return abort_begin(ctx,"家庭网络任务尚未结束，请稍后重试",true);
-    if(!board_lock&&!ps_connectivity_shutdown())return abort_begin(ctx,"网络传输尚未结束，请稍后重试",true);
+    if(!read_pico_home_link_suspend(2500)||!ps_home_pga_suspend(2500))return abort_begin(ctx,ps_tr("settings.power.toast.home"),true);
+    if(!board_lock&&!ps_connectivity_shutdown())return abort_begin(ctx,ps_tr("settings.power.toast.network"),true);
     network_resume_pending=network_resume_waiting=false;
     const int64_t networked=esp_timer_get_time();
     if(action==PS_POWER_RESTART){
 #ifndef PICO_NATIVE_PREVIEW
         esp_restart();
 #else
-        power_state=3;memset(ctx->fb,255,FRAME_BYTES);ps_center(ctx->fb,ps_view().w/2,ps_view().h/2,24,"正在重启",0);guard_draw_result(ctx->hl,update_display_full(ctx->hl));return true;
+        power_state=3;memset(ctx->fb,255,FRAME_BYTES);ps_center(ctx->fb,ps_view().w/2,ps_view().h/2,24,ps_tr("settings.power.restarting"),0);guard_draw_result(ctx->hl,update_display_full(ctx->hl));return true;
 #endif
     }
     if(action==PS_POWER_OFF){
@@ -275,7 +276,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
 #endif
         power_state=0;ps_lock_covers_release();
         if(resume_frame){memcpy(ctx->fb,resume_frame,FRAME_BYTES);guard_draw_result(ctx->hl,update_display_full(ctx->hl));}
-        return abort_begin(ctx,shown?"关机失败，请重试":"关机画面刷新失败，已取消关机",true);
+        return abort_begin(ctx,ps_tr(shown?"settings.power.toast.off_failed":"settings.power.toast.off_paint"),true);
     }
     style=chosen;style_override=-1;
     if(style==5&&!board_lock)style=3;
@@ -285,7 +286,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
     else if(style<=1)ps_home_standby_begin(style);
     low_power_limited=!board_lock&&!read_pico_ble_pager_light_sleep_safe();radio_wait=low_power_limited;
     const int64_t prepared=esp_timer_get_time();
-    if(!paint_lock(ctx,true)){ps_power_wake();restore(ctx);ps_toast("无法进入锁屏，请重试");return false;}
+    if(!paint_lock(ctx,true)){ps_power_wake();restore(ctx);ps_toast(ps_tr("settings.power.toast.lock_failed"));return false;}
     if(board_lock){board_revision=ps_desktop_revision();ps_desktop_presented(true);}
     const int64_t painted=esp_timer_get_time();
 #ifdef PICO_NATIVE_PREVIEW
@@ -293,7 +294,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
     preview_touch.blocked=ctx->touch&&ctx->touch->touched;
     preview_touch.down=preview_touch.blocked;
 #else
-    if(app_product_lock_begin(!board_lock&&!low_power_limited,power_state==1&&ps_power_doubletap())!=ESP_OK){ps_power_wake();restore(ctx);ps_toast("无法进入锁屏，请重试");return false;}
+    if(app_product_lock_begin(!board_lock&&!low_power_limited,power_state==1&&ps_power_doubletap())!=ESP_OK){ps_power_wake();restore(ctx);ps_toast(ps_tr("settings.power.toast.lock_failed"));return false;}
 #endif
     const int64_t armed=esp_timer_get_time();
     ESP_LOGI("pico_power","lock action=%d capture_ms=%lld save_ms=%lld network_ms=%lld prepare_ms=%lld paint_ms=%lld arm_ms=%lld total_ms=%lld",action,
@@ -371,33 +372,35 @@ static void quick_geometry(ps_view_t v,int i,int *x,int *y,int *w,int *h){
 }
 static int appearance_y(ps_view_t v){return v.landscape?188:438;}
 void ps_power_render(uint8_t *fb) {
-    ps_view_t v=ps_view();ps_heading(fb,quick_menu?"电源菜单":"电源与锁屏",NULL);
-    if(quick_menu){const char *items[]={"关机","重启","锁屏","取消"};for(int i=0;i<4;i++){int x,y,w,h;quick_geometry(v,i,&x,&y,&w,&h);ps_button(fb,x,y,w,h,items[i],false);}return;}
+    ps_view_t v=ps_view();ps_heading(fb,ps_tr(quick_menu?"settings.power.menu":"settings.power.title"),NULL);
+    if(quick_menu){const char *items[]={ps_tr("settings.power.off"),ps_tr("settings.power.restart"),ps_tr("settings.power.lock"),ps_tr("common.cancel")};for(int i=0;i<4;i++){int x,y,w,h;quick_geometry(v,i,&x,&y,&w,&h);ps_button(fb,x,y,w,h,items[i],false);}return;}
     int col=settings_column(v),right=v.landscape?32+col:16,rh=v.landscape?36:44,cw=(col-8)/2;
     if(confirmation>=0){
         ps_box(fb,12,94,v.w-24,154,8,15,true);ps_box(fb,12,94,v.w-24,154,8,6,false);
-        ps_center(fb,v.w/2,112,21,confirmation==2?"确认重启设备？":"确认关机？",0);
-        ps_button(fb,18,180,(v.w-44)/2,44,"取消",false);ps_button(fb,26+(v.w-44)/2,180,(v.w-44)/2,44,"确认",true);return;
+        ps_center(fb,v.w/2,112,21,ps_tr(confirmation==2?"settings.power.confirm_restart":"settings.power.confirm_off"),0);
+        ps_button(fb,18,180,(v.w-44)/2,44,ps_tr("common.cancel"),false);ps_button(fb,26+(v.w-44)/2,180,(v.w-44)/2,44,ps_tr("common.confirm"),true);return;
     }
-    const char *actions[]={"立即锁屏","深度休眠","重启","关机"};
+    ps_i18n_chip(fb,v.w-16-PS_I18N_CHIP_W,32);
+    const char *actions[]={ps_tr("settings.power.lock_now"),ps_tr("settings.power.sleep"),ps_tr("settings.power.restart"),ps_tr("settings.power.off")};
     for(int i=0;i<4;i++)ps_button(fb,16+(i%2)*(cw+8),76+(i/2)*(rh+6),cw,rh,actions[i],false);
     int ay=v.landscape?176:200,aw=(col-12)/3;
-    ps_text(fb,16,ay,13,"自动锁屏时间",4);
-    const char *labels[]={"关闭","1 分钟","3 分钟","5 分钟","10 分钟","30 分钟"};
+    ps_text(fb,16,ay,13,ps_tr("settings.power.auto"),4);
+    const char *labels[]={ps_tr("settings.power.auto.off"),ps_tr("settings.power.auto.m1"),ps_tr("settings.power.auto.m3"),ps_tr("settings.power.auto.m5"),ps_tr("settings.power.auto.m10"),ps_tr("settings.power.auto.m30")};
     for(int i=0;i<6;i++)ps_button(fb,16+(i%3)*(aw+6),ay+22+(i/3)*36,aw,32,labels[i],ps_power_auto_minutes()==auto_choices[i]);
-    if(app_settings_test_awake())ps_wrap(fb,16,ay+98,col,11,2,"保持唤醒已开启，自动锁屏暂停",5);
+    if(app_settings_test_awake())ps_wrap(fb,16,ay+98,col,11,2,ps_tr("settings.power.awake"),5);
     int ty=v.landscape?76:332;
-    ps_button(fb,right,ty,col,v.landscape?36:44,ps_power_doubletap()?"双击屏幕唤醒 · 开":"双击屏幕唤醒 · 关",ps_power_doubletap());
-    ps_wrap(fb,right,ty+(v.landscape?46:54),col,11,3,"电源键单击锁屏或唤醒。深度休眠仅用电源键恢复。",5);
-    int y=appearance_y(v);const char *names[]={"翻页时钟","划线摘录","藏书封面","保持当前页面","自定义图片","灵犀画板"};
-    char label[80];snprintf(label,sizeof(label),"锁屏外观 · %s",names[ps_sleep_style()]);
+    ps_button(fb,right,ty,col,v.landscape?36:44,ps_tr(ps_power_doubletap()?"settings.power.doubletap.on":"settings.power.doubletap.off"),ps_power_doubletap());
+    ps_wrap(fb,right,ty+(v.landscape?46:54),col,11,3,ps_tr("settings.power.doubletap.hint"),5);
+    int y=appearance_y(v);const char *names[]={"settings.power.style.clock","settings.power.style.quotes","settings.power.style.covers","settings.power.style.page","settings.power.style.image","settings.power.style.board"};
+    char label[80];snprintf(label,sizeof(label),ps_tr("settings.power.appearance"),ps_tr(names[ps_sleep_style()]));
     ps_button(fb,right,y,col,40,label,false);
-    ps_button(fb,right,y+52,col,40,ps_rotation_locked()?"方向锁定 · 开":"方向锁定 · 关",ps_rotation_locked());
-    if(!v.landscape)ps_wrap(fb,18,554,v.w-36,11,3,"关机前保留锁屏画面，并标注已关机。长按电源键打开电源菜单。",5);
+    ps_button(fb,right,y+52,col,40,ps_tr(ps_rotation_locked()?"settings.power.rotation.on":"settings.power.rotation.off"),ps_rotation_locked());
+    if(!v.landscape)ps_wrap(fb,18,554,v.w-36,11,3,ps_tr("settings.power.hint"),5);
 }
 bool ps_power_event(const ps_event_t *e) {
     if(e->type!=PS_TAP)return false;
     ps_view_t v=ps_view();
+    if(!quick_menu&&confirmation<0&&ps_i18n_chip_hit(e->x,e->y,v.w-16-PS_I18N_CHIP_W,32))return true;
     if(quick_menu){
         for(int i=0;i<4;i++){int x,y,w,h;quick_geometry(v,i,&x,&y,&w,&h);if(ps_hit(e->x,e->y,x,y,w,h)){quick_menu=false;ps_back();if(i<3)ps_power_request(i==0?PS_POWER_OFF:i==1?PS_POWER_RESTART:PS_POWER_LOCK);return true;}}
         quick_menu=false;ps_back();return true;

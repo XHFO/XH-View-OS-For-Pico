@@ -403,3 +403,4 @@ int main(void){
     printf("pico_home: legacy filtering/control/layout, real-service config routes, 9-item queue, power hysteresis, flip frames and render purity passed; %d draw bounds; configs %zu bytes\n",draws,sizeof(hc)+sizeof(pc)+sizeof(qc));
     return 0;
 }
+#include "../main/system/pico_i18n.c"

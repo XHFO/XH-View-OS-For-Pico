@@ -5,6 +5,7 @@
  * Frozen: Load one app at a time; stop workers and save before unloading, retain failures in the original app for retry or explicit discard, dismiss outside non-destructively, and keep rendering free of file IO.
  */
 #include "pico_system.h"
+#include "pico_i18n.h"
 #include "pico_power.h"
 #include "pico_theme.h"
 #include "pico_navigation.h"
@@ -281,7 +282,7 @@ static bool host_home_link_input(uint32_t command,char *value,size_t capacity){
         char seed[256];size_t n=capacity<sizeof(seed)?capacity:sizeof(seed);
         snprintf(seed,n,"%s",value);
         if(!ps_home_pga_input(PGA_HOME_INPUT_OPEN,seed,sizeof(seed)))return false;
-        s_home_edit=true;ps_edit("家庭连接输入",seed,sizeof(seed)-1,home_input_done);return true;
+        s_home_edit=true;ps_edit(ps_tr("settings.home_link.input_title"),seed,sizeof(seed)-1,home_input_done);return true;
     }
     return ps_home_pga_input(command,value,capacity);
 }
@@ -303,7 +304,8 @@ static const pico_app_host_t s_host={
     .weread_query=host_weread_query,.weread_query_read=host_weread_query_read,.weread_input=host_weread_input,.weread_open_link=host_weread_open_link,
     .weread_cover=host_weread_cover,
     .home_link=host_home_link,.home_link_config=host_home_link_config,.home_link_entity=host_home_link_entity,
-    .home_link_printer=host_home_link_printer,.home_link_control=host_home_link_control,.home_link_input=host_home_link_input
+    .home_link_printer=host_home_link_printer,.home_link_control=host_home_link_control,.home_link_input=host_home_link_input,
+    .tr=ps_tr
 };
 static bool close_active(void) {
     if(!s_app)return true;
@@ -339,7 +341,7 @@ static void finish_call(void) {
         else {clear_pending();s_pending_route=origin;recover_active();}
     }
     else if(nav>=PGA_PAGE_BOARD&&nav<=PGA_PAGE_APP){ps_route_t route=nav==PGA_PAGE_APP?PS_APPLICATION:nav==PGA_PAGE_BOARD?PS_PLAYGAME:PS_ARCADEGAME;if(ps_route()!=route)ps_navigate(route);}
-    else if(nav==APP_NAV_WEREAD_SETUP&&!ps_connectivity_open_weread_setup()){s_weread_setup=false;ps_toast("暂时无法打开手机配置");}
+    else if(nav==APP_NAV_WEREAD_SETUP&&!ps_connectivity_open_weread_setup()){s_weread_setup=false;ps_toast(ps_tr("settings.manage.weread_fail"));}
     else if(nav==APP_NAV_WEREAD_EDIT&&weread_active()){
         s_weread_edit=true;ps_edit("在线搜索微信读书",s_weread_input,sizeof(s_weread_input)-1,weread_input_done);
     }
