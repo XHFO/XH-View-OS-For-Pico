@@ -16,6 +16,16 @@
 #ifndef PICO_HOME_LINK_FULL
 #define PICO_HOME_LINK_FULL 0
 #endif
+#if !PICO_HOME_LINK_FULL
+bool ps_home_link_package_installed(void);
+#endif
+static const char *home_link_mode_value(void) {
+#if PICO_HOME_LINK_FULL
+    return "full";
+#else
+    return ps_home_link_package_installed() ? "pga" : "thin";
+#endif
+}
 #include "read_pico_management.h"
 #include "read_pico_sd.h"
 #include "read_pico_pmu.h"
@@ -263,7 +273,7 @@ int ps_desktop_handle(const char *method,const char *path,const char *type,const
         static const char *lock_states[]={"idle","pending","saved","error"};unsigned ls=atomic_load(&lock_state);if(ls>3)ls=3;
         unsigned dimensions=atomic_load(&lock_dimensions);
         unsigned cs=atomic_load(&cloudflare_state);if(cs>4)cs=3;
-        snprintf(out,capacity,"{\"protocol\":1,\"version\":\"%s\",\"home_link_mode\":\"%s\",\"content\":{\"supported\":true,\"max_bytes\":268435456,\"max_page_items\":64},\"config\":{\"auto_sleep_minutes\":%u,\"double_tap_wake\":%s,\"lock_style\":%u,\"cover_layout\":%u,\"state\":%u,\"revision\":%u},\"canvas\":{\"supported\":true,\"width\":684,\"height\":1216,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"display_intent\":true,\"dual_orientation\":true,\"pair_max_bytes\":840032,\"orientation\":\"%s\",\"state\":\"%s\",\"revision\":%u,\"app_channels\":[\"cloudflare\"],\"app_receipts\":{\"cloudflare\":{\"state\":\"%s\",\"revision\":%u,\"orientation\":\"%s\"}}},\"image_lock\":{\"supported\":true,\"available\":%s,\"width\":%u,\"height\":%u,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"state\":\"%s\",\"revision\":%u},\"power\":%s}",ps_version(),(PICO_HOME_LINK_FULL?"full":"thin"),options&255u,options&256u?"true":"false",atomic_load(&lock_style_snapshot),atomic_load(&cover_layout_snapshot),atomic_load(&power_state),atomic_load(&power_revision),CANVAS_LIMIT,orientation(),canvas_states[s],atomic_load(&revision),canvas_states[cs],atomic_load(&cloudflare_revision),orientation(),atomic_load(&lock_available)?"true":"false",dimensions&65535u,dimensions>>16,LOCK_LIMIT,lock_states[ls],atomic_load(&lock_revision),power);return 200;
+        snprintf(out,capacity,"{\"protocol\":1,\"version\":\"%s\",\"home_link_mode\":\"%s\",\"content\":{\"supported\":true,\"max_bytes\":268435456,\"max_page_items\":64},\"config\":{\"auto_sleep_minutes\":%u,\"double_tap_wake\":%s,\"lock_style\":%u,\"cover_layout\":%u,\"state\":%u,\"revision\":%u},\"canvas\":{\"supported\":true,\"width\":684,\"height\":1216,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"display_intent\":true,\"dual_orientation\":true,\"pair_max_bytes\":840032,\"orientation\":\"%s\",\"state\":\"%s\",\"revision\":%u,\"app_channels\":[\"cloudflare\"],\"app_receipts\":{\"cloudflare\":{\"state\":\"%s\",\"revision\":%u,\"orientation\":\"%s\"}}},\"image_lock\":{\"supported\":true,\"available\":%s,\"width\":%u,\"height\":%u,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"state\":\"%s\",\"revision\":%u},\"power\":%s}",ps_version(),home_link_mode_value(),options&255u,options&256u?"true":"false",atomic_load(&lock_style_snapshot),atomic_load(&cover_layout_snapshot),atomic_load(&power_state),atomic_load(&power_revision),CANVAS_LIMIT,orientation(),canvas_states[s],atomic_load(&revision),canvas_states[cs],atomic_load(&cloudflare_revision),orientation(),atomic_load(&lock_available)?"true":"false",dimensions&65535u,dimensions>>16,LOCK_LIMIT,lock_states[ls],atomic_load(&lock_revision),power);return 200;
     }
     if(!strcmp(path,"/api/manage/pico/config")&&!strcmp(method,"PUT")){
         const char *end=NULL;

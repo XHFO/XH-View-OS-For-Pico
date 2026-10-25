@@ -10,11 +10,11 @@ Proposed on `GET /api/manage/pico/status` (additive field; older clients ignore 
 
 | Value | Meaning |
 | --- | --- |
-| `thin` | `PICO_HOME_LINK_FULL=OFF`: stubs linked; manage home/printer/bambu return `home_module_missing`. |
-| `full` | `PICO_HOME_LINK_FULL=ON`: in-firmware stack + embedded monitoring UI. |
-| `pga` | Reserved: TF `home-link.pga` supplies monitoring UI / future module behavior while host keeps Wi‑Fi/HTTP/TLS/power. **Not claimed usable for full HA until migration completes.** |
+| `thin` | `PICO_HOME_LINK_FULL=OFF` and no valid `apps/tools/home-link.pga` on the mounted TF. Stubs linked; manage home/printer/bambu return `home_module_missing`. |
+| `full` | `PICO_HOME_LINK_FULL=ON`: in-firmware stack + embedded monitoring UI + phone manage API. |
+| `pga` | Thin host **and** a valid `home-link.pga` (kind 130, abi 1, id `home-link`) is installed. On-device Home Link UI configures HA (including Cloudflare Access service tokens) and drives entity snapshot/control through the host HTTP/TLS ABI. Phone `/api/manage/home\|printer\|bambu` **still returns 503** `home_module_missing`. This is not the full phone manage API. |
 
-Skeleton PGA ≠ usable HA. Do not advertise full HA/printer flows until the package is migrated beyond placeholder UI and backed by host services.
+`home_link_mode=pga` means the on-device package path is present. It does **not** mean phone manage can PUT HA settings. While the card is unmounted (for example USB disk mode) the status read can fall back to `thin` because the package file cannot be validated. Do not treat a missing mode on older builds as `pga`.
 
 ## Pairing (unchanged)
 
@@ -96,13 +96,16 @@ Manage UI copy documents Zero Trust → Access → Service Auth token creation.
 | kind | `130` (`PGA_HOME_LINK`) |
 | abi | `1` |
 | Catalog id | `home-link` |
+| Package version | **10200** (on-device HA + CF Access + HA printer prefix; no independent MQTT) |
 
-v1 skeleton only shows empty-state guidance. Migration work continues against **this** contract; do not claim full HA until progressive UI is backed by host services and thin/full/`pga` mode semantics above.
+With the package installed, configure HA on the device screen. The host stores credentials in NVS namespace `pico_home_pga` and performs HTTP/TLS. `CF-Access-Client-Id` / `CF-Access-Client-Secret` are attached only when the request uses the external/remote HA URL. The local home Wi‑Fi URL never receives those headers. Bambu LAN/cloud MQTT and Bambu account login are **not** in this package: the host MQTT hook returns `RP_HOME_UNSUPPORTED` and the UI must not show a fake online printer. HA entity-prefix slots (source HA) are the supported printer watch. See [HOME-LINK-PGA-V1.md](HOME-LINK-PGA-V1.md).
 
 ## Compatibility checklist for Mac teammate
 
-1. On thin Pico: expect **503** `home_module_missing` for home/printers/bambu — do not assume PUT persisted.
+1. On `thin` or `pga`: expect **503** `home_module_missing` for home/printers/bambu — do not assume PUT persisted. Do not invent a second phone manage contract for `pga`.
 2. Prefer reading `home_link_mode` from `pico/status` when present; default assume `thin` if absent on older builds.
-3. CF JSON names frozen as `cf_access_client_id` / `cf_access_client_secret` + `has_*` on GET.
-4. Pairing `#key=` / `X-Pico-Setup-Key` / expiry unchanged.
-5. Do not require Mac Firmware resource bump to Pico `dev65` without XH approval.
+3. `pga`: ask the user to open **Home Link on the device** (`apps/tools/home-link.pga`). HA URL, token, home Wi‑Fi, and Cloudflare Access service token are entered there. External HTTPS may send Access headers; the local home Wi‑Fi path does not. Printer MQTT/account login is unsupported in this package; HA entity prefix is the printer watch.
+4. `full`: existing phone manage API, including write-only CF fields.
+5. CF JSON names frozen as `cf_access_client_id` / `cf_access_client_secret` + `has_*` on GET for the **full** phone API. The PGA does not expose those secrets back to the phone.
+6. Pairing `#key=` / `X-Pico-Setup-Key` / expiry unchanged.
+7. Do not require Mac Firmware resource bump to Pico `dev65` without XH approval.

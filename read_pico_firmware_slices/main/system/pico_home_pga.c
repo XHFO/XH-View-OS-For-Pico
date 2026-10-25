@@ -17,21 +17,24 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "pico_app_package.h"
+#include "esp_attr.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { PGA_HOME_HTTP_CAP = (96u * 1024u) };
-
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_worker;
-static rp_home_config_t s_config;
-static rp_home_snapshot_t s_snap;
-static rp_home_token_t s_tokens[RP_HOME_PRINTERS];
+static EXT_RAM_BSS_ATTR rp_home_config_t s_config;
+static EXT_RAM_BSS_ATTR rp_home_snapshot_t s_snap;
+static EXT_RAM_BSS_ATTR rp_home_token_t s_tokens[RP_HOME_PRINTERS];
 static bool s_ready, s_queued, s_busy, s_online, s_at_home, s_stop;
+static bool s_ctrl_pending;
+static char s_ctrl_action[24];
+static float s_ctrl_value;
+static rp_home_entity_t s_ctrl_entity;
 static char s_input[256];
 static bool s_input_ready, s_input_open;
-static int s_nav_edit; /* set by games when opening edit — unused here; games drives IME */
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -54,27 +57,39 @@ static bool nvs_blob(bool writing, void *data, size_t *bytes) {
     return err == ESP_OK;
 }
 
+static void *spiram(size_t n) {
+    void *p = heap_caps_calloc(1, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : calloc(1, n);
+}
+
 static bool save_config_locked(void) {
-    uint8_t packed[RP_HOME_CONFIG_PACK_LIMIT];
-    size_t n = rp_home_config_pack(&s_config, packed, sizeof(packed));
-    if (!n) return false;
+    uint8_t *packed = spiram(RP_HOME_CONFIG_PACK_LIMIT);
+    if (!packed) return false;
+    size_t n = rp_home_config_pack(&s_config, packed, RP_HOME_CONFIG_PACK_LIMIT);
     size_t bytes = n;
-    bool ok = nvs_blob(true, packed, &bytes);
-    memset(packed, 0, sizeof(packed));
+    bool ok = n && nvs_blob(true, packed, &bytes);
+    memset(packed, 0, RP_HOME_CONFIG_PACK_LIMIT);
+    free(packed);
     return ok;
 }
 
 static void load_config(void) {
-    uint8_t packed[RP_HOME_CONFIG_PACK_LIMIT];
-    size_t bytes = sizeof(packed);
     memset(&s_config, 0, sizeof(s_config));
     s_config.version = RP_HOME_CONFIG_VERSION;
-    if (!nvs_blob(false, packed, &bytes) || !bytes) return;
-    rp_home_config_t tmp;
-    if (rp_home_config_unpack(packed, bytes, &tmp) && rp_home_config_valid(&tmp))
-        s_config = tmp;
-    memset(packed, 0, sizeof(packed));
-    memset(&tmp, 0, sizeof(tmp));
+    uint8_t *packed = spiram(RP_HOME_CONFIG_PACK_LIMIT);
+    rp_home_config_t *tmp = spiram(sizeof(*tmp));
+    size_t bytes = RP_HOME_CONFIG_PACK_LIMIT;
+    if (packed && tmp && nvs_blob(false, packed, &bytes) && bytes && rp_home_config_unpack(packed, bytes, tmp) &&
+        rp_home_config_valid(tmp))
+        s_config = *tmp;
+    if (tmp) {
+        memset(tmp, 0, sizeof(*tmp));
+        free(tmp);
+    }
+    if (packed) {
+        memset(packed, 0, RP_HOME_CONFIG_PACK_LIMIT);
+        free(packed);
+    }
 }
 
 static bool find_bytes(const char *hay, size_t n, const char *needle) {
@@ -119,6 +134,7 @@ static rp_home_result_t http_request(void *unused, const rp_home_http_request_t 
         memset(auth, 0, sizeof(auth));
     }
     if (r->content_type) esp_http_client_set_header(h, "Content-Type", r->content_type);
+    /* 模型只在外部/远程 HA 请求上填入 Access 头；本地路径必须保持 NULL。/ Model sets Access headers on remote HA only. */
     if (r->cf_access_client_id && *r->cf_access_client_id && r->cf_access_client_secret && *r->cf_access_client_secret) {
         esp_http_client_set_header(h, "CF-Access-Client-Id", r->cf_access_client_id);
         esp_http_client_set_header(h, "CF-Access-Client-Secret", r->cf_access_client_secret);
@@ -160,6 +176,12 @@ static rp_home_result_t mqtt_unsupported(void *c, const rp_home_printer_config_t
     return RP_HOME_UNSUPPORTED;
 }
 
+static void sample_network_locked(void) {
+    int wifi = ps_wifi_connected_index();
+    s_online = wifi >= 0;
+    s_at_home = s_online && s_config.home_wifi[0] && !strcmp(s_config.home_wifi, ps_wifi_name(wifi));
+}
+
 static void fill_status(pico_app_home_status_t *st) {
     memset(st, 0, sizeof(*st));
     st->bytes = sizeof(*st);
@@ -189,34 +211,78 @@ static void fill_status(pico_app_home_status_t *st) {
 
 static void worker(void *unused) {
     (void)unused;
-    char *response = heap_caps_malloc(PGA_HOME_HTTP_CAP + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!response) response = malloc(PGA_HOME_HTTP_CAP + 1);
+    rp_home_config_t *config = spiram(sizeof(*config));
+    rp_home_snapshot_t *snap = spiram(sizeof(*snap));
+    if (!config || !snap) {
+        free(config);
+        free(snap);
+        lock();
+        s_busy = s_queued = s_ctrl_pending = false;
+        s_snap.result = RP_HOME_NOMEM;
+        s_snap.busy = 0;
+        s_snap.revision++;
+        unlock();
+        s_worker = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (s_stop) break;
-        lock();
-        bool run = s_queued;
-        bool online = s_online, at_home = s_at_home;
-        rp_home_config_t config = s_config;
-        s_queued = false;
-        if (run) s_busy = true;
-        unlock();
-        if (!run || !response) continue;
-        rp_home_snapshot_t snap;
-        memset(&snap, 0, sizeof(snap));
-        rp_home_transport_t transport = {http_request, mqtt_unsupported, NULL};
-        rp_home_result_t result =
-            rp_home_fetch(&config, &snap, s_tokens, &transport, online, at_home, now_ms());
-        (void)result;
-        lock();
-        uint32_t rev = s_snap.revision + 1;
-        s_snap = snap;
-        s_snap.revision = rev;
-        s_busy = false;
-        unlock();
-        memset(&config, 0, sizeof(config));
+        for (;;) {
+            lock();
+            if (s_stop) {
+                unlock();
+                goto done;
+            }
+            bool ctrl = s_ctrl_pending;
+            bool run = s_queued || ctrl;
+            if (!run) {
+                s_busy = false;
+                s_snap.busy = 0;
+                unlock();
+                break;
+            }
+            bool online = s_online, at_home = s_at_home;
+            memcpy(config, &s_config, sizeof(*config));
+            rp_home_entity_t entity = s_ctrl_entity;
+            char action[sizeof(s_ctrl_action)];
+            memcpy(action, s_ctrl_action, sizeof(action));
+            float value = s_ctrl_value;
+            memcpy(snap, &s_snap, sizeof(*snap));
+            if (ctrl) s_ctrl_pending = false;
+            s_queued = false;
+            s_busy = true;
+            s_snap.busy = 1;
+            unlock();
+            rp_home_transport_t transport = {http_request, mqtt_unsupported, NULL};
+            int status = 0;
+            rp_home_result_t result = RP_HOME_OK;
+            if (ctrl)
+                result = rp_home_control(config, &entity, action, value, &transport, at_home, &status);
+            if (result == RP_HOME_OK)
+                rp_home_fetch(config, snap, s_tokens, &transport, online, at_home, now_ms());
+            else {
+                snap->result = result;
+                snap->http_status = status;
+            }
+            lock();
+            if (!s_stop) {
+                uint32_t rev = s_snap.revision + 1;
+                s_snap = *snap;
+                s_snap.revision = rev;
+                s_snap.busy = 0;
+                s_busy = s_queued || s_ctrl_pending;
+            }
+            unlock();
+            memset(config, 0, sizeof(*config));
+            memset(&entity, 0, sizeof(entity));
+            memset(action, 0, sizeof(action));
+        }
     }
-    free(response);
+done:
+    memset(config, 0, sizeof(*config));
+    free(config);
+    free(snap);
     s_worker = NULL;
     vTaskDelete(NULL);
 }
@@ -228,6 +294,9 @@ void ps_home_pga_init(void) {
     memset(&s_snap, 0, sizeof(s_snap));
     s_snap.revision = 1;
     s_snap.result = RP_HOME_EMPTY;
+    for (unsigned i = 0; i < RP_HOME_PRINTERS; i++)
+        s_snap.printers[i].percent = s_snap.printers[i].remaining_minutes = s_snap.printers[i].layer =
+            s_snap.printers[i].layers = s_snap.printers[i].nozzle = s_snap.printers[i].bed = -1;
     s_ready = true;
     if (!s_worker)
         xTaskCreate(worker, "home_pga", 8192, NULL, 3, &s_worker);
@@ -235,87 +304,112 @@ void ps_home_pga_init(void) {
 
 bool ps_home_pga_active(void) { return s_ready; }
 
+bool ps_home_link_package_installed(void) {
+    pico_app_package_t pkg;
+    char reason[80];
+    if (!pico_app_package_read(PICO_APP_TOOLS_DIRECTORY "/home-link.pga", &pkg, false, reason, sizeof(reason)))
+        return false;
+    return pkg.abi == PICO_APP_ABI && pkg.kind == PGA_HOME_LINK && !strcmp(pkg.id, "home-link");
+}
+
 bool ps_home_pga_command(uint32_t command, pico_app_home_status_t *status) {
     ps_home_pga_init();
     if (!status || status->bytes < sizeof(*status)) {
         if (status) status->bytes = sizeof(*status);
         return false;
     }
-    int wifi = ps_wifi_connected_index();
-    bool online = wifi >= 0;
-    bool at_home = online && *s_config.home_wifi && !strcmp(s_config.home_wifi, ps_wifi_name(wifi));
+    lock();
+    sample_network_locked();
     if (command == PGA_HOME_SYNC) {
-        lock();
-        s_online = online;
-        s_at_home = at_home;
         s_queued = true;
         s_busy = true;
-        unlock();
-        if (s_worker) xTaskNotifyGive(s_worker);
+        s_snap.busy = 1;
     }
-    lock();
-    s_at_home = at_home;
+    bool notify = command == PGA_HOME_SYNC;
     fill_status(status);
     unlock();
+    if (notify && s_worker) xTaskNotifyGive(s_worker);
     return true;
 }
 
 bool ps_home_pga_config(uint32_t command, pico_app_home_config_t *config) {
     ps_home_pga_init();
-    if (!config || config->bytes < sizeof(*config)) {
+    if (!config || config->bytes < PICO_APP_HOME_CONFIG_V10100_BYTES) {
         if (config) config->bytes = sizeof(*config);
         return false;
     }
+    uint32_t cap = config->bytes;
     if (command == PGA_HOME_CONFIG_GET) {
+        pico_app_home_config_t tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        tmp.bytes = sizeof(tmp);
         lock();
-        memset(config, 0, sizeof(*config));
-        config->bytes = sizeof(*config);
-        config->enabled = s_config.enabled;
-        config->external_enabled = s_config.external_enabled;
-        config->external_control = s_config.external_control;
-        config->has_token = *s_config.ha_token != 0;
-        config->has_cf_id = *s_config.cf_access_client_id != 0;
-        config->has_cf_secret = *s_config.cf_access_client_secret != 0;
-        memcpy(config->local, s_config.local, sizeof(config->local));
-        memcpy(config->external, s_config.external, sizeof(config->external));
-        memcpy(config->home_wifi, s_config.home_wifi, sizeof(config->home_wifi));
+        tmp.enabled = s_config.enabled;
+        tmp.external_enabled = s_config.external_enabled;
+        tmp.external_control = s_config.external_control;
+        tmp.has_token = *s_config.ha_token != 0;
+        tmp.has_cf_id = *s_config.cf_access_client_id != 0;
+        tmp.has_cf_secret = *s_config.cf_access_client_secret != 0;
+        memcpy(tmp.local, s_config.local, sizeof(tmp.local));
+        memcpy(tmp.external, s_config.external, sizeof(tmp.external));
+        memcpy(tmp.home_wifi, s_config.home_wifi, sizeof(tmp.home_wifi));
+        for (unsigned i = 0; i < 3 && i < RP_HOME_PRINTERS; i++) {
+            tmp.printer_source[i] = s_config.printers[i].source;
+            snprintf(tmp.printer_name[i], sizeof(tmp.printer_name[i]), "%s", s_config.printers[i].name);
+            snprintf(tmp.printer_serial[i], sizeof(tmp.printer_serial[i]), "%s", s_config.printers[i].serial);
+        }
         unlock();
+        size_t n = cap < sizeof(tmp) ? cap : sizeof(tmp);
+        memcpy(config, &tmp, n);
+        config->bytes = sizeof(tmp);
+        memset(&tmp, 0, sizeof(tmp));
         return true;
     }
     if (command != PGA_HOME_CONFIG_SET) return false;
-    lock();
-    rp_home_config_t next = s_config;
-    next.version = RP_HOME_CONFIG_VERSION;
-    next.enabled = config->enabled;
-    next.external_enabled = config->external_enabled;
-    next.external_control = config->external_control;
-    snprintf(next.local, sizeof(next.local), "%s", config->local);
-    snprintf(next.external, sizeof(next.external), "%s", config->external);
-    snprintf(next.home_wifi, sizeof(next.home_wifi), "%s", config->home_wifi);
-    if (config->clear_token) memset(next.ha_token, 0, sizeof(next.ha_token));
-    else if (config->ha_token[0]) {
-        memset(next.ha_token, 0, sizeof(next.ha_token));
-        snprintf(next.ha_token, sizeof(next.ha_token), "%s", config->ha_token);
+    rp_home_link_update_t upd;
+    memset(&upd, 0, sizeof(upd));
+    upd.enabled = config->enabled ? 1 : 0;
+    upd.external_enabled = config->external_enabled ? 1 : 0;
+    upd.external_control = config->external_control ? 1 : 0;
+    upd.clear_token = config->clear_token ? 1 : 0;
+    upd.clear_cf = config->clear_cf ? 1 : 0;
+    upd.local = config->local;
+    upd.external = config->external;
+    upd.home_wifi = config->home_wifi;
+    upd.ha_token = config->ha_token;
+    upd.cf_id = config->cf_access_client_id;
+    upd.cf_secret = config->cf_access_client_secret;
+    upd.has_printers = cap >= sizeof(*config);
+    if (upd.has_printers) {
+        for (unsigned i = 0; i < RP_HOME_PRINTERS; i++) {
+            upd.printer_source[i] = config->printer_source[i];
+            snprintf(upd.printer_name[i], sizeof(upd.printer_name[i]), "%s", config->printer_name[i]);
+            snprintf(upd.printer_serial[i], sizeof(upd.printer_serial[i]), "%s", config->printer_serial[i]);
+        }
     }
-    if (config->clear_cf) {
-        memset(next.cf_access_client_id, 0, sizeof(next.cf_access_client_id));
-        memset(next.cf_access_client_secret, 0, sizeof(next.cf_access_client_secret));
-    } else {
-        if (config->cf_access_client_id[0])
-            snprintf(next.cf_access_client_id, sizeof(next.cf_access_client_id), "%s", config->cf_access_client_id);
-        if (config->cf_access_client_secret[0])
-            snprintf(next.cf_access_client_secret, sizeof(next.cf_access_client_secret), "%s",
-                     config->cf_access_client_secret);
-    }
-    if (!rp_home_config_valid(&next)) {
+    rp_home_config_t *next = spiram(sizeof(*next));
+    bool ok = false;
+    if (next) {
+        lock();
+        *next = s_config;
+        ok = rp_home_apply_link_update(next, &upd);
+        if (ok) {
+            rp_home_config_t *previous = spiram(sizeof(*previous));
+            if (!previous) ok = false;
+            else {
+                *previous = s_config;
+                s_config = *next;
+                ok = save_config_locked();
+                if (!ok) s_config = *previous;
+                memset(previous, 0, sizeof(*previous));
+                free(previous);
+            }
+        }
         unlock();
-        memset(&next, 0, sizeof(next));
-        return false;
+        memset(next, 0, sizeof(*next));
+        free(next);
     }
-    s_config = next;
-    bool ok = save_config_locked();
-    unlock();
-    memset(&next, 0, sizeof(next));
+    memset(&upd, 0, sizeof(upd));
     memset(config->ha_token, 0, sizeof(config->ha_token));
     memset(config->cf_access_client_id, 0, sizeof(config->cf_access_client_id));
     memset(config->cf_access_client_secret, 0, sizeof(config->cf_access_client_secret));
@@ -377,35 +471,34 @@ bool ps_home_pga_printer(uint32_t slot, pico_app_home_printer_t *out) {
 
 bool ps_home_pga_control(const char *entity_id, const char *action, float value) {
     ps_home_pga_init();
-    if (!entity_id || !action || !*entity_id) return false;
+    if (!entity_id || !action || !*entity_id || strlen(action) >= sizeof(s_ctrl_action)) return false;
     lock();
-    rp_home_entity_t entity;
-    memset(&entity, 0, sizeof(entity));
+    if (s_ctrl_pending) {
+        unlock();
+        return false;
+    }
     bool found = false;
     for (unsigned i = 0; i < s_snap.entity_count; i++) {
         if (!strcmp(s_snap.entities[i].id, entity_id)) {
-            entity = s_snap.entities[i];
+            s_ctrl_entity = s_snap.entities[i];
             found = true;
             break;
         }
     }
-    rp_home_config_t config = s_config;
-    bool at_home = s_at_home;
-    unlock();
-    if (!found) return false;
-    rp_home_transport_t transport = {http_request, mqtt_unsupported, NULL};
-    int status = 0;
-    rp_home_result_t result = rp_home_control(&config, &entity, action, value, &transport, at_home, &status);
-    memset(&config, 0, sizeof(config));
-    if (result == RP_HOME_OK) {
-        lock();
-        s_queued = true;
-        s_busy = true;
+    if (!found) {
         unlock();
-        if (s_worker) xTaskNotifyGive(s_worker);
-        return true;
+        return false;
     }
-    return false;
+    snprintf(s_ctrl_action, sizeof(s_ctrl_action), "%s", action);
+    s_ctrl_value = value;
+    s_ctrl_pending = true;
+    s_queued = true;
+    s_busy = true;
+    s_snap.busy = 1;
+    sample_network_locked();
+    unlock();
+    if (s_worker) xTaskNotifyGive(s_worker);
+    return true;
 }
 
 bool ps_home_pga_input(uint32_t command, char *value, size_t capacity) {

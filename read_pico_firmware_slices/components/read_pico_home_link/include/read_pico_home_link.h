@@ -91,6 +91,20 @@ typedef struct {
     uint32_t credential_hash;
 } rp_home_token_t;
 
+/// PGA/设备侧配置事务。空凭据保留已存值；clear_* 显式清除。has_printers 为 0 时不改槽位。
+/// 只接受空槽或 HA 实体前缀；Bambu/Formlabs 来源被拒绝且不改目标。校验失败不写入。
+/// On-device config transaction. Empty credentials keep stored values; clear_* wipes them.
+/// has_printers 0 leaves slots unchanged. Only empty or HA-prefix slots are accepted;
+/// Bambu/Formlabs sources are rejected and the destination is left unchanged.
+typedef struct {
+    uint8_t enabled, external_enabled, external_control, clear_token, clear_cf, has_printers;
+    const char *local, *external, *home_wifi, *ha_token, *cf_id, *cf_secret;
+    uint8_t printer_source[RP_HOME_PRINTERS];
+    char printer_name[RP_HOME_PRINTERS][48];
+    char printer_serial[RP_HOME_PRINTERS][64];
+} rp_home_link_update_t;
+bool rp_home_apply_link_update(rp_home_config_t *dst, const rp_home_link_update_t *update);
+
 /// 严格验证地址/主题/凭据范围；不访问网络。/ Validate endpoints/topics/credential bounds without networking.
 bool rp_home_config_valid(const rp_home_config_t *config);
 /// 旧v1布局按已选source去除异源遗留字段；保留有效设备、HA与其它槽配置。

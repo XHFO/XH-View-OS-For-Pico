@@ -27,7 +27,7 @@ static bool thin_open_module(void) {
 }
 
 static void real_ha_render(uint8_t *fb) {
-    thin_empty(fb, "家庭", "固件仅保留空状态入口。安装 TF 工具包 home-link 后可监看 Home Assistant 与打印机。");
+    thin_empty(fb, "家庭", "固件仅保留空状态。安装 apps/tools/home-link.pga 后在设备上配置 HA。手机 manage 仍返回 home_module_missing。");
 }
 static bool real_ha_event(const ps_event_t *e) {
     if (!e || e->type != PS_TAP) return false;

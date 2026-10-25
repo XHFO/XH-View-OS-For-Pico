@@ -6,21 +6,21 @@
       "id": "home-link",
       "kind": 130,
       "title": "家庭连接",
-      "description": "Home Assistant 与打印机监看 · TF 可选工具包",
+      "description": "设备侧 HA、Access 与实体控制 · 无独立 MQTT",
       "file": "home-link.pga",
-      "version": 10100,
+      "version": 10200,
       "abi": 1,
       "directory": "apps/tools",
-      "bytes": 43580,
-      "sha256": "ba48dfe291615d6f2d8c40b84a330d9e03f922461a0fb4f079112635b4a676ab",
-      "source_sha256": "a6f5a0f97cfabcc85da7748b82df38fbbef8fd5a150b7bbf0ad84ac2ab6ef828",
+      "bytes": 35372,
+      "sha256": "0a7aefbbcf343efb57471b968d184a6cc960fbeb2c52801f28b2899477e13534",
+      "source_sha256": "d443c734db4b5c93b904f8b383b70f44da0d6d1eb52392ae54b9af22739070e3",
       "inputs": {
-        "apps/src/home_link.c": "bcf37a905ad1a1eff048cb151ae814b59973eeda0f67d770fa2592fec35cb8b4",
-        "components/read_pico_apps/include/pico_app_sdk.h": "819f5f1b970383cb8dd086412980436ce4203a0210b67dca03ae43069b23edb8"
+        "apps/src/home_link.c": "c120595be687a4a6ad89d87f7e9dbe4a251919a93dc60a88b7f71106ae6d5e75",
+        "components/read_pico_apps/include/pico_app_sdk.h": "ece134b438139949aac778fd3fc58c29e4786912ecc2ed0d38f24ad59bd19d05"
       },
       "targets": [
         "esp32s3-xtensa",
-        "macos-arm64"
+        "linux-x86_64"
       ]
     }
   ]

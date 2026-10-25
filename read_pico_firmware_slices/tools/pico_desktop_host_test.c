@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 static unsigned checks,io_count,rotation,navigations,toasts;
+static int test_home_package;
 static bool background=true,present=true,mounted=true,exported,allocation_fail,locked,lock_board,recovery_probe;
 static int64_t now_ms;
 static char root[1024];
@@ -54,6 +55,7 @@ const pmu_snapshot_t *read_pico_pmu_get(void){return &test_pmu;}
 static ps_navigation_entry_t registered;
 static read_pico_management_extension_t extension;
 static read_pico_management_image_extension_t image_extension;
+bool ps_home_link_package_installed(void) { return test_home_package != 0; }
 int ps_weread_handle(const char *method,const char *path,const char *type,const void *body,size_t bytes,char *out,size_t cap){
     (void)method;(void)type;(void)body;(void)bytes;
     CHECK(!strncmp(path,"/api/manage/pico/weread/",24));
@@ -293,7 +295,8 @@ static void gray_lock_storage_checks(void){
     reset_memory();erase_files();free(first);free(second);
 }
 static void config_checks(void){
-    reset_memory();ps_desktop_init();char out[512];CHECK(request("GET","/api/manage/pico/status",NULL,NULL,0,out)==200);CHECK(strstr(out,"\"version\":\"desktop-host-test\"")&&strstr(out,"\"auto_sleep_minutes\":5"));
+    reset_memory();ps_desktop_init();char out[512];CHECK(request("GET","/api/manage/pico/status",NULL,NULL,0,out)==200);CHECK(strstr(out,"\"version\":\"desktop-host-test\"")&&strstr(out,"\"auto_sleep_minutes\":5")&&strstr(out,"\"home_link_mode\":\"thin\""));
+    test_home_package=1;CHECK(request("GET","/api/manage/pico/status",NULL,NULL,0,out)==200);CHECK(strstr(out,"\"home_link_mode\":\"pga\""));test_home_package=0;
     const char *bad[]={"{}","[]","null","{\"auto_sleep_minutes\":2,\"double_tap_wake\":true}","{\"auto_sleep_minutes\":1.5,\"double_tap_wake\":true}","{\"auto_sleep_minutes\":-1,\"double_tap_wake\":false}","{\"auto_sleep_minutes\":5,\"double_tap_wake\":1}","{\"auto_sleep_minutes\":true,\"double_tap_wake\":false}","{\"auto_sleep_minutes\":5,\"double_tap_wake\":true,\"extra\":1}","{\"auto_sleep_minutes\":5,\"double_tap_wake\":true}garbage"};
     for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);i++)CHECK(configure(bad[i])==422);CHECK(!power_calls&&!atomic_load(&power_request));
     for(unsigned i=0;i<6;i++){

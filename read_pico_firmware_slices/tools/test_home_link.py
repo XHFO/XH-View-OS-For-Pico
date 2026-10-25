@@ -10,6 +10,7 @@ import re
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run():
+    subprocess.run([sys.executable, str(ROOT / "tools/test_home_link_thin.py")], check=True)
     with tempfile.TemporaryDirectory(prefix="pico-home-link-") as temp:
         private = Path(temp)
         private.chmod(0o700)

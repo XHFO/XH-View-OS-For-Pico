@@ -86,7 +86,7 @@ static rp_home_result_t call(const rp_home_transport_t *t, unsigned region, cons
     else snprintf(url, sizeof(url), "https://api.bambulab.%s%s", region ? "cn" : "com", path);
     char *body = payload ? cJSON_PrintUnformatted(payload) : NULL;
     if (payload && !body) return RP_HOME_NOMEM;
-    rp_home_http_request_t r = {payload ? "POST" : "GET", url, token, payload ? "application/json" : NULL, body};
+    rp_home_http_request_t r = {payload ? "POST" : "GET", url, token, payload ? "application/json" : NULL, body, NULL, NULL};
     rp_home_result_t result = t->http(t->context, &r, out, BAMBU_RESPONSE_LIMIT + 1, bytes, status);
     if (body) { rp_home_bambu_wipe(body, strlen(body)); free(body); }
     if (result != RP_HOME_OK) return result;

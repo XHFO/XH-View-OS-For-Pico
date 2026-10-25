@@ -8,7 +8,9 @@ Home starts unconfigured. Reading, notes and games work offline; service failure
 
 先在设备上连接 Wi-Fi，在 Home Assistant 或打印机设置点“手机配置”。手机连接同一网络后扫码打开设备管理页，开启连接，从已记忆的 Wi-Fi 中选择家庭网络，再填写本地地址和长期访问令牌。地址示例为 `http://homeassistant.local:8123`；外部访问使用有有效证书的 HTTPS 地址。设备屏幕保留状态、同步、实体筛选和面板编排，详细连接配置统一放在手机管理页。
 
-Connect the device to Wi-Fi, then choose Phone Setup in HA/printer settings. Scan from a phone on the same network, enable the connection, choose a remembered home Wi-Fi and enter a local URL/token. Remote access requires verified HTTPS. The device retains monitoring, synchronization, entity filtering and dashboard ordering; detailed connection forms live in the phone management page.
+On a full firmware build, connect the device to Wi-Fi, then choose Phone Setup in HA/printer settings. Scan from a phone on the same network, enable the connection, choose a remembered home Wi-Fi and enter a local URL/token. Remote access requires verified HTTPS. The device retains monitoring, synchronization, entity filtering and dashboard ordering; detailed connection forms live in the phone management page.
+
+On the default thin host, phone manage stays unavailable (`home_link_mode` `thin` or `pga`). Install `apps/tools/home-link.pga` and configure HA, including optional Cloudflare Access, on the device. See [HOME-LINK-PGA-V1.md](HOME-LINK-PGA-V1.md). `pga` does not turn on the phone manage API.
 
 手机管理页的“探测本地 HA”会在明确选择家庭 Wi-Fi、开启家庭连接后保存并尝试解析和探测 `homeassistant.local:8123`，不扫描整个网段；替换已有不同地址前会确认。没有令牌时仅确认地址有响应，输入令牌后才验证并读取家庭状态。本地连接必须指定已记忆的家庭网络；仅用外部地址时可以不指定。
 

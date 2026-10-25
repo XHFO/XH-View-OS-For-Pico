@@ -12,6 +12,8 @@
 
 void ps_home_pga_init(void);
 bool ps_home_pga_active(void);
+/// 薄宿主且 TF 上有合法 home-link.pga（kind 130 / abi 1）时为真。/ True when a valid home-link.pga is on TF.
+bool ps_home_link_package_installed(void);
 bool ps_home_pga_command(uint32_t command, pico_app_home_status_t *status);
 bool ps_home_pga_config(uint32_t command, pico_app_home_config_t *config);
 bool ps_home_pga_entity(uint32_t index, pico_app_home_entity_t *out);

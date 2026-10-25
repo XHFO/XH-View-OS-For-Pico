@@ -46,13 +46,23 @@ static const char form_official[] =
     "\"estimated_duration_ms\":2400000,\"elapsed_duration_ms\":600000,\"estimated_time_remaining_ms\":1800000,"
     "\"material\":\"fixture-material\",\"material_name\":\"Clear Resin V5\"}}}";
 typedef struct {
-    int calls, auths, details, mode;
+    int calls, auths, details, mode, cf_headers;
     bool saw_body, saw_external, saw_control;
 } fixture_t;
 static rp_home_result_t http(void *opaque, const rp_home_http_request_t *r, char *out, size_t capacity, size_t *bytes,
                              int *status) {
     fixture_t *f = opaque;
     f->calls++;
+    bool has_cf = (r->cf_access_client_id && *r->cf_access_client_id) ||
+                  (r->cf_access_client_secret && *r->cf_access_client_secret);
+    if (has_cf) {
+        CHECK(r->cf_access_client_id && r->cf_access_client_secret && *r->cf_access_client_id &&
+              *r->cf_access_client_secret);
+        CHECK(!strcmp(r->cf_access_client_id, "cf-id.example"));
+        CHECK(!strcmp(r->cf_access_client_secret, "cf-secret"));
+        CHECK(r->url && strstr(r->url, "://external.example"));
+        f->cf_headers++;
+    }
     *status = 200;
     const char *reply = "[]";
     if (strstr(r->url, "/o/token/")) {
@@ -111,6 +121,28 @@ static rp_home_result_t mqtt(void *opaque, const rp_home_printer_config_t *p, ch
     CHECK(p->source == RP_HOME_BAMBU_CLOUD);
     CHECK(!strcmp(p->username, "u_fixture"));
     const char *body = "{\"print\":{\"gcode_state\":\"RUNNING\",\"mc_percent\":46,\"nozzle_temper\":220}}";
+    *bytes = strlen(body);
+    CHECK(*bytes < capacity);
+    memcpy(out, body, *bytes);
+    return RP_HOME_OK;
+}
+static rp_home_result_t mqtt_unsupported(void *opaque, const rp_home_printer_config_t *p, char *out, size_t capacity,
+                                         size_t *bytes) {
+    (void)opaque;
+    (void)out;
+    (void)capacity;
+    CHECK(p && (p->source == RP_HOME_BAMBU_LAN || p->source == RP_HOME_BAMBU_CLOUD));
+    *bytes = 0;
+    return RP_HOME_UNSUPPORTED;
+}
+static rp_home_result_t http_access(void *opaque, const rp_home_http_request_t *r, char *out, size_t capacity,
+                                    size_t *bytes, int *status) {
+    (void)opaque;
+    const char *body = "<html>Cloudflare Access login</html>";
+    CHECK(r->url && strstr(r->url, "://external.example"));
+    CHECK(r->cf_access_client_id && !strcmp(r->cf_access_client_id, "cf-id.example"));
+    CHECK(r->cf_access_client_secret && !strcmp(r->cf_access_client_secret, "cf-secret"));
+    *status = 403;
     *bytes = strlen(body);
     CHECK(*bytes < capacity);
     memcpy(out, body, *bytes);
@@ -175,6 +207,8 @@ static void model_tests(void) {
     CHECK(RP_HOME_EMPTY == 0 && RP_HOME_BUSY == 1 && RP_HOME_OK == 2 && RP_HOME_OFFLINE == 3);
     CHECK(RP_HOME_AUTH == 4 && RP_HOME_HTTP == 5 && RP_HOME_TLS == 6 && RP_HOME_INVALID == 7);
     CHECK(RP_HOME_TOO_LARGE == 8 && RP_HOME_NOMEM == 9 && RP_HOME_UNSUPPORTED == 10 && RP_HOME_TIME == 11);
+    CHECK(RP_HOME_ACCESS == 12);
+    CHECK(strstr(rp_home_result_text(RP_HOME_ACCESS), "Cloudflare Access"));
     CHECK(!strcmp(rp_home_result_text(RP_HOME_TIME), "设备时间未校准，请设置日期与时间"));
     CHECK(!strcmp(rp_home_result_text(RP_HOME_TLS), "TLS安全连接或证书校验失败"));
     CHECK(strcmp(rp_home_result_text(RP_HOME_TIME), rp_home_result_text(RP_HOME_TLS)));
@@ -324,6 +358,81 @@ static void model_tests(void) {
     reset();
     snprintf(config.ha_token, sizeof(config.ha_token), "x\r\nInjected: y");
     CHECK(!rp_home_config_valid(&config));
+    reset();
+    snprintf(config.cf_access_client_id, sizeof(config.cf_access_client_id), "cf-id.example");
+    CHECK(!rp_home_config_valid(&config));
+    snprintf(config.cf_access_client_secret, sizeof(config.cf_access_client_secret), "cf-secret");
+    CHECK(rp_home_config_valid(&config));
+    rp_home_config_t kept = config;
+    rp_home_link_update_t upd;
+    memset(&upd, 0, sizeof(upd));
+    upd.enabled = upd.external_enabled = 1;
+    upd.local = "https://homeassistant.local:8123";
+    upd.external = "https://external.example";
+    upd.home_wifi = "Home";
+    upd.ha_token = "";
+    upd.cf_id = "";
+    upd.cf_secret = "";
+    CHECK(rp_home_apply_link_update(&config, &upd));
+    CHECK(!strcmp(config.ha_token, "ha-fixture"));
+    CHECK(!strcmp(config.cf_access_client_id, "cf-id.example") && !strcmp(config.local, upd.local));
+    upd.clear_token = upd.clear_cf = 1;
+    CHECK(rp_home_apply_link_update(&config, &upd));
+    CHECK(!config.ha_token[0] && !config.cf_access_client_id[0] && !config.cf_access_client_secret[0]);
+    config = kept;
+    upd.clear_token = upd.clear_cf = 0;
+    upd.has_printers = 1;
+    upd.printer_source[0] = RP_HOME_BAMBU_CLOUD;
+    CHECK(!rp_home_apply_link_update(&config, &upd));
+    CHECK(!memcmp(&config, &kept, sizeof(config)));
+    memset(&upd, 0, sizeof(upd));
+    upd.enabled = 1;
+    upd.local = config.local;
+    upd.external = config.external;
+    upd.home_wifi = "Home";
+    upd.has_printers = 1;
+    upd.printer_source[0] = RP_HOME_HA;
+    snprintf(upd.printer_name[0], sizeof(upd.printer_name[0]), "P1S");
+    snprintf(upd.printer_serial[0], sizeof(upd.printer_serial[0]), "sensor.bambu_a");
+    CHECK(rp_home_apply_link_update(&config, &upd));
+    CHECK(config.printers[0].source == RP_HOME_HA && !strcmp(config.printers[0].serial, "sensor.bambu_a"));
+    CHECK(!config.printers[0].secret[0] && !strcmp(config.ha_token, "ha-fixture"));
+    snprintf(config.cf_access_client_id, sizeof(config.cf_access_client_id), "cf-id.example");
+    snprintf(config.cf_access_client_secret, sizeof(config.cf_access_client_secret), "cf-secret");
+    snprintf(config.local, sizeof(config.local), "https://homeassistant.local:8123");
+    config.external_enabled = 1;
+    f = (fixture_t){0};
+    CHECK(rp_home_fetch(&config, &snapshot, tokens, &t, true, true, 70000) == RP_HOME_OK);
+    CHECK(f.cf_headers == 0 && !snapshot.external);
+    f = (fixture_t){0};
+    CHECK(rp_home_fetch(&config, &snapshot, tokens, &t, true, false, 71000) == RP_HOME_OK);
+    CHECK(f.cf_headers >= 1 && snapshot.external && f.saw_external);
+    f = (fixture_t){.mode = 1};
+    CHECK(rp_home_fetch(&config, &snapshot, tokens, &t, true, true, 72000) == RP_HOME_OK);
+    CHECK(snapshot.external && f.cf_headers >= 1);
+    status = 0;
+    f = (fixture_t){0};
+    config.external_control = 1;
+    CHECK(rp_home_parse_ha(states, strlen(states), &config, &snapshot, 73000) == RP_HOME_OK);
+    CHECK(rp_home_control(&config, &snapshot.entities[0], "turn_off", 0, &t, true, &status) == RP_HOME_OK);
+    CHECK(f.cf_headers == 0 && f.saw_control);
+    f.saw_control = false;
+    CHECK(rp_home_control(&config, &snapshot.entities[0], "turn_off", 0, &t, false, &status) == RP_HOME_OK);
+    CHECK(f.cf_headers >= 1 && f.saw_control);
+    snapshot.printers[1].percent = 88;
+    snapshot.printers[1].has_data = 1;
+    snprintf(snapshot.printers[1].state, sizeof(snapshot.printers[1].state), "FAKE");
+    config.printers[1].source = RP_HOME_BAMBU_CLOUD;
+    snprintf(config.printers[1].serial, sizeof(config.printers[1].serial), "BAMBU123");
+    snprintf(config.printers[1].username, sizeof(config.printers[1].username), "u_fixture");
+    snprintf(config.printers[1].secret, sizeof(config.printers[1].secret), "existing-cloud-token");
+    rp_home_transport_t blocked = {http, mqtt_unsupported, &f};
+    CHECK(rp_home_fetch(&config, &snapshot, tokens, &blocked, true, true, 74000) == RP_HOME_OK);
+    CHECK(snapshot.printers[1].result == RP_HOME_UNSUPPORTED && snapshot.printers[1].percent == -1);
+    CHECK(!snapshot.printers[1].has_data && !snapshot.printers[1].state[0]);
+    CHECK(snapshot.entity_count == 6);
+    rp_home_transport_t access = {http_access, mqtt_unsupported, &f};
+    CHECK(rp_home_fetch(&config, &snapshot, tokens, &access, true, false, 75000) == RP_HOME_ACCESS);
     printf("home-link: %u shared-model checks passed; config=%zu snapshot=%zu bytes\n", checks, sizeof(config),
            sizeof(snapshot));
 }

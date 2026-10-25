@@ -280,6 +280,67 @@ bool rp_home_config_upgrade(rp_home_config_t *c) {
     }
     return rp_home_config_valid(c);
 }
+static void copy_field(char *dst, size_t n, const char *src) {
+    if (!dst || !n)
+        return;
+    if (!src)
+        src = "";
+    snprintf(dst, n, "%s", src);
+}
+bool rp_home_apply_link_update(rp_home_config_t *dst, const rp_home_link_update_t *in) {
+    if (!dst || !in || in->enabled > 1 || in->external_enabled > 1 || in->external_control > 1 || in->clear_token > 1 ||
+        in->clear_cf > 1 || in->has_printers > 1)
+        return false;
+    rp_home_config_t *next = model_memory(sizeof(*next));
+    if (!next)
+        return false;
+    *next = *dst;
+    next->version = RP_HOME_CONFIG_VERSION;
+    next->enabled = in->enabled;
+    next->external_enabled = in->external_enabled;
+    next->external_control = in->external_control;
+    if (in->local)
+        copy_field(next->local, sizeof(next->local), in->local);
+    if (in->external)
+        copy_field(next->external, sizeof(next->external), in->external);
+    if (in->home_wifi)
+        copy_field(next->home_wifi, sizeof(next->home_wifi), in->home_wifi);
+    if (in->clear_token)
+        memset(next->ha_token, 0, sizeof(next->ha_token));
+    else if (in->ha_token && *in->ha_token)
+        copy_field(next->ha_token, sizeof(next->ha_token), in->ha_token);
+    if (in->clear_cf) {
+        memset(next->cf_access_client_id, 0, sizeof(next->cf_access_client_id));
+        memset(next->cf_access_client_secret, 0, sizeof(next->cf_access_client_secret));
+    } else {
+        if (in->cf_id && *in->cf_id)
+            copy_field(next->cf_access_client_id, sizeof(next->cf_access_client_id), in->cf_id);
+        if (in->cf_secret && *in->cf_secret)
+            copy_field(next->cf_access_client_secret, sizeof(next->cf_access_client_secret), in->cf_secret);
+    }
+    if (in->has_printers) {
+        for (unsigned i = 0; i < RP_HOME_PRINTERS; i++) {
+            uint8_t source = in->printer_source[i];
+            if (source != RP_HOME_NONE && source != RP_HOME_HA) {
+                memset(next, 0, sizeof(*next));
+                free(next);
+                return false;
+            }
+            memset(&next->printers[i], 0, sizeof(next->printers[i]));
+            if (source == RP_HOME_NONE)
+                continue;
+            next->printers[i].source = RP_HOME_HA;
+            copy_field(next->printers[i].name, sizeof(next->printers[i].name), in->printer_name[i]);
+            copy_field(next->printers[i].serial, sizeof(next->printers[i].serial), in->printer_serial[i]);
+        }
+    }
+    bool ok = rp_home_config_valid(next);
+    if (ok)
+        *dst = *next;
+    memset(next, 0, sizeof(*next));
+    free(next);
+    return ok;
+}
 static cJSON *parse(const char *json, size_t bytes) {
     if (!json || !bytes || bytes > RP_HOME_HTTP_LIMIT || memchr(json, 0, bytes))
         return NULL;
@@ -906,6 +967,15 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
                 result = bytes <= RP_HOME_MQTT_LIMIT ? rp_home_parse_bambu(response, bytes, v, now) : RP_HOME_TOO_LARGE;
         } else
             result = RP_HOME_UNSUPPORTED;
+        /* 传输明确不支持时清掉上次遥测，避免槽位看起来仍在线。瞬时离线仍保留上次成功数据。
+         * An explicit unsupported transport clears stale telemetry so the slot cannot look live.
+         * A transient offline result still keeps the last successful sample. */
+        if (result == RP_HOME_UNSUPPORTED) {
+            printer_clear(v);
+            v->source = p->source;
+            copy(v->name, sizeof(v->name), p->name);
+            copy(v->serial, sizeof(v->serial), p->serial);
+        }
         v->result = result;
         v->http_status = status;
         if (s->result == RP_HOME_EMPTY || (!*c->ha_token && result != RP_HOME_OK))

@@ -67,7 +67,14 @@ typedef struct {
     char local[192],external[192],home_wifi[48];
     char ha_token[256];
     char cf_access_client_id[96],cf_access_client_secret[64];
+    /// 可选尾部（包 10200+）。source 仅 0 空槽或 1 HA 实体前缀；宿主按 bytes 读取，缺尾部则保留已存槽。
+    /// Optional tail (package 10200+). source is 0 empty or 1 HA entity prefix.
+    /// The host reads it only when bytes covers it; a shorter struct keeps saved slots.
+    uint8_t printer_source[3];
+    char printer_name[3][48];
+    char printer_serial[3][64];
 } pico_app_home_config_t;
+#define PICO_APP_HOME_CONFIG_V10100_BYTES offsetof(pico_app_home_config_t, printer_source)
 typedef struct {
     uint32_t bytes,index;
     char id[96],name[64],state[48],unit[12],room[32];
