@@ -123,7 +123,9 @@ void ps_games_rescan(void) {
         s_items[s_count++].info=p;
     }closedir(d);qsort(s_items,s_count,sizeof(*s_items),compare_item);
     if(s_page>=(s_count+5)/6)s_page=0;
-    ps_apps_register_navigation();ps_home_pga_init();s_error[0]=0;ps_dirty();
+    /* 家庭桥在首次 home_link 调用时才分配 PSRAM。扫描目录不占内部 RAM，否则 USB MSC 会以 257 失败。 */
+    /* The home bridge allocates PSRAM on the first home_link call. Catalog scan must not take internal RAM or USB MSC fails with 257. */
+    ps_apps_register_navigation();s_error[0]=0;ps_dirty();
 }
 static pico_app_view_t host_view(void) { ps_view_t v=ps_view();return (pico_app_view_t){v.w,v.h,v.landscape}; }
 static int32_t host_page(void) { return s_active_info.kind>=128?PGA_PAGE_APP:s_active_info.kind>=PGA_2048?PGA_PAGE_ARCADE:PGA_PAGE_BOARD; }

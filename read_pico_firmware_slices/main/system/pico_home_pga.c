@@ -3,6 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  * 中文：PGA 家庭桥——NVS/HTTP/TLS/快照；不实现 manage web（薄宿主仍 503）。
  * English: PGA home bridge — NVS/HTTP/TLS/snapshot; does not implement manage web (thin host stays 503).
+ * 修复：配置+快照+令牌约 52KiB，禁止放内部 BSS 或小栈。dev66 静态放入内部 DRAM 后，
+ * USB MSC 的 DMA 分配失败，RPICO STATUS 报 usb_error 257（0x101 ESP_ERR_NO_MEM，不是 262 NOT_SUPPORTED）。
+ * 大对象只从 PSRAM 分配；HTTP 工作任务保留小的内部栈（TLS 会关 cache，栈不能在 PSRAM）。
+ * Fix: config+snapshot+tokens are ~52KiB and must not sit in internal BSS or on a small stack.
+ * dev66's internal DRAM copies made USB MSC DMA allocation fail (usb_error 257 / ESP_ERR_NO_MEM).
+ * Large objects come only from PSRAM. The HTTP worker keeps a small internal stack because TLS disables cache.
  */
 #include "pico_home_pga.h"
 #include "read_pico_home_link.h"
@@ -18,17 +24,30 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-enum { PGA_HOME_HTTP_CAP = (96u * 1024u) };
+/* dev66 常驻内部 BSS：config 16276 + snap 33880 + 3*token 1040 = 53276。工作函数再在 8192 栈上复制这两份。 */
+/* dev66 internal BSS: config 16276 + snap 33880 + 3*token 1040 = 53276, then copied again on an 8192-byte stack. */
+typedef struct {
+    rp_home_config_t config;
+    rp_home_snapshot_t snap;
+    rp_home_config_t job_config;
+    rp_home_snapshot_t job_snap;
+    rp_home_token_t tokens[RP_HOME_PRINTERS];
+    rp_home_config_t edit;
+    uint8_t packed[RP_HOME_CONFIG_PACK_LIMIT];
+} pga_store_t;
 
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_worker;
-static rp_home_config_t s_config;
-static rp_home_snapshot_t s_snap;
-static rp_home_token_t s_tokens[RP_HOME_PRINTERS];
+static pga_store_t *s_store;
 static bool s_ready, s_queued, s_busy, s_online, s_at_home, s_stop;
+#define s_config (s_store->config)
+#define s_snap (s_store->snap)
+#define s_tokens (s_store->tokens)
+
+_Static_assert(sizeof(rp_home_config_t) + sizeof(rp_home_snapshot_t) + 3 * sizeof(rp_home_token_t) > 50000,
+               "home PGA state must stay out of internal DRAM");
 static char s_input[256];
 static bool s_input_ready, s_input_open;
 static int s_nav_edit; /* set by games when opening edit — unused here; games drives IME */
@@ -55,26 +74,26 @@ static bool nvs_blob(bool writing, void *data, size_t *bytes) {
 }
 
 static bool save_config_locked(void) {
-    uint8_t packed[RP_HOME_CONFIG_PACK_LIMIT];
-    size_t n = rp_home_config_pack(&s_config, packed, sizeof(packed));
+    size_t n = rp_home_config_pack(&s_config, s_store->packed, sizeof(s_store->packed));
     if (!n) return false;
     size_t bytes = n;
-    bool ok = nvs_blob(true, packed, &bytes);
-    memset(packed, 0, sizeof(packed));
+    bool ok = nvs_blob(true, s_store->packed, &bytes);
+    memset(s_store->packed, 0, sizeof(s_store->packed));
     return ok;
 }
 
 static void load_config(void) {
-    uint8_t packed[RP_HOME_CONFIG_PACK_LIMIT];
-    size_t bytes = sizeof(packed);
+    size_t bytes = sizeof(s_store->packed);
     memset(&s_config, 0, sizeof(s_config));
     s_config.version = RP_HOME_CONFIG_VERSION;
-    if (!nvs_blob(false, packed, &bytes) || !bytes) return;
-    rp_home_config_t tmp;
-    if (rp_home_config_unpack(packed, bytes, &tmp) && rp_home_config_valid(&tmp))
-        s_config = tmp;
-    memset(packed, 0, sizeof(packed));
-    memset(&tmp, 0, sizeof(tmp));
+    if (!nvs_blob(false, s_store->packed, &bytes) || !bytes) {
+        memset(s_store->packed, 0, sizeof(s_store->packed));
+        return;
+    }
+    if (rp_home_config_unpack(s_store->packed, bytes, &s_store->edit) && rp_home_config_valid(&s_store->edit))
+        s_config = s_store->edit;
+    memset(s_store->packed, 0, sizeof(s_store->packed));
+    memset(&s_store->edit, 0, sizeof(s_store->edit));
 }
 
 static bool find_bytes(const char *hay, size_t n, const char *needle) {
@@ -189,69 +208,76 @@ static void fill_status(pico_app_home_status_t *st) {
 
 static void worker(void *unused) {
     (void)unused;
-    char *response = heap_caps_malloc(PGA_HOME_HTTP_CAP + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!response) response = malloc(PGA_HOME_HTTP_CAP + 1);
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (s_stop) break;
         lock();
         bool run = s_queued;
         bool online = s_online, at_home = s_at_home;
-        rp_home_config_t config = s_config;
+        if (run) memcpy(&s_store->job_config, &s_config, sizeof(s_store->job_config));
         s_queued = false;
         if (run) s_busy = true;
         unlock();
-        if (!run || !response) continue;
-        rp_home_snapshot_t snap;
-        memset(&snap, 0, sizeof(snap));
+        if (!run) continue;
+        memset(&s_store->job_snap, 0, sizeof(s_store->job_snap));
         rp_home_transport_t transport = {http_request, mqtt_unsupported, NULL};
-        rp_home_result_t result =
-            rp_home_fetch(&config, &snap, s_tokens, &transport, online, at_home, now_ms());
-        (void)result;
+        /* rp_home_fetch allocates its own PSRAM response (RP_HOME_HTTP_LIMIT). Do not malloc a second one from internal RAM. */
+        (void)rp_home_fetch(&s_store->job_config, &s_store->job_snap, s_tokens, &transport, online, at_home, now_ms());
         lock();
         uint32_t rev = s_snap.revision + 1;
-        s_snap = snap;
+        s_snap = s_store->job_snap;
         s_snap.revision = rev;
         s_busy = false;
         unlock();
-        memset(&config, 0, sizeof(config));
+        memset(&s_store->job_config, 0, sizeof(s_store->job_config));
+        memset(&s_store->job_snap, 0, sizeof(s_store->job_snap));
     }
-    free(response);
     s_worker = NULL;
     vTaskDelete(NULL);
 }
 
 void ps_home_pga_init(void) {
-    if (s_ready) return;
+    if (s_ready && s_worker) return;
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
-    load_config();
-    memset(&s_snap, 0, sizeof(s_snap));
-    s_snap.revision = 1;
-    s_snap.result = RP_HOME_EMPTY;
-    s_ready = true;
-    if (!s_worker)
-        xTaskCreate(worker, "home_pga", 8192, NULL, 3, &s_worker);
+    if (!s_lock) return;
+    if (!s_store) {
+        /* No internal-RAM fallback: a failed PSRAM alloc must not steal the DMA heap USB MSC needs. */
+        s_store = heap_caps_calloc(1, sizeof(*s_store), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_store) return;
+        load_config();
+        memset(&s_snap, 0, sizeof(s_snap));
+        s_snap.revision = 1;
+        s_snap.result = RP_HOME_EMPTY;
+        s_ready = true;
+    }
+    if (!s_worker && xTaskCreate(worker, "home_pga", 8192, NULL, 3, &s_worker) != pdPASS)
+        s_worker = NULL;
 }
 
 bool ps_home_pga_active(void) { return s_ready; }
 
 bool ps_home_pga_command(uint32_t command, pico_app_home_status_t *status) {
     ps_home_pga_init();
-    if (!status || status->bytes < sizeof(*status)) {
+    if (!s_ready || !status || status->bytes < sizeof(*status)) {
         if (status) status->bytes = sizeof(*status);
         return false;
     }
     int wifi = ps_wifi_connected_index();
     bool online = wifi >= 0;
     bool at_home = online && *s_config.home_wifi && !strcmp(s_config.home_wifi, ps_wifi_name(wifi));
-    if (command == PGA_HOME_SYNC) {
+    if (command == PGA_HOME_SYNC && s_worker) {
         lock();
         s_online = online;
         s_at_home = at_home;
         s_queued = true;
         s_busy = true;
         unlock();
-        if (s_worker) xTaskNotifyGive(s_worker);
+        xTaskNotifyGive(s_worker);
+    } else if (command == PGA_HOME_SYNC) {
+        lock();
+        s_online = online;
+        s_at_home = at_home;
+        unlock();
     }
     lock();
     s_at_home = at_home;
@@ -262,7 +288,7 @@ bool ps_home_pga_command(uint32_t command, pico_app_home_status_t *status) {
 
 bool ps_home_pga_config(uint32_t command, pico_app_home_config_t *config) {
     ps_home_pga_init();
-    if (!config || config->bytes < sizeof(*config)) {
+    if (!s_ready || !config || config->bytes < sizeof(*config)) {
         if (config) config->bytes = sizeof(*config);
         return false;
     }
@@ -284,38 +310,39 @@ bool ps_home_pga_config(uint32_t command, pico_app_home_config_t *config) {
     }
     if (command != PGA_HOME_CONFIG_SET) return false;
     lock();
-    rp_home_config_t next = s_config;
-    next.version = RP_HOME_CONFIG_VERSION;
-    next.enabled = config->enabled;
-    next.external_enabled = config->external_enabled;
-    next.external_control = config->external_control;
-    snprintf(next.local, sizeof(next.local), "%s", config->local);
-    snprintf(next.external, sizeof(next.external), "%s", config->external);
-    snprintf(next.home_wifi, sizeof(next.home_wifi), "%s", config->home_wifi);
-    if (config->clear_token) memset(next.ha_token, 0, sizeof(next.ha_token));
+    rp_home_config_t *next = &s_store->edit;
+    *next = s_config;
+    next->version = RP_HOME_CONFIG_VERSION;
+    next->enabled = config->enabled;
+    next->external_enabled = config->external_enabled;
+    next->external_control = config->external_control;
+    snprintf(next->local, sizeof(next->local), "%s", config->local);
+    snprintf(next->external, sizeof(next->external), "%s", config->external);
+    snprintf(next->home_wifi, sizeof(next->home_wifi), "%s", config->home_wifi);
+    if (config->clear_token) memset(next->ha_token, 0, sizeof(next->ha_token));
     else if (config->ha_token[0]) {
-        memset(next.ha_token, 0, sizeof(next.ha_token));
-        snprintf(next.ha_token, sizeof(next.ha_token), "%s", config->ha_token);
+        memset(next->ha_token, 0, sizeof(next->ha_token));
+        snprintf(next->ha_token, sizeof(next->ha_token), "%s", config->ha_token);
     }
     if (config->clear_cf) {
-        memset(next.cf_access_client_id, 0, sizeof(next.cf_access_client_id));
-        memset(next.cf_access_client_secret, 0, sizeof(next.cf_access_client_secret));
+        memset(next->cf_access_client_id, 0, sizeof(next->cf_access_client_id));
+        memset(next->cf_access_client_secret, 0, sizeof(next->cf_access_client_secret));
     } else {
         if (config->cf_access_client_id[0])
-            snprintf(next.cf_access_client_id, sizeof(next.cf_access_client_id), "%s", config->cf_access_client_id);
+            snprintf(next->cf_access_client_id, sizeof(next->cf_access_client_id), "%s", config->cf_access_client_id);
         if (config->cf_access_client_secret[0])
-            snprintf(next.cf_access_client_secret, sizeof(next.cf_access_client_secret), "%s",
+            snprintf(next->cf_access_client_secret, sizeof(next->cf_access_client_secret), "%s",
                      config->cf_access_client_secret);
     }
-    if (!rp_home_config_valid(&next)) {
+    if (!rp_home_config_valid(next)) {
         unlock();
-        memset(&next, 0, sizeof(next));
+        memset(next, 0, sizeof(*next));
         return false;
     }
-    s_config = next;
+    s_config = *next;
     bool ok = save_config_locked();
     unlock();
-    memset(&next, 0, sizeof(next));
+    memset(next, 0, sizeof(*next));
     memset(config->ha_token, 0, sizeof(config->ha_token));
     memset(config->cf_access_client_id, 0, sizeof(config->cf_access_client_id));
     memset(config->cf_access_client_secret, 0, sizeof(config->cf_access_client_secret));
@@ -324,7 +351,7 @@ bool ps_home_pga_config(uint32_t command, pico_app_home_config_t *config) {
 
 bool ps_home_pga_entity(uint32_t index, pico_app_home_entity_t *out) {
     ps_home_pga_init();
-    if (!out || out->bytes < sizeof(*out)) {
+    if (!s_ready || !out || out->bytes < sizeof(*out)) {
         if (out) out->bytes = sizeof(*out);
         return false;
     }
@@ -352,7 +379,7 @@ bool ps_home_pga_entity(uint32_t index, pico_app_home_entity_t *out) {
 
 bool ps_home_pga_printer(uint32_t slot, pico_app_home_printer_t *out) {
     ps_home_pga_init();
-    if (!out || out->bytes < sizeof(*out) || slot >= RP_HOME_PRINTERS) {
+    if (!s_ready || !out || out->bytes < sizeof(*out) || slot >= RP_HOME_PRINTERS) {
         if (out) out->bytes = sizeof(*out);
         return false;
     }
@@ -377,7 +404,7 @@ bool ps_home_pga_printer(uint32_t slot, pico_app_home_printer_t *out) {
 
 bool ps_home_pga_control(const char *entity_id, const char *action, float value) {
     ps_home_pga_init();
-    if (!entity_id || !action || !*entity_id) return false;
+    if (!s_ready || !entity_id || !action || !*entity_id) return false;
     lock();
     rp_home_entity_t entity;
     memset(&entity, 0, sizeof(entity));
@@ -389,20 +416,25 @@ bool ps_home_pga_control(const char *entity_id, const char *action, float value)
             break;
         }
     }
-    rp_home_config_t config = s_config;
+    memcpy(&s_store->edit, &s_config, sizeof(s_store->edit));
     bool at_home = s_at_home;
     unlock();
-    if (!found) return false;
+    if (!found) {
+        memset(&s_store->edit, 0, sizeof(s_store->edit));
+        return false;
+    }
     rp_home_transport_t transport = {http_request, mqtt_unsupported, NULL};
     int status = 0;
-    rp_home_result_t result = rp_home_control(&config, &entity, action, value, &transport, at_home, &status);
-    memset(&config, 0, sizeof(config));
+    rp_home_result_t result = rp_home_control(&s_store->edit, &entity, action, value, &transport, at_home, &status);
+    memset(&s_store->edit, 0, sizeof(s_store->edit));
     if (result == RP_HOME_OK) {
-        lock();
-        s_queued = true;
-        s_busy = true;
-        unlock();
-        if (s_worker) xTaskNotifyGive(s_worker);
+        if (s_worker) {
+            lock();
+            s_queued = true;
+            s_busy = true;
+            unlock();
+            xTaskNotifyGive(s_worker);
+        }
         return true;
     }
     return false;
