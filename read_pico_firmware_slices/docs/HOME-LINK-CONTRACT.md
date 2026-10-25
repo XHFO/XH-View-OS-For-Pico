@@ -99,6 +99,8 @@ Manage UI copy documents Zero Trust → Access → Service Auth token creation.
 
 v1 skeleton only shows empty-state guidance. Migration work continues against **this** contract; do not claim full HA until progressive UI is backed by host services and thin/full/`pga` mode semantics above.
 
+Device navigation (thin host, package present):「家庭」and「家庭设置」open the installed package on its connection-setup page instead of an intermediate「打开家庭工具包」screen. Phone/Mac manage does not add an HA entry; the 503 paths above are unchanged. See [HOME-LINK-PGA-V1.md](HOME-LINK-PGA-V1.md).
+
 ## Compatibility checklist for Mac teammate
 
 1. On thin Pico: expect **503** `home_module_missing` for home/printers/bambu — do not assume PUT persisted.

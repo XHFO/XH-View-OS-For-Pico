@@ -8,7 +8,7 @@
  */
 #include "pico_app_sdk.h"
 
-enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10100 };
+enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10101 };
 enum { PAGE_MONITOR, PAGE_SETUP, PAGE_PRINTERS };
 
 static const pico_app_host_t *host;
@@ -53,6 +53,20 @@ static void request_sync(void) {
     status.bytes = sizeof(status);
     (void)host->home_link(PGA_HOME_SYNC, &status);
     need_sync = false;
+    host->dirty();
+}
+
+/* Host arms this once via PGA_HOME_ENTRY. Old hosts return status without ENTRY_OK; ignore them. */
+static void take_entry(void) {
+    if (!has_home()) return;
+    pico_app_home_status_t entry;
+    host->set(&entry, 0, sizeof(entry));
+    entry.bytes = sizeof(entry);
+    if (!host->home_link(PGA_HOME_ENTRY, &entry) || !(entry.flags & PGA_HOME_ENTRY_OK) || entry.result > PAGE_PRINTERS)
+        return;
+    if (page == entry.result) return;
+    page = entry.result;
+    if (page == PAGE_SETUP) load_config();
     host->dirty();
 }
 
@@ -114,6 +128,7 @@ static bool start(const pico_app_host_t *h) {
     if (has_home()) {
         load_config();
         refresh_status();
+        take_entry();
         if ((status.flags & PGA_HOME_CFG) && (status.flags & PGA_HOME_WIFI)) need_sync = true;
     }
     return true;
@@ -228,6 +243,7 @@ static void render_printers(uint8_t *fb) {
 }
 
 static void render(uint8_t *fb) {
+    take_entry();
     take_input();
     refresh_status();
     if (need_sync && has_home() && (status.flags & PGA_HOME_WIFI) && !status.busy) request_sync();
@@ -369,6 +385,7 @@ static bool key(int k) {
 
 static bool tick(void) {
     if (waiting_input) take_input();
+    take_entry();
     refresh_status();
     return status.busy;
 }
