@@ -35,6 +35,7 @@ idf_component_register(
         "app/app_touch_buffer.c"
         "app/app_registry.c"
         "system/pico_system.c"
+        "system/pico_i18n.c"
         "system/pico_connectivity.c"
         "system/pico_storage.c"
         "system/pico_usb.c"
@@ -121,6 +122,7 @@ add_dependencies(${COMPONENT_LIB} pico_boot_image_deflate)
 # English: Size-optimize only cold configuration/settings controllers; keep reader/font raster, touch/display waveforms and game hot paths at project O2.
 set_source_files_properties(
     "settings.c"
+    "system/pico_i18n.c"
     "system/pico_home.c"
         "system/pico_home_pga.c"
     "system/pico_navigation.c"

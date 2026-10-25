@@ -15,42 +15,51 @@ static int link_entities(int *out, bool all) { (void)out; (void)all; return 0; }
 static void thin_empty(uint8_t *fb, const char *title, const char *body) {
     ps_view_t v = ps_view();
     ps_heading(fb, title, NULL);
+    ps_i18n_chip(fb, v.w - 16 - PS_I18N_CHIP_W, 32);
     ps_wrap(fb, 24, 140, v.w - 48, 16, 4, body, MUTED);
-    ps_button(fb, 16, v.h - 56, v.w - 32, 40, "打开家庭工具包", true);
+    ps_button(fb, 16, v.h - 56, v.w - 32, 40, ps_tr("settings.home_link.open"), true);
 }
 
 static bool thin_open_module(void) {
     extern bool ps_apps_open(const char *id);
     if (ps_apps_open("home-link")) return true;
-    ps_toast("请将 home-link.pga 复制到 TF apps/tools 后刷新");
+    ps_toast(ps_tr("settings.home_link.missing"));
     return false;
 }
 
+static bool thin_chip(const ps_event_t *e) {
+    ps_view_t v = ps_view();
+    return ps_i18n_chip_hit(e->x, e->y, v.w - 16 - PS_I18N_CHIP_W, 32);
+}
+
 static void real_ha_render(uint8_t *fb) {
-    thin_empty(fb, "家庭", "固件仅保留空状态入口。安装 TF 工具包 home-link 后可监看 Home Assistant 与打印机。");
+    thin_empty(fb, ps_tr("settings.home_link.title"), ps_tr("settings.home_link.empty"));
 }
 static bool real_ha_event(const ps_event_t *e) {
     if (!e || e->type != PS_TAP) return false;
+    if (thin_chip(e)) return true;
     ps_view_t v = ps_view();
     if (ps_hit(e->x, e->y, 16, v.h - 56, v.w - 32, 40)) return thin_open_module(), true;
     return false;
 }
 static void real_ha_settings_render(uint8_t *fb) {
-    thin_empty(fb, "家庭设置", "连接配置随家庭工具包提供。未安装包时无法保存 HA 令牌或打印机凭据。");
+    thin_empty(fb, ps_tr("settings.home_link.settings_title"), ps_tr("settings.home_link.settings_empty"));
 }
 static bool real_ha_settings_event(const ps_event_t *e) {
     if (!e || e->type != PS_TAP) return false;
+    if (thin_chip(e)) return true;
     ps_view_t v = ps_view();
     if (ps_hit(e->x, e->y, 16, v.h - 56, v.w - 32, 40)) return thin_open_module(), true;
     return false;
 }
 static void real_printer_render(uint8_t *fb, bool settings) {
-    thin_empty(fb, settings ? "打印机设置" : "打印机",
-               "打印机只读监看已迁至 TF 工具包。未安装时本页保持空状态，不影响阅读。");
+    thin_empty(fb, ps_tr(settings ? "settings.home_link.printers_settings" : "settings.home_link.printers_title"),
+               ps_tr("settings.home_link.printers_empty"));
 }
 static bool real_printer_event(const ps_event_t *e, bool settings) {
     (void)settings;
     if (!e || e->type != PS_TAP) return false;
+    if (thin_chip(e)) return true;
     ps_view_t v = ps_view();
     if (ps_hit(e->x, e->y, 16, v.h - 56, v.w - 32, 40)) return thin_open_module(), true;
     return false;

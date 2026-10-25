@@ -32,6 +32,20 @@ static bool has_home(void) {
            host->home_link_control && host->home_link_input;
 }
 
+static bool hl_same(const char *a, const char *b) {
+    if (!a || !b) return a == b;
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static const char *hl(const char *key, const char *zh) {
+    if (host && host->bytes >= (uint32_t)(offsetof(pico_app_host_t, tr) + sizeof(host->tr)) && host->tr) {
+        const char *s = host->tr(key);
+        if (s && !hl_same(s, key)) return s;
+    }
+    return zh;
+}
+
 static void refresh_status(void) {
     if (!has_home()) return;
     status.bytes = sizeof(status);
@@ -64,24 +78,24 @@ static bool save_config(void) {
     host->set(config.cf_access_client_id, 0, sizeof(config.cf_access_client_id));
     host->set(config.cf_access_client_secret, 0, sizeof(config.cf_access_client_secret));
     if (ok) {
-        host->toast("已保存到设备");
+        host->toast(hl("settings.home_link.saved_toast", "已保存到设备"));
         need_sync = true;
         load_config();
         request_sync();
-    } else host->toast("保存失败（检查地址/令牌）");
+    } else host->toast(hl("settings.home_link.save_failed", "保存失败（检查地址/令牌）"));
     return ok;
 }
 
 static void open_input(int kind, const char *seed, const char *title_unused) {
     (void)title_unused;
     if (!has_home() || !host->home_link_input) {
-        host->toast("宿主不支持输入");
+        host->toast(hl("settings.home_link.no_input", "宿主不支持输入"));
         return;
     }
     draft_kind = kind;
     host->format(draft, sizeof(draft), "%s", seed ? seed : "");
     waiting_input = host->home_link_input(PGA_HOME_INPUT_OPEN, draft, sizeof(draft));
-    if (!waiting_input) host->toast("无法打开输入");
+    if (!waiting_input) host->toast(hl("settings.home_link.input_fail", "无法打开输入"));
 }
 
 static void take_input(void) {
@@ -127,23 +141,27 @@ static int entities_per_page(pico_app_view_t v) {
 static void render_monitor(uint8_t *fb) {
     pico_app_view_t v = host->view();
     host->fill(fb, 0, 0, v.w, v.h, 15);
-    host->heading(fb, "家庭连接", status.busy ? "同步中…" : (status.at_home ? "本地" : (status.external ? "外部" : "")));
+    host->heading(fb, hl("settings.home_link.monitor", "家庭连接"),
+                  status.busy ? hl("settings.home_link.syncing", "同步中…")
+                              : (status.at_home ? hl("settings.home_link.local", "本地")
+                                                : (status.external ? hl("settings.home_link.external", "外部") : "")));
     char line[160];
     if (!has_home()) {
         host->wrap(fb, 24, 120, v.w - 48, 14, 6,
-                   "当前固件宿主过旧，缺少 home_link 服务。请刷含 PGA 桥的固件后再打开本工具包。", 5);
-        host->button(fb, 16, v.h - 56, v.w - 32, 40, "返回", false);
+                   hl("settings.home_link.host_old", "当前固件宿主过旧，缺少 home_link 服务。请刷含 PGA 桥的固件后再打开本工具包。"), 5);
+        host->button(fb, 16, v.h - 56, v.w - 32, 40, hl("common.back", "返回"), false);
         return;
     }
-    host->format(line, sizeof(line), "%s · 实体 %u/%u · Wi‑Fi %s", status.error,
+    host->format(line, sizeof(line), hl("settings.home_link.status", "%s · 实体 %u/%u · Wi‑Fi %s"), status.error,
                  (unsigned)status.entity_count, (unsigned)status.entity_total,
-                 (status.flags & PGA_HOME_WIFI) ? "已连接" : "未连接");
+                 (status.flags & PGA_HOME_WIFI) ? hl("settings.home_link.wifi_on", "已连接")
+                                                : hl("settings.home_link.wifi_off", "未连接"));
     host->wrap(fb, 24, 108, v.w - 48, 13, 3, line, 5);
     if (status.result == 12 /* RP_HOME_ACCESS */)
         host->wrap(fb, 24, 150, v.w - 48, 13, 3,
-                   "Cloudflare Access 拦截：请在设置中填写 Service Token（非浏览器登录）。", 0);
+                   hl("settings.home_link.access", "Cloudflare Access 拦截：请在设置中填写 Service Token（非浏览器登录）。"), 0);
     else if (!(status.flags & PGA_HOME_CFG))
-        host->wrap(fb, 24, 150, v.w - 48, 13, 3, "尚未配置。点「设置」填写本地/外部地址、HA 令牌与可选 Access。", 5);
+        host->wrap(fb, 24, 150, v.w - 48, 13, 3, hl("settings.home_link.unconfigured", "尚未配置。点「设置」填写本地/外部地址、HA 令牌与可选 Access。"), 5);
 
     int per = entities_per_page(v);
     int y = 190;
@@ -157,74 +175,84 @@ static void render_monitor(uint8_t *fb) {
         host->format(line, sizeof(line), "%s%s%s", e.state, e.unit[0] ? " " : "", e.unit);
         host->text(fb, 28, y + 28, 13, line, 5);
         if (e.kind < 4 && e.available)
-            host->button(fb, v.w - 120, y + 8, 88, 32, e.on ? "关闭" : "开启", false);
+            host->button(fb, v.w - 120, y + 8, 88, 32, hl(e.on ? "settings.home_link.off" : "settings.home_link.on", e.on ? "关闭" : "开启"), false);
         y += 52;
     }
     int bw = (v.w - 48) / 3;
-    host->button(fb, 16, v.h - 56, bw, 40, "设置", false);
-    host->button(fb, 24 + bw, v.h - 56, bw, 40, status.busy ? "…" : "同步", status.busy);
-    host->button(fb, 32 + 2 * bw, v.h - 56, bw, 40, "打印机", false);
+    host->button(fb, 16, v.h - 56, bw, 40, hl("settings.home_link.settings", "设置"), false);
+    host->button(fb, 24 + bw, v.h - 56, bw, 40, status.busy ? "…" : hl("settings.home_link.sync", "同步"), status.busy);
+    host->button(fb, 32 + 2 * bw, v.h - 56, bw, 40, hl("settings.home_link.printers", "打印机"), false);
 }
 
 static void render_setup(uint8_t *fb) {
     pico_app_view_t v = host->view();
     host->fill(fb, 0, 0, v.w, v.h, 15);
-    host->heading(fb, "连接设置", "设备本地保存");
+    host->heading(fb, hl("settings.home_link.setup_title", "连接设置"), hl("settings.home_link.setup_sub", "设备本地保存"));
     host->wrap(fb, 24, 110, v.w - 48, 12, 4,
-               "手机 manage 在薄宿主仍返回 home_module_missing。此处配置仅存本机，供本工具包使用。", 5);
+               hl("settings.home_link.setup_body", "手机 manage 在薄宿主仍返回 home_module_missing。此处配置仅存本机，供本工具包使用。"), 5);
     char line[192];
     int y = 170;
-    const char *labels[] = {"本地地址", "外部 HTTPS", "HA 令牌", "CF Client ID", "CF Client Secret", "家庭 Wi‑Fi"};
+    const char *labels[] = {
+        hl("settings.home_link.field.local", "本地地址"), hl("settings.home_link.field.external", "外部 HTTPS"),
+        hl("settings.home_link.field.token", "HA 令牌"), hl("settings.home_link.field.cf_id", "CF Client ID"),
+        hl("settings.home_link.field.cf_secret", "CF Client Secret"), hl("settings.home_link.field.wifi", "家庭 Wi‑Fi")};
+    const char *unset = hl("settings.home_link.unset", "（未设）");
+    const char *saved = hl("settings.home_link.saved", "已保存");
     for (int i = 0; i < 6; i++) {
-        host->format(line, sizeof(line), "%s：%s", labels[i],
-                     i == 0   ? (config.local[0] ? config.local : "（未设）")
-                     : i == 1 ? (config.external[0] ? config.external : "（未设）")
-                     : i == 2 ? (config.has_token ? "已保存" : "（未设）")
-                     : i == 3 ? (config.has_cf_id ? "已保存" : "（未设）")
-                     : i == 4 ? (config.has_cf_secret ? "已保存" : "（未设）")
-                              : (config.home_wifi[0] ? config.home_wifi : "（未设）"));
+        host->format(line, sizeof(line), hl("settings.home_link.field_line", "%s：%s"), labels[i],
+                     i == 0   ? (config.local[0] ? config.local : unset)
+                     : i == 1 ? (config.external[0] ? config.external : unset)
+                     : i == 2 ? (config.has_token ? saved : unset)
+                     : i == 3 ? (config.has_cf_id ? saved : unset)
+                     : i == 4 ? (config.has_cf_secret ? saved : unset)
+                              : (config.home_wifi[0] ? config.home_wifi : unset));
         host->button(fb, 16, y, v.w - 32, 36, line, setup_field == (unsigned)i);
         y += 42;
     }
-    host->format(line, sizeof(line), "启用 %s · 外部 %s · 外控 %s · Access %s",
-                 config.enabled ? "开" : "关", config.external_enabled ? "开" : "关",
-                 config.external_control ? "开" : "关",
-                 (config.has_cf_id && config.has_cf_secret) ? "已配置" : "无");
+    host->format(line, sizeof(line), hl("settings.home_link.flags", "启用 %s · 外部 %s · 外控 %s · Access %s"),
+                 hl(config.enabled ? "settings.home_link.flag.on" : "settings.home_link.flag.off", config.enabled ? "开" : "关"),
+                 hl(config.external_enabled ? "settings.home_link.flag.on" : "settings.home_link.flag.off", config.external_enabled ? "开" : "关"),
+                 hl(config.external_control ? "settings.home_link.flag.on" : "settings.home_link.flag.off", config.external_control ? "开" : "关"),
+                 hl((config.has_cf_id && config.has_cf_secret) ? "settings.home_link.access_ready" : "settings.home_link.access_none",
+                    (config.has_cf_id && config.has_cf_secret) ? "已配置" : "无"));
     host->text(fb, 24, y + 8, 13, line, 5);
     int bw = (v.w - 48) / 3;
-    host->button(fb, 16, v.h - 56, bw, 40, "开关项", false);
-    host->button(fb, 24 + bw, v.h - 56, bw, 40, "保存", false);
-    host->button(fb, 32 + 2 * bw, v.h - 56, bw, 40, "返回", false);
+    host->button(fb, 16, v.h - 56, bw, 40, hl("settings.home_link.toggles", "开关项"), false);
+    host->button(fb, 24 + bw, v.h - 56, bw, 40, hl("settings.home_link.save", "保存"), false);
+    host->button(fb, 32 + 2 * bw, v.h - 56, bw, 40, hl("common.back", "返回"), false);
 }
 
 static void render_printers(uint8_t *fb) {
     pico_app_view_t v = host->view();
     host->fill(fb, 0, 0, v.w, v.h, 15);
-    host->heading(fb, "打印机", "只读监看");
+    host->heading(fb, hl("settings.home_link.printers", "打印机"), hl("settings.home_link.printers_sub", "只读监看"));
     host->wrap(fb, 24, 110, v.w - 48, 12, 3,
-               "独立 Bambu MQTT/云端仍待完整迁入；此处显示宿主快照中的打印机槽位与 HA 导入状态。", 5);
+               hl("settings.home_link.printers_body", "独立 Bambu MQTT/云端仍待完整迁入；此处显示宿主快照中的打印机槽位与 HA 导入状态。"), 5);
     char line[160];
     int y = 170;
     if (!has_home()) {
-        host->text(fb, 24, y, 16, "宿主服务不可用", 0);
+        host->text(fb, 24, y, 16, hl("settings.home_link.host_down", "宿主服务不可用"), 0);
     } else {
         for (unsigned slot = 0; slot < 3; slot++) {
             pico_app_home_printer_t p = {.bytes = sizeof(p)};
             if (!host->home_link_printer(slot, &p)) continue;
             host->fill(fb, 16, y, v.w - 32, 64, 14);
-            host->format(line, sizeof(line), "%u · %s", slot + 1, p.name[0] ? p.name : "空槽位");
+            host->format(line, sizeof(line), hl("settings.home_link.slot", "%u · %s"), slot + 1,
+                         p.name[0] ? p.name : hl("settings.home_link.empty_slot", "空槽位"));
             host->text(fb, 28, y + 10, 16, line, 0);
             host->format(line, sizeof(line), "%s%s%s", p.state,
                          p.percent >= 0 ? " · " : "", p.percent >= 0 ? "" : "");
             if (p.percent >= 0)
-                host->format(line, sizeof(line), "%s · %d%%", p.state[0] ? p.state : "无状态", p.percent);
+                host->format(line, sizeof(line), hl("settings.home_link.progress", "%s · %d%%"),
+                             p.state[0] ? p.state : hl("settings.home_link.no_state", "无状态"), p.percent);
             else
-                host->format(line, sizeof(line), "%s", p.has_data ? p.state : "无数据（LAN/云端 MQTT 未迁入 PGA）");
+                host->format(line, sizeof(line), "%s",
+                             p.has_data ? p.state : hl("settings.home_link.no_data", "无数据（LAN/云端 MQTT 未迁入 PGA）"));
             host->text(fb, 28, y + 36, 13, line, 5);
             y += 72;
         }
     }
-    host->button(fb, 16, v.h - 56, v.w - 32, 40, "返回监看", false);
+    host->button(fb, 16, v.h - 56, v.w - 32, 40, hl("settings.home_link.back_monitor", "返回监看"), false);
 }
 
 static void render(uint8_t *fb) {
@@ -261,7 +289,7 @@ static bool event_monitor(const pico_app_event_t *e) {
             pico_app_home_entity_t ent = {.bytes = sizeof(ent)};
             if (host->home_link_entity(idx, &ent) && ent.kind < 4) {
                 bool ok = host->home_link_control(ent.id, ent.on ? "turn_off" : "turn_on", 0);
-                host->toast(ok ? "已提交" : "控制失败");
+                host->toast(hl(ok ? "settings.home_link.submitted" : "settings.home_link.control_failed", ok ? "已提交" : "控制失败"));
                 if (ok) request_sync();
                 return true;
             }

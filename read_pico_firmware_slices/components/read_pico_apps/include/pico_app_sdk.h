@@ -133,6 +133,8 @@ typedef struct {
     bool (*home_link_control)(const char *entity_id,const char *action,float value);
     /// OPEN/TAKE/CANCEL；令牌最多255字节。/ OPEN/TAKE/CANCEL; tokens at most 255 bytes.
     bool (*home_link_input)(uint32_t command,char *value,size_t capacity);
+    /// 可选文案查询；先检查 bytes。未知键可返回键名。/ Optional copy lookup; check bytes first. Unknown keys may return the key.
+    const char *(*tr)(const char *key);
 } pico_app_host_t;
 
 /// 旧八款应用所需的原始宿主前缀；追加能力不得改变ABI1。/ Original host prefix for the eight existing apps; optional additions preserve ABI1.

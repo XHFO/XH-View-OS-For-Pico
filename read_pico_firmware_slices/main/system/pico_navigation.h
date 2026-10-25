@@ -44,3 +44,5 @@ void ps_navigation_render(uint8_t *fb);
 bool ps_navigation_event(const ps_event_t *event);
 /// 关闭选择浮层后返回true；否则丢弃草稿并由系统壳返回来源页。/ Return true after closing picker; otherwise discard draft and let shell navigate back.
 bool ps_navigation_back(void);
+/// 内置入口随界面语言显示；自定义应用保持注册名。/ Built-in entries follow the UI language; custom apps keep their registered name.
+const char *ps_navigation_label(const ps_navigation_entry_t *entry);

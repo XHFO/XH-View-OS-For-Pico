@@ -77,3 +77,4 @@ int main(void){
     printf("launcher contracts passed: %u draws, %u scans, %u game opens; no device access\n",draws,scans,opens);
     return 0;
 }
+#include "../main/system/pico_i18n.c"

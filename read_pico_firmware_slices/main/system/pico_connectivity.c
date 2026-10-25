@@ -10,6 +10,7 @@
  * User revision: enable/scan without saved networks, let scanning enable WiFi, and allow manual entry while off; remember only successful connections.
  */
 #include "pico_system.h"
+#include "pico_i18n.h"
 #include "pico_connectivity.h"
 #include "read_pico_connectivity.h"
 #include "read_pico_sd.h"
@@ -27,7 +28,7 @@ enum {
     CC_WIFI_TOGGLE,CC_NEARBY,CC_SAVED,CC_SCAN,CC_PREVIOUS,CC_NEXT,CC_OPEN_TRANSFER,
     CC_CONNECT,CC_PASSWORD,CC_FORGET,CC_AUTO_JOIN,CC_CONFIRM_YES,CC_CONFIRM_CANCEL,
     CC_TRANSFER_STA,CC_TRANSFER_AP,CC_TRANSFER_USB,CC_QR_JOIN,CC_QR_URL,CC_BOOKS,CC_TRANSFER_RESET,CC_STORAGE,CC_ADD,CC_SECURITY,
-    CC_MANAGE_OPEN,CC_MANAGE_STOP,CC_MANAGE_WIFI,CC_ROW=32
+    CC_MANAGE_OPEN,CC_MANAGE_STOP,CC_MANAGE_WIFI,CC_LOCALE,CC_ROW=32
 };
 typedef struct {int x,y,w,h,id;char label[64];} cc_control_t;
 
@@ -67,7 +68,7 @@ static int cc_saved_index(const char *ssid){
     for(size_t i=0;i<cc_status.saved_count;i++)if(!strcmp(cc_status.saved[i].ssid,ssid))return (int)i;
     return -1;
 }
-static const char *cc_signal(int rssi){return rssi>=-55?"强":rssi>=-67?"良好":rssi>=-78?"较弱":"弱";}
+static const char *cc_signal(int rssi){return ps_tr(rssi>=-55?"settings.wifi.signal.strong":rssi>=-67?"settings.wifi.signal.good":rssi>=-78?"settings.wifi.signal.fair":"settings.wifi.signal.weak");}
 static void cc_copy(char *out,size_t cap,const char *text){
     if(cap)snprintf(out,cap,"%s",text?text:"");
 }
@@ -86,11 +87,11 @@ static void cc_size(char *out,size_t cap,uint64_t bytes){
 }
 static void cc_capacity_text(char *out,size_t cap){
     char amount[24];cc_size(amount,sizeof(amount),cc_free);
-    snprintf(out,cap,"%s · 剩余 %s%s",cc_is_flash?"内置存储":"存储卡",amount,
-             cc_is_flash?" · 单文件≤1 MB":"");
+    snprintf(out,cap,ps_tr("settings.transfer.capacity"),ps_tr(cc_is_flash?"settings.transfer.capacity.flash":"settings.transfer.capacity.card"),amount,
+             cc_is_flash?ps_tr("settings.transfer.capacity.limit"):"");
 }
 static bool cc_accept(esp_err_t result){
-    if(result!=ESP_OK){cc_copy(cc_message,sizeof(cc_message),"操作暂未完成，请稍后重试");ps_toast(cc_message);return false;}
+    if(result!=ESP_OK){cc_copy(cc_message,sizeof(cc_message),ps_tr("settings.wifi.toast.pending"));ps_toast(cc_message);return false;}
     cc_message[0]=0;
     read_pico_connectivity_get_status(&cc_status);
     cc_poll_at=0;
@@ -122,75 +123,76 @@ static int cc_controls(cc_control_t out[24]){
         cc_add(out,&n,CC_MANAGE_WIFI,v.w-100,32,84,30,"Wi-Fi");
         int y=v.landscape?258:544,w=(v.w-44)/2;
         if(cc_management.active){
-            cc_add(out,&n,CC_MANAGE_OPEN,16,y,w,40,"刷新链接");
-            cc_add(out,&n,CC_MANAGE_STOP,28+w,y,w,40,"停止管理");
-        }else cc_add(out,&n,cc_status.connected?CC_MANAGE_OPEN:CC_MANAGE_WIFI,16,y,v.w-32,40,cc_status.connected?"开启无线管理":"连接 Wi-Fi");
+            cc_add(out,&n,CC_MANAGE_OPEN,16,y,w,40,ps_tr("settings.manage.refresh"));
+            cc_add(out,&n,CC_MANAGE_STOP,28+w,y,w,40,ps_tr("settings.manage.stop"));
+        }else cc_add(out,&n,cc_status.connected?CC_MANAGE_OPEN:CC_MANAGE_WIFI,16,y,v.w-32,40,ps_tr(cc_status.connected?"settings.manage.start":"settings.manage.connect"));
         return n;
     }
     if(cc_confirm){
         if(cc_stopping)return 0;
         int w=(v.w-44)/2,y=v.landscape?258:446;
-        cc_add(out,&n,CC_CONFIRM_CANCEL,16,y,w,42,"取消");
-        cc_add(out,&n,CC_CONFIRM_YES,28+w,y,w,42,cc_confirm==CC_CONFIRM_FORGET?"忘记网络":cc_stop_failed?"重试结束":"结束传书");
+        cc_add(out,&n,CC_CONFIRM_CANCEL,16,y,w,42,ps_tr("common.cancel"));
+        cc_add(out,&n,CC_CONFIRM_YES,28+w,y,w,42,ps_tr(cc_confirm==CC_CONFIRM_FORGET?"settings.wifi.forget_short":cc_stop_failed?"dialog.transfer.retry":"dialog.transfer.stop"));
         return n;
     }
     if(cc_page==PS_WIFI){
         if(cc_view==CC_DETAIL){
             int x=v.landscape?334:16,y=v.landscape?98:262,w=v.landscape?290:v.w-32;
             bool connected=cc_status.connected&&!strcmp(cc_status.ssid,cc_selected.ssid);
-            cc_add(out,&n,CC_CONNECT,x,y,w,42,connected?"已连接":"连接此网络");
-            if(cc_selected.requires_password)cc_add(out,&n,CC_PASSWORD,x,y+52,w,42,"重新输入密码");
+            cc_add(out,&n,CC_CONNECT,x,y,w,42,ps_tr(connected?"settings.wifi.connected":"settings.wifi.connect"));
+            if(cc_selected.requires_password)cc_add(out,&n,CC_PASSWORD,x,y+52,w,42,ps_tr("settings.wifi.password"));
             if(cc_selected_saved){
                 int at=cc_saved_index(cc_selected.ssid);bool automatic=at>=0&&cc_status.saved[at].auto_join;
-                cc_add(out,&n,CC_AUTO_JOIN,x,y+104,w,42,automatic?"自动连接：开启":"自动连接：关闭");
-                cc_add(out,&n,CC_FORGET,x,y+156,w,42,"忘记此网络");
+                cc_add(out,&n,CC_AUTO_JOIN,x,y+104,w,42,ps_tr(automatic?"settings.wifi.auto.on":"settings.wifi.auto.off"));
+                cc_add(out,&n,CC_FORGET,x,y+156,w,42,ps_tr("settings.wifi.forget"));
             }
-            if(cc_manual)cc_add(out,&n,CC_SECURITY,x,y+104,w,42,cc_selected.requires_password?"安全：需要密码":"安全：无密码");
+            if(cc_manual)cc_add(out,&n,CC_SECURITY,x,y+104,w,42,ps_tr(cc_selected.requires_password?"settings.wifi.security.pass":"settings.wifi.security.open"));
             return n;
         }
-        cc_add(out,&n,CC_WIFI_TOGGLE,v.w-88,32,72,30,cc_status.wifi_enabled?"已开启":"已关闭");
+        cc_add(out,&n,CC_LOCALE,v.w-160,32,PS_I18N_CHIP_W,PS_I18N_CHIP_H,ps_tr("settings.locale.chip"));
+        cc_add(out,&n,CC_WIFI_TOGGLE,v.w-88,32,72,30,ps_tr(cc_status.wifi_enabled?"settings.wifi.on":"settings.wifi.off"));
         int x=v.landscape?252:16,width=v.landscape?372:v.w-32,y=v.landscape?86:178;
         int tab=(width-108)/2;
-        cc_add(out,&n,CC_NEARBY,x,y,tab,32,"附近网络");
-        cc_add(out,&n,CC_SAVED,x+tab+4,y,tab,32,"已存网络");
-        cc_add(out,&n,CC_SCAN,x+width-100,y,100,32,(cc_status.scanning||cc_scan_requested)?"扫描中":"重新扫描");
+        cc_add(out,&n,CC_NEARBY,x,y,tab,32,ps_tr("settings.wifi.nearby"));
+        cc_add(out,&n,CC_SAVED,x+tab+4,y,tab,32,ps_tr("settings.wifi.saved"));
+        cc_add(out,&n,CC_SCAN,x+width-100,y,100,32,ps_tr((cc_status.scanning||cc_scan_requested)?"settings.wifi.scanning":"settings.wifi.rescan"));
         int top=v.landscape?128:220,rh=v.landscape?44:54,pitch=v.landscape?48:58;
         int total=cc_total(),rows=cc_rows();
         for(int i=0;i<rows&&cc_scroll+i<total;i++)cc_add(out,&n,CC_ROW+i,x,top+i*pitch,width,rh,"");
         int bottom=v.landscape?276:512;
-        cc_add(out,&n,CC_PREVIOUS,x,bottom,80,30,"上一页");
-        cc_add(out,&n,CC_NEXT,x+width-80,bottom,80,30,"下一页");
-        cc_add(out,&n,CC_ADD,x+90,bottom,width-180,30,"添加网络");
-        cc_add(out,&n,CC_OPEN_TRANSFER,16,v.landscape?238:548,v.landscape?220:v.w-32,40,"无线传书");
+        cc_add(out,&n,CC_PREVIOUS,x,bottom,80,30,ps_tr("common.prev"));
+        cc_add(out,&n,CC_NEXT,x+width-80,bottom,80,30,ps_tr("common.next"));
+        cc_add(out,&n,CC_ADD,x+90,bottom,width-180,30,ps_tr("settings.wifi.add"));
+        cc_add(out,&n,CC_OPEN_TRANSFER,16,v.landscape?238:548,v.landscape?220:v.w-32,40,ps_tr("settings.wifi.transfer"));
         return n;
     }
     if(cc_page==PS_TRANSFER){
         if(!cc_session&&!cc_status.transfer_active&&!ps_transfer_prepared()){
             int w=v.landscape?(v.w-56)/3:v.w-32;
-            cc_add(out,&n,CC_TRANSFER_STA,16,v.landscape?140:166,w,v.landscape?70:58,"同一 Wi-Fi");
-            cc_add(out,&n,CC_TRANSFER_AP,v.landscape?28+w:16,v.landscape?140:270,w,v.landscape?70:58,"设备热点");
-            cc_add(out,&n,CC_TRANSFER_USB,v.landscape?40+2*w:16,v.landscape?140:374,w,v.landscape?70:58,"USB U 盘");
+            cc_add(out,&n,CC_TRANSFER_STA,16,v.landscape?140:166,w,v.landscape?70:58,ps_tr("settings.transfer.same_wifi"));
+            cc_add(out,&n,CC_TRANSFER_AP,v.landscape?28+w:16,v.landscape?140:270,w,v.landscape?70:58,ps_tr("settings.transfer.hotspot"));
+            cc_add(out,&n,CC_TRANSFER_USB,v.landscape?40+2*w:16,v.landscape?140:374,w,v.landscape?70:58,ps_tr("settings.transfer.usb"));
             if(v.landscape){
-                cc_add(out,&n,CC_STORAGE,16,270,w,38,"TF 卡与笔记");
-                cc_add(out,&n,CC_BOOKS,28+w,270,v.w-w-44,38,"打开本机图书");
+                cc_add(out,&n,CC_STORAGE,16,270,w,38,ps_tr("settings.transfer.storage"));
+                cc_add(out,&n,CC_BOOKS,28+w,270,v.w-w-44,38,ps_tr("settings.transfer.books"));
             }else{
-                cc_add(out,&n,CC_STORAGE,16,493,v.w-32,36,"TF 卡与笔记");
-                cc_add(out,&n,CC_BOOKS,16,545,v.w-32,40,"打开本机图书");
+                cc_add(out,&n,CC_STORAGE,16,493,v.w-32,36,ps_tr("settings.transfer.storage"));
+                cc_add(out,&n,CC_BOOKS,16,545,v.w-32,40,ps_tr("settings.transfer.books"));
             }
         }
         else{
             const read_pico_transfer_status_t *t=&cc_status.transfer;
             if(t->mode==READ_PICO_TRANSFER_MODE_AP&&t->network_ready){
                 int x=v.landscape?268:16,y=v.landscape?176:352,w=v.landscape?172:(v.w-44)/2;
-                cc_add(out,&n,CC_QR_JOIN,x,y,w,32,"连接热点");
-                cc_add(out,&n,CC_QR_URL,x+w+12,y,w,32,"打开网页");
+                cc_add(out,&n,CC_QR_JOIN,x,y,w,32,ps_tr("settings.transfer.join"));
+                cc_add(out,&n,CC_QR_URL,x+w+12,y,w,32,ps_tr("settings.transfer.open_page"));
             }
             if(!cc_status.transfer_active&&!cc_status.busy){
                 int x=v.landscape?268:16,y=v.landscape?276:548,w=v.landscape?172:(v.w-44)/2;
-                cc_add(out,&n,CC_TRANSFER_RESET,x,y,w,v.landscape?32:40,"重新选择方式");
-                cc_add(out,&n,CC_BOOKS,x+w+12,y,w,v.landscape?32:40,"打开书架");
+                cc_add(out,&n,CC_TRANSFER_RESET,x,y,w,v.landscape?32:40,ps_tr("settings.transfer.reselect"));
+                cc_add(out,&n,CC_BOOKS,x+w+12,y,w,v.landscape?32:40,ps_tr("settings.transfer.open_shelf"));
             }
-            else cc_add(out,&n,CC_BOOKS,v.landscape?268:16,v.landscape?276:548,v.landscape?356:v.w-32,v.landscape?32:40,"完成，打开书架");
+            else cc_add(out,&n,CC_BOOKS,v.landscape?268:16,v.landscape?276:548,v.landscape?356:v.w-32,v.landscape?32:40,ps_tr("settings.transfer.done_shelf"));
         }
     }
     return n;
@@ -212,8 +214,8 @@ static void cc_network_row(uint8_t *fb,const cc_control_t *c){
     ps_icon(fb,c->x+10,c->y+12,22,connected?PI_CHECK:PI_WIFI,2);
     char name[40],detail[96];cc_fit(name,sizeof(name),ssid,c->w-100,19);
     ps_text(fb,c->x+42,c->y+5,15,name,2);
-    snprintf(detail,sizeof(detail),"%s%s%s",connected?"已连接":connecting?"正在连接":saved>=0?"已保存":network&&!network->supported?"暂不支持":network&&network->requires_password?"需要密码":"开放网络",
-             network?" · 信号":"",network?cc_signal(network->rssi):"");
+    snprintf(detail,sizeof(detail),"%s%s%s",ps_tr(connected?"settings.wifi.row.connected":connecting?"settings.wifi.row.connecting":saved>=0?"settings.wifi.row.saved":network&&!network->supported?"settings.wifi.row.unsupported":network&&network->requires_password?"settings.wifi.row.secured":"settings.wifi.row.open"),
+             network?ps_tr("settings.wifi.signal.sep"):"",network?cc_signal(network->rssi):"");
     ps_text(fb,c->x+42,c->y+27,10,detail,6);
     if(network)cc_draw_signal(fb,c->x+c->w-54,c->y+12,network->rssi);
     ps_text(fb,c->x+c->w-24,c->y+12,16,"›",5);
@@ -221,68 +223,68 @@ static void cc_network_row(uint8_t *fb,const cc_control_t *c){
 
 static void cc_render_confirm(uint8_t *fb){
     ps_view_t v=ps_view();
-    ps_heading(fb,cc_confirm==CC_CONFIRM_FORGET?"忘记此网络？":"结束本次传书？",NULL);
+    ps_heading(fb,ps_tr(cc_confirm==CC_CONFIRM_FORGET?"dialog.wifi.forget.title":"dialog.transfer.stop.title"),NULL);
     int y=v.landscape?98:164,x=v.landscape?88:24;
     ps_icon(fb,v.landscape?24:v.w/2-22,y,44,cc_confirm==CC_CONFIRM_FORGET?PI_WIFI:PI_IMPORT,2);
-    if(cc_stopping)ps_wrap(fb,x,v.landscape?104:y+68,v.w-x-24,19,2,"正在安全结束，请稍候…",2);
+    if(cc_stopping)ps_wrap(fb,x,v.landscape?104:y+68,v.w-x-24,19,2,ps_tr("dialog.transfer.stopping"),2);
     else if(cc_confirm==CC_CONFIRM_FORGET){
         ps_wrap(fb,x,v.landscape?104:y+68,v.w-x-24,18,2,cc_selected.ssid,2);
-        ps_wrap(fb,24,v.landscape?172:y+128,v.w-48,13,2,"将移除已保存的连接信息，下次连接需要重新输入密码。",5);
+        ps_wrap(fb,24,v.landscape?172:y+128,v.w-48,13,2,ps_tr("dialog.wifi.forget.body"),5);
     }
-    else ps_wrap(fb,x,v.landscape?104:y+68,v.w-x-24,15,3,cc_status.transfer.state==READ_PICO_TRANSFER_UPLOADING?
-            "正在上传的文件会中断。已经完成的文件会保留。":"结束后将关闭上传网页，已完成的文件会保留。",5);
-    if(cc_stop_failed)ps_wrap(fb,24,v.landscape?194:360,v.w-48,12,2,"尚未结束，可重试，或取消后继续留在本页。",3);
+    else ps_wrap(fb,x,v.landscape?104:y+68,v.w-x-24,15,3,ps_tr(cc_status.transfer.state==READ_PICO_TRANSFER_UPLOADING?
+            "dialog.transfer.uploading":"dialog.transfer.stop_body"),5);
+    if(cc_stop_failed)ps_wrap(fb,24,v.landscape?194:360,v.w-48,12,2,ps_tr("dialog.transfer.stop_failed"),3);
 }
 
 static const char *cc_scan_failure_message(void){
     switch(cc_status.scan_failure){
-        case READ_PICO_CONNECTIVITY_SCAN_START:return "扫描启动未成功，请重新扫描";
-        case READ_PICO_CONNECTIVITY_SCAN_RESULT:return "读取扫描结果失败，请重新扫描";
-        case READ_PICO_CONNECTIVITY_SCAN_TIMEOUT:return "扫描超时，请重新扫描";
-        case READ_PICO_CONNECTIVITY_SCAN_CANCELLED:return "扫描已中断，请重新扫描";
-        default:return "扫描未完成，请重新扫描";
+        case READ_PICO_CONNECTIVITY_SCAN_START:return ps_tr("settings.wifi.scan.start");
+        case READ_PICO_CONNECTIVITY_SCAN_RESULT:return ps_tr("settings.wifi.scan.result");
+        case READ_PICO_CONNECTIVITY_SCAN_TIMEOUT:return ps_tr("settings.wifi.scan.timeout");
+        case READ_PICO_CONNECTIVITY_SCAN_CANCELLED:return ps_tr("settings.wifi.scan.cancelled");
+        default:return ps_tr("settings.wifi.scan.incomplete");
     }
 }
 static const char *cc_nearby_empty_message(void){
-    if(cc_status.scanning)return "正在查找附近网络…";
-    if(cc_scan_requested)return cc_status.connecting?"连接结束后将自动扫描附近网络…":"正在准备扫描附近网络…";
-    if(!cc_status.wifi_enabled)return "开启或点重新扫描，即可查找网络；也可直接添加。";
+    if(cc_status.scanning)return ps_tr("settings.wifi.scan.searching");
+    if(cc_scan_requested)return ps_tr(cc_status.connecting?"settings.wifi.scan.after_connect":"settings.wifi.scan.preparing");
+    if(!cc_status.wifi_enabled)return ps_tr("settings.wifi.scan.off_hint");
     if(cc_message[0])return cc_message;
     if(cc_status.scan_error!=ESP_OK)return cc_scan_failure_message();
-    if(cc_status.scan_completed_seq)return "扫描完成，未发现附近网络；可重新扫描或手动添加。";
-    return "尚未扫描，可点重新扫描或手动添加。";
+    if(cc_status.scan_completed_seq)return ps_tr("settings.wifi.scan.empty");
+    return ps_tr("settings.wifi.scan.never");
 }
 
 static void cc_render_wifi(uint8_t *fb){
     ps_view_t v=ps_view();
     if(cc_view==CC_DETAIL){
-        ps_heading(fb,"网络详情",NULL);
+        ps_heading(fb,ps_tr("settings.wifi.detail"),NULL);
         int width=v.landscape?280:v.w-32;
         ps_icon(fb,24,91,30,PI_WIFI,2);
         ps_wrap(fb,64,91,width-48,19,2,cc_selected.ssid,2);
         char info[112];
         bool current=cc_status.connected&&!strcmp(cc_selected.ssid,cc_status.ssid);
-        snprintf(info,sizeof(info),"%s · %s",current?"已连接":cc_selected_saved?"已保存":"尚未连接",!cc_auth_known?"已记忆连接":cc_selected.requires_password?"加密网络":"开放网络");
+        snprintf(info,sizeof(info),"%s · %s",ps_tr(current?"settings.wifi.detail.connected":cc_selected_saved?"settings.wifi.detail.saved":"settings.wifi.detail.unsaved"),ps_tr(!cc_auth_known?"settings.wifi.detail.known":cc_selected.requires_password?"settings.wifi.detail.secured":"settings.wifi.detail.open"));
         ps_text(fb,24,156,13,info,5);
-        if(current){snprintf(info,sizeof(info),"网络地址 %s",cc_status.ip);ps_wrap(fb,24,188,width-8,13,2,info,5);}
-        else if(!cc_selected.supported)ps_wrap(fb,24,192,width-8,13,2,"此网络认证方式暂不支持，请选择其他网络。",5);
+        if(current){snprintf(info,sizeof(info),ps_tr("settings.wifi.ip_label"),cc_status.ip);ps_wrap(fb,24,188,width-8,13,2,info,5);}
+        else if(!cc_selected.supported)ps_wrap(fb,24,192,width-8,13,2,ps_tr("settings.wifi.unsupported_body"),5);
         if(cc_message[0])ps_wrap(fb,24,v.landscape?220:496,width-8,12,2,cc_message,3);
         return;
     }
-    ps_heading(fb,"Wi-Fi",NULL);
+    ps_heading(fb,ps_tr("settings.wifi.title"),NULL);
     int w=v.landscape?220:v.w-32;
     ps_box(fb,16,82,w,v.landscape?136:80,6,10,false);
     ps_icon(fb,26,98,26,PI_WIFI,2);
-    const char *state=!cc_status.ready?"正在准备网络":!cc_status.wifi_enabled?"Wi-Fi 已关闭":cc_status.connecting?"正在连接":cc_status.connected?"已连接":cc_status.scanning||cc_scan_requested?"正在查找网络":cc_status.state==READ_PICO_CONNECTIVITY_ERROR?"连接未成功":"未连接网络";
+    const char *state=ps_tr(!cc_status.ready?"settings.wifi.state.preparing":!cc_status.wifi_enabled?"settings.wifi.state.disabled":cc_status.connecting?"settings.wifi.state.connecting":cc_status.connected?"settings.wifi.state.connected":cc_status.scanning||cc_scan_requested?"settings.wifi.state.searching":cc_status.state==READ_PICO_CONNECTIVITY_ERROR?"settings.wifi.state.failed":"settings.wifi.state.idle");
     ps_text(fb,64,92,15,state,2);
     if(cc_status.connected||cc_status.connecting){
         char name[40];cc_fit(name,sizeof(name),cc_status.ssid,w-62,18);ps_text(fb,64,119,13,name,5);
-        if(v.landscape&&cc_status.connected){char ip[64];snprintf(ip,sizeof(ip),"地址 %s",cc_status.ip);ps_text(fb,26,162,12,ip,6);}
+        if(v.landscape&&cc_status.connected){char ip[64];snprintf(ip,sizeof(ip),ps_tr("settings.wifi.ip"),cc_status.ip);ps_text(fb,26,162,12,ip,6);}
     }
     else ps_wrap(fb,26,v.landscape?136:128,w-20,11,v.landscape?2:1,
-                 cc_status.wifi_enabled?"选择下方网络，连接一次即可记住":"开启后可连接网络或无线传书",6);
+                 ps_tr(cc_status.wifi_enabled?"settings.wifi.hint.on":"settings.wifi.hint.off"),6);
     int x=v.landscape?252:16,top=v.landscape?128:220,width=v.landscape?372:v.w-32;
-    if(!cc_total())ps_wrap(fb,x+8,top+34,width-16,14,3,cc_tab?"尚未保存网络，可从附近网络选择或添加。":cc_nearby_empty_message(),6);
+    if(!cc_total())ps_wrap(fb,x+8,top+34,width-16,14,3,cc_tab?ps_tr("settings.wifi.saved_empty"):cc_nearby_empty_message(),6);
     char page[64];int total=cc_total();snprintf(page,sizeof(page),"%d / %d",total?cc_scroll/cc_rows()+1:1,total?(total+cc_rows()-1)/cc_rows():1);
     ps_center(fb,x+width/2,v.landscape?65:164,10,page,6);
     if(cc_message[0]&&v.landscape)ps_wrap(fb,18,286,218,11,1,cc_message,3);
@@ -290,54 +292,54 @@ static void cc_render_wifi(uint8_t *fb){
 
 static void cc_render_transfer(uint8_t *fb){
     ps_view_t v=ps_view();const read_pico_transfer_status_t *t=&cc_status.transfer;
-    ps_heading(fb,!cc_session&&!ps_transfer_prepared()?"存储与传输":"无线传书",NULL);
+    ps_heading(fb,ps_tr(!cc_session&&!ps_transfer_prepared()?"settings.transfer.hub":"settings.transfer.title"),NULL);
     if(!cc_session&&!cc_status.transfer_active&&!ps_transfer_prepared()){
         ps_box(fb,16,82,v.w-32,v.landscape?44:62,5,10,false);
-        const char *card=!cc_card.present?"请先插入 TF 卡":cc_card.exported?"TF 卡正在由电脑使用":
-            cc_card.mounted?cc_card.read_verified&&cc_card.write_verified?"TF 卡已通过读写检查":"TF 卡已挂载":"TF 卡暂不可用，请先检查";
+        const char *card=ps_tr(!cc_card.present?"settings.transfer.card.missing":cc_card.exported?"settings.transfer.card.exported":
+            cc_card.mounted?cc_card.read_verified&&cc_card.write_verified?"settings.transfer.card.verified":"settings.transfer.card.mounted":"settings.transfer.card.bad");
         ps_text(fb,28,90,14,card,2);
         if(!v.landscape){char line[80],amount[24];cc_size(amount,sizeof(amount),cc_card.free_bytes);
-            snprintf(line,sizeof(line),"%s",cc_card.mounted?amount:"挂载、格式化与检查都在存储页完成");
+            snprintf(line,sizeof(line),"%s",cc_card.mounted?amount:ps_tr("settings.transfer.card.manage"));
             ps_text(fb,28,119,11,line,5);}
         int w=v.landscape?(v.w-56)/3:v.w-32;
-        ps_wrap(fb,24,v.landscape?221:232,w-16,12,2,cc_status.connected?"推荐 · 手机与阅读器在同一网络":"连接家中 Wi-Fi 后扫码上传",5);
-        ps_wrap(fb,v.landscape?36+w:24,v.landscape?221:336,w-16,12,2,"不需要路由器，手机直连设备热点",5);
-        ps_wrap(fb,v.landscape?48+2*w:24,v.landscape?221:440,w-16,12,2,"数据线连接电脑，拖入文件",5);
+        ps_wrap(fb,24,v.landscape?221:232,w-16,12,2,ps_tr(cc_status.connected?"settings.transfer.hint.lan_ready":"settings.transfer.hint.lan"),5);
+        ps_wrap(fb,v.landscape?36+w:24,v.landscape?221:336,w-16,12,2,ps_tr("settings.transfer.hint.ap"),5);
+        ps_wrap(fb,v.landscape?48+2*w:24,v.landscape?221:440,w-16,12,2,ps_tr("settings.transfer.hint.usb"),5);
         if(cc_storage_problem)ps_wrap(fb,24,v.landscape?251:475,v.w-48,11,1,cc_message,3);
         return;
     }
-    const char *state=cc_status.busy?"正在准备传书…":!cc_status.transfer_active&&cc_status.last_error!=ESP_OK?"传书未开始":t->state==READ_PICO_TRANSFER_UPLOADING?"正在接收文件":
-        t->state==READ_PICO_TRANSFER_READY?"等待上传":t->state==READ_PICO_TRANSFER_ERROR?"传书未完成":
-        t->state==READ_PICO_TRANSFER_STARTING?"正在连接网络…":"传书已停止";
+    const char *state=ps_tr(cc_status.busy?"settings.transfer.state.preparing":!cc_status.transfer_active&&cc_status.last_error!=ESP_OK?"settings.transfer.state.not_started":t->state==READ_PICO_TRANSFER_UPLOADING?"settings.transfer.state.receiving":
+        t->state==READ_PICO_TRANSFER_READY?"settings.transfer.state.waiting":t->state==READ_PICO_TRANSFER_ERROR?"settings.transfer.state.incomplete":
+        t->state==READ_PICO_TRANSFER_STARTING?"settings.transfer.state.connecting":"settings.transfer.state.stopped");
     int right=v.landscape?268:16,width=v.landscape?356:v.w-32;
     ps_box(fb,right,82,width,v.landscape?48:62,5,10,false);
     ps_text(fb,right+12,90,17,state,2);
     char line[192],name[40];cc_fit(name,sizeof(name),t->mode==READ_PICO_TRANSFER_MODE_AP?t->ssid:cc_status.ssid,width-24,17);
-    snprintf(line,sizeof(line),"%s · %s",t->mode==READ_PICO_TRANSFER_MODE_AP?"设备热点":"同一 Wi-Fi",name);
+    snprintf(line,sizeof(line),"%s · %s",ps_tr(t->mode==READ_PICO_TRANSFER_MODE_AP?"settings.transfer.mode.ap":"settings.transfer.mode.sta"),name);
     ps_text(fb,right+12,v.landscape?113:119,10,line,6);
     int qx=v.landscape?26:94,qy=v.landscape?86:154,side=v.landscape?196:172;
     if(cc_qr_ready)ui_wifi_qr_draw(fb,ps_rect(qx,qy,side,side));
     else{
         ps_box(fb,qx,qy,side,side,6,11,false);ps_icon(fb,qx+side/2-20,qy+side/2-30,40,PI_WIFI,5);
-        ps_center(fb,qx+side/2,qy+side/2+25,12,cc_status.busy||t->state==READ_PICO_TRANSFER_STARTING?"正在准备二维码":"连接后显示二维码",6);
+        ps_center(fb,qx+side/2,qy+side/2+25,12,ps_tr(cc_status.busy||t->state==READ_PICO_TRANSFER_STARTING?"settings.transfer.qr.preparing":"settings.transfer.qr.pending"),6);
     }
     bool ap=t->mode==READ_PICO_TRANSFER_MODE_AP;
-    ps_center(fb,qx+side/2,v.landscape?286:332,12,ap&&!cc_qr_url?"第1步 · 扫码连接阅读器热点":"扫码后在浏览器选择文件",5);
+    ps_center(fb,qx+side/2,v.landscape?286:332,12,ps_tr(ap&&!cc_qr_url?"settings.transfer.qr.step":"settings.transfer.qr.browser"),5);
     if(ap){
-        snprintf(line,sizeof(line),"热点密码：%s",READ_PICO_TRANSFER_PASSWORD);
+        snprintf(line,sizeof(line),ps_tr("settings.transfer.password"),READ_PICO_TRANSFER_PASSWORD);
         ps_text(fb,right+4,v.landscape?214:396,13,line,3);
     }
-    else ps_wrap(fb,right+4,v.landscape?176:374,width-8,13,v.landscape?1:2,"手机与阅读器保持连接同一个 Wi-Fi。",5);
-    cc_fit(line,sizeof(line),t->network_ready?t->url:cc_message[0]?cc_message:!cc_status.transfer_active&&!cc_status.busy?"请重新选择传书方式":"正在取得上传网址…",width-8,19);
+    else ps_wrap(fb,right+4,v.landscape?176:374,width-8,13,v.landscape?1:2,ps_tr("settings.transfer.same_net"),5);
+    cc_fit(line,sizeof(line),t->network_ready?t->url:cc_message[0]?cc_message:!cc_status.transfer_active&&!cc_status.busy?ps_tr("settings.transfer.url.reselect"):ps_tr("settings.transfer.url.pending"),width-8,19);
     ps_text(fb,right+4,v.landscape?144:426,15,line,t->network_ready?2:6);
     cc_capacity_text(line,sizeof(line));
     ps_text(fb,right+4,v.landscape?239:460,10,line,6);
     if(v.landscape){
         if(t->state==READ_PICO_TRANSFER_UPLOADING){
             unsigned percent=t->cur_total?(unsigned)((uint64_t)t->cur_bytes*100/t->cur_total):0;
-            snprintf(line,sizeof(line),"正在接收 %u%% · 已完成 %u 个",percent>100?100:percent,t->done_count);
+            snprintf(line,sizeof(line),ps_tr("settings.transfer.progress.receiving"),percent>100?100:percent,t->done_count);
         }
-        else snprintf(line,sizeof(line),"已完成 %u 个文件%s",t->done_count,t->last_error!=ESP_OK?" · 请在浏览器重试":"");
+        else snprintf(line,sizeof(line),ps_tr("settings.transfer.progress.files_retry"),t->done_count,t->last_error!=ESP_OK?ps_tr("settings.transfer.progress.retry"):"");
         ps_text(fb,right+4,256,10,line,3);
     }
     else{
@@ -345,23 +347,23 @@ static void cc_render_transfer(uint8_t *fb){
         if(t->state==READ_PICO_TRANSFER_UPLOADING){
             cc_fit(line,sizeof(line),t->cur_name,width-24,17);ps_text(fb,28,489,13,line,2);
             char have[24],total[24];cc_size(have,sizeof(have),t->cur_bytes);cc_size(total,sizeof(total),t->cur_total);
-            snprintf(line,sizeof(line),"%s / %s · 已完成 %u 个",have,total,t->done_count);ps_text(fb,28,514,10,line,5);
+            snprintf(line,sizeof(line),ps_tr("settings.transfer.progress.bytes"),have,total,t->done_count);ps_text(fb,28,514,10,line,5);
             int progress=t->cur_total?(int)((uint64_t)t->cur_bytes*(width-24)/t->cur_total):0;
             if(progress>width-24)progress=width-24;
             ps_fill(fb,28,531,width-24,3,11);if(progress>0)ps_fill(fb,28,531,progress,3,2);
         }
-        else{snprintf(line,sizeof(line),"已完成 %u 个文件",t->done_count);ps_text(fb,28,495,16,line,2);}
+        else{snprintf(line,sizeof(line),ps_tr("settings.transfer.progress.done"),t->done_count);ps_text(fb,28,495,16,line,2);}
     }
 }
 static void cc_render_manage(uint8_t *fb){
-    ps_view_t v=ps_view();ps_heading(fb,cc_manage_weread?"微信读书 · 手机配置":"手机与电脑管理",NULL);
+    ps_view_t v=ps_view();ps_heading(fb,ps_tr(cc_manage_weread?"settings.manage.weread_title":"settings.manage.title"),NULL);
     int x=v.landscape?30:84,y=v.landscape?91:124,side=v.landscape?168:192;
     if(cc_management.active&&cc_qr_ready)ui_wifi_qr_draw(fb,ps_rect(x,y,side,side));
-    else{ps_box(fb,x,y,side,side,8,12,true);ps_icon(fb,x+side/2-20,y+46,40,cc_status.connected?PI_LINK:PI_WIFI,5);ps_center(fb,x+side/2,y+112,12,cc_status.connected?"开启后扫码管理":"先连接 Wi-Fi",5);}
+    else{ps_box(fb,x,y,side,side,8,12,true);ps_icon(fb,x+side/2-20,y+46,40,cc_status.connected?PI_LINK:PI_WIFI,5);ps_center(fb,x+side/2,y+112,12,ps_tr(cc_status.connected?"settings.manage.qr_on":"settings.manage.qr_off"),5);}
     int text_x=v.landscape?232:20,text_y=v.landscape?94:344,width=v.w-text_x-20;
-    ps_wrap(fb,text_x,text_y,width,17,2,cc_manage_weread?"手机扫码填写微信读书 API Key":cc_management.active?"手机扫码管理，电脑连接桌面软件":"在手机或电脑上管理小纸 Pico",2);
-    ps_wrap(fb,text_x,text_y+54,width,12,3,cc_manage_weread?"手机与 Pico 连接同一 Wi-Fi，扫码后填写 Key、选择书籍同步。配置仅保存在此设备，无需电脑。":cc_management.active?"手机与阅读器保持同一 Wi-Fi，可管理图书、应用、画板和连接配置。":"先连接 Wi-Fi；也可通过 USB 连接桌面软件，在电脑完成首次配网。",5);
-    if(cc_management.active){char line[96];snprintf(line,sizeof(line),"约 %u 分钟有效 · 可离开此页",(unsigned)((cc_management.seconds_left+59)/60));ps_text(fb,text_x,text_y+112,11,line,5);snprintf(line,sizeof(line),"http://%s/manage",cc_management.host);ps_wrap(fb,text_x,text_y+138,width,11,1,line,5);}
+    ps_wrap(fb,text_x,text_y,width,17,2,ps_tr(cc_manage_weread?"settings.manage.weread_head":cc_management.active?"settings.manage.active_head":"settings.manage.idle_head"),2);
+    ps_wrap(fb,text_x,text_y+54,width,12,3,ps_tr(cc_manage_weread?"settings.manage.weread_body":cc_management.active?"settings.manage.active_body":"settings.manage.idle_body"),5);
+    if(cc_management.active){char line[96];snprintf(line,sizeof(line),ps_tr("settings.manage.ttl"),(unsigned)((cc_management.seconds_left+59)/60));ps_text(fb,text_x,text_y+112,11,line,5);snprintf(line,sizeof(line),"http://%s/manage",cc_management.host);ps_wrap(fb,text_x,text_y+138,width,11,1,line,5);}
     else if(cc_management.error[0])ps_wrap(fb,text_x,text_y+112,width,11,2,cc_management.error,4);
 }
 
@@ -413,12 +415,12 @@ static void cc_password_done(const char *password){
 }
 
 static void cc_password_editor(void){
-    if(!cc_selected.supported){ps_toast("此网络认证方式暂不支持");return;}
-    ps_edit_password("Wi-Fi 密码",64,cc_password_done);
+    if(!cc_selected.supported){ps_toast(ps_tr("settings.wifi.toast.unsupported"));return;}
+    ps_edit_password(ps_tr("settings.wifi.editor.password"),64,cc_password_done);
 }
 static void cc_name_done(const char *ssid){
     size_t bytes=ssid?strlen(ssid):0;
-    if(!bytes||bytes>32){ps_toast("网络名称需要 1–32 字节");return;}
+    if(!bytes||bytes>32){ps_toast(ps_tr("settings.wifi.toast.ssid"));return;}
     memset(&cc_selected,0,sizeof(cc_selected));
     cc_copy(cc_selected.ssid,sizeof(cc_selected.ssid),ssid);
     cc_selected.supported=cc_selected.requires_password=true;
@@ -431,7 +433,7 @@ static void cc_scan_submit_failed(bool enabling){
     cc_scan_requested=true;cc_scan_retry_at=ps_now()+500;
     if(++cc_scan_submission_failures<3)return;
     cc_scan_requested=false;cc_scanned_session=true;cc_visual_valid=false;
-    cc_copy(cc_message,sizeof(cc_message),enabling?"Wi-Fi 开启请求未提交，请重试":"扫描请求未提交，请重新扫描");
+    cc_copy(cc_message,sizeof(cc_message),ps_tr(enabling?"settings.wifi.toast.enable_fail":"settings.wifi.toast.scan_fail"));
     ps_toast(cc_message);
 }
 static void cc_scan_if_ready(void){
@@ -487,13 +489,13 @@ static void cc_select_row(int row,bool details){
 }
 
 static void cc_start_transfer(read_pico_transfer_mode_t mode){
-    if(cc_status.busy){ps_toast("正在处理网络，请稍候");return;}
+    if(cc_status.busy){ps_toast(ps_tr("settings.wifi.toast.busy"));return;}
     if(mode==READ_PICO_TRANSFER_MODE_STA&&!cc_status.connected){
-        ps_toast("先连接手机所在的 Wi-Fi，再开始传书");ps_navigate(PS_WIFI);return;
+        ps_toast(ps_tr("settings.wifi.toast.need_lan"));ps_navigate(PS_WIFI);return;
     }
     read_pico_transfer_cfg_t cfg={0};
     esp_err_t err=ps_transfer_prepare(&cfg);
-    if(err!=ESP_OK){cc_storage_problem=true;cc_copy(cc_message,sizeof(cc_message),"存储暂不可用，请检查存储卡后重试");ps_toast(cc_message);return;}
+    if(err!=ESP_OK){cc_storage_problem=true;cc_copy(cc_message,sizeof(cc_message),ps_tr("settings.wifi.toast.storage"));ps_toast(cc_message);return;}
     cc_storage_problem=false;
     cfg.mode=mode;
     ps_transfer_capacity(&cc_free,&cc_is_flash,&cc_limit);
@@ -509,6 +511,11 @@ bool ps_connectivity_request_transfer(read_pico_transfer_mode_t mode){
 }
 
 static void cc_action(int id,bool details){
+    if(id==CC_LOCALE){
+        if(!ps_locale_set(ps_locale()==PS_LOCALE_EN?PS_LOCALE_ZH_HANS:PS_LOCALE_EN))ps_toast(ps_tr("settings.locale.save_failed"));
+        else ps_toast(ps_tr("settings.locale.saved"));
+        return;
+    }
     if(id==CC_MANAGE_WIFI){ps_navigate(PS_WIFI);return;}
     if(id==CC_MANAGE_OPEN){read_pico_management_start();cc_manage_sync();return;}
     if(id==CC_MANAGE_STOP){read_pico_management_stop();cc_manage_sync();return;}
@@ -528,7 +535,7 @@ static void cc_action(int id,bool details){
     if(id==CC_NEXT){if(cc_scroll+cc_rows()<cc_total())cc_scroll+=cc_rows();return;}
     if(id==CC_NEARBY||id==CC_SAVED){cc_tab=id==CC_SAVED;cc_scroll=0;return;}
     if(id==CC_OPEN_TRANSFER){ps_navigate(PS_TRANSFER);return;}
-    if(id==CC_ADD){cc_manual=false;ps_edit("添加网络 · 名称","",32,cc_name_done);return;}
+    if(id==CC_ADD){cc_manual=false;ps_edit(ps_tr("settings.wifi.editor.ssid"),"",32,cc_name_done);return;}
     if(id==CC_SECURITY&&cc_manual){cc_selected.requires_password=!cc_selected.requires_password;return;}
     if(id==CC_TRANSFER_USB){ps_navigate(PS_USB_TRANSFER);return;}
     if(id==CC_STORAGE){ps_navigate(PS_STORAGE);return;}
@@ -537,11 +544,11 @@ static void cc_action(int id,bool details){
     if(id==CC_TRANSFER_RESET){cc_release_finished();cc_session=false;cc_message[0]=0;cc_clear_qr();return;}
     if(id==CC_TRANSFER_STA||id==CC_TRANSFER_AP){cc_start_transfer(id==CC_TRANSFER_STA?READ_PICO_TRANSFER_MODE_STA:READ_PICO_TRANSFER_MODE_AP);return;}
     if(id>=CC_ROW){
-        if(cc_status.busy){ps_toast("正在处理网络，请稍候");return;}
+        if(cc_status.busy){ps_toast(ps_tr("settings.wifi.toast.busy"));return;}
         cc_select_row(id-CC_ROW,details);return;
     }
     if(id==CC_SCAN){ps_connectivity_request_scan();return;}
-    if(cc_status.busy){ps_toast("正在处理网络，请稍候");return;}
+    if(cc_status.busy){ps_toast(ps_tr("settings.wifi.toast.busy"));return;}
     if(id==CC_WIFI_TOGGLE){
         bool enable=!cc_status.wifi_enabled;
         cc_scanned_session=false;cc_scan_retry_at=0;
@@ -593,7 +600,8 @@ bool ps_connectivity_before_leave(ps_route_t target){
 }
 
 void ps_connectivity_init(void){
-    cc_copy(cc_message,sizeof(cc_message),read_pico_connectivity_init()==ESP_OK?"":"网络暂不可用，请稍后重试");
+    ps_i18n_init();
+    cc_copy(cc_message,sizeof(cc_message),read_pico_connectivity_init()==ESP_OK?"":ps_tr("settings.wifi.toast.unavailable"));
     read_pico_connectivity_get_status(&cc_status);
     cc_visual_valid=false;cc_scanned_session=cc_scan_requested=cc_manual=cc_manage_weread=false;cc_stop_failed=false;cc_poll_at=cc_visual_at=cc_scan_retry_at=0;cc_stop_seq=cc_scan_submission_failures=0;
 }
@@ -669,15 +677,15 @@ bool ps_connectivity_tick(void){
     }
     if(cc_status.result_seq!=old_result&&ps_route()==PS_WIFI){
         if(cc_status.last_error!=ESP_OK){
-            const char *message="网络操作未完成，请重试";
+            const char *message=ps_tr("settings.wifi.toast.generic");
             switch(cc_status.last_operation){
                 case READ_PICO_CONNECTIVITY_OP_SCAN:message=cc_scan_failure_message();break;
                 case READ_PICO_CONNECTIVITY_OP_WIFI:
                     cc_scan_requested=false;cc_scanned_session=true;
-                    message="Wi-Fi 开启未成功，请重试";break;
-                case READ_PICO_CONNECTIVITY_OP_CONNECT:message="连接未成功，请检查密码或重新尝试";break;
-                case READ_PICO_CONNECTIVITY_OP_PROFILE:message=cc_status.connected?"已连接，但网络未保存，请重试":"网络记忆未更新，请重试";break;
-                case READ_PICO_CONNECTIVITY_OP_TRANSFER:message="传书网络未准备完成，请重试";break;
+                    message=ps_tr("settings.wifi.toast.wifi_on");break;
+                case READ_PICO_CONNECTIVITY_OP_CONNECT:message=ps_tr("settings.wifi.toast.connect");break;
+                case READ_PICO_CONNECTIVITY_OP_PROFILE:message=ps_tr(cc_status.connected?"settings.wifi.toast.profile_saved":"settings.wifi.toast.profile");break;
+                case READ_PICO_CONNECTIVITY_OP_TRANSFER:message=ps_tr("settings.wifi.toast.transfer");break;
                 default:break;
             }
             cc_copy(cc_message,sizeof(cc_message),message);ps_toast(cc_message);
@@ -705,10 +713,10 @@ bool ps_connectivity_shutdown(void){
 void ps_connectivity_media_lost(void){
     // 壳在此通知前已等待shutdown成功；不在失卡后读容量或尝试切换目录。 / The shell has already joined shutdown; never read capacity or switch directories after media loss.
     cc_free=0;cc_session=false;cc_confirm=CC_CONFIRM_NONE;cc_stopping=false;cc_stop_failed=false;cc_clear_qr();
-    cc_copy(cc_message,sizeof(cc_message),"存储卡已移除，传书已停止");
+    cc_copy(cc_message,sizeof(cc_message),ps_tr("settings.wifi.toast.card_gone"));
 }
 
-const char *ps_network_label(void){return cc_status.connected&&cc_status.ssid[0]?cc_status.ssid:cc_status.wifi_enabled?"Wi-Fi 未连接":"Wi-Fi 已关闭";}
+const char *ps_network_label(void){return cc_status.connected&&cc_status.ssid[0]?cc_status.ssid:ps_tr(cc_status.wifi_enabled?"settings.wifi.label.idle":"settings.wifi.label.off");}
 int ps_wifi_count(void){return (int)cc_status.saved_count;}
 const char *ps_wifi_name(int index){return index>=0&&(size_t)index<cc_status.saved_count?cc_status.saved[index].ssid:"";}
 int ps_wifi_connected_index(void){return cc_status.connected?cc_saved_index(cc_status.ssid):-1;}

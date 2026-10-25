@@ -48,6 +48,8 @@ ps_view_t ps_view(void){return view;}
 ps_route_t ps_route(void){return route;}
 int64_t ps_now(void){return now_ms;}
 void ps_toast(const char *s){snprintf(last_toast,sizeof(last_toast),"%s",s);}
+bool ps_load(const char *key,void *out,size_t bytes){(void)key;(void)out;(void)bytes;return false;}
+bool ps_store(const char *key,const void *data,size_t bytes){(void)key;(void)data;(void)bytes;return true;}
 void ps_dirty(void){}
 void ps_navigate(ps_route_t next){if(ps_connectivity_before_leave(next))return;if(next!=route){CHECK(depth<32);history[depth++]=route;route=next;}ps_connectivity_enter(next);}
 void ps_back(void){route=depth?history[--depth]:PS_WIFI;ps_connectivity_enter(route);}
@@ -97,6 +99,13 @@ void ui_wifi_qr_draw(uint8_t *fb,EpdRect area){(void)fb;CHECK(area.x>=0&&area.y>
 #endif
 
 #include "../main/system/pico_connectivity.c"
+#pragma push_macro("ps_button")
+#pragma push_macro("ps_hit")
+#undef ps_button
+#undef ps_hit
+#include "../main/system/pico_i18n.c"
+#pragma pop_macro("ps_hit")
+#pragma pop_macro("ps_button")
 
 static void fixture(void){
     memset(&management,0,sizeof(management));cw_state=CW_NONE;cw_operation=0;cw_poll_at=0;memset(cw_pair_url,0,sizeof(cw_pair_url));
@@ -110,7 +119,7 @@ static void fixture(void){
     cc_page=PS_ROUTE_COUNT;cc_view=CC_LIST;cc_tab=cc_scroll=cc_confirm=0;cc_session=cc_stopping=cc_storage_problem=cc_stop_failed=false;
     cc_visual_valid=cc_scanned_session=cc_scan_requested=cc_manual=cc_qr_ready=false;cc_poll_at=cc_visual_at=cc_scan_retry_at=0;cc_message[0]=cc_qr_key[0]=0;cc_changed=cc_stop_seq=cc_scan_submission_failures=0;prepared=false;job=0;depth=0;route=PS_WIFI;password_done=name_done=NULL;
     commands=reads=capacity_reads=prepares=finished=books=qr_prepares=qr_clears=qr_draws=draws=card_reads=0;usb_held=false;memset(&sd_card,0,sizeof(sd_card));fail_command=fail_prepare=fail_quiesce=fail_stop=0;
-    now_ms+=2000;ps_connectivity_enter(PS_WIFI);
+    now_ms+=2000;ps_locale_set(PS_LOCALE_ZH_HANS);ps_connectivity_enter(PS_WIFI);
 }
 static void complete_job(void){
     CHECK(engine.busy&&job);engine.completed_seq=engine.submitted_seq;engine.busy=false;engine.last_error=ESP_OK;
@@ -271,8 +280,14 @@ static void test_management(void){
     action(CC_MANAGE_STOP);CHECK(!management.active&&!cc_qr_ready);layout();
     action(CC_MANAGE_OPEN);CHECK(management.active&&cc_qr_ready);engine.connected=false;tick();CHECK(!management.active&&!cc_qr_ready);layout();
 }
+static void test_locale_chip(void){
+    fixture();CHECK(ps_locale()==PS_LOCALE_ZH_HANS);
+    action(CC_LOCALE);CHECK(ps_locale()==PS_LOCALE_EN&&strstr(last_toast,"Language"));layout();
+    ps_navigate(PS_TRANSFER);layout();ps_navigate(PS_WIRELESS_MANAGE);layout();
+    ps_navigate(PS_WIFI);action(CC_LOCALE);CHECK(ps_locale()==PS_LOCALE_ZH_HANS);layout();
+}
 int main(void){
-    for(int land=0;land<2;land++){view=land?(ps_view_t){640,360,true}:(ps_view_t){360,640,false};test_wifi();test_first_use();test_scan_lifecycle();test_transfer();test_management();}
+    for(int land=0;land<2;land++){view=land?(ps_view_t){640,360,true}:(ps_view_t){360,640,false};test_wifi();test_first_use();test_scan_lifecycle();test_transfer();test_management();test_locale_chip();}
     printf("PASS: connection UI %d checks, real controls/state machine with network/storage doubles; physical WiFi/upload acceptance remains.\n",checks);
     return 0;
 }

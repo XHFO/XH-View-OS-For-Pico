@@ -12,6 +12,7 @@
  * Frozen: Replace live configuration only after successful persistence; preserve failed drafts; rendering is pure.
  */
 #include "pico_navigation.h"
+#include "pico_i18n.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -58,6 +59,7 @@ static int usable(const navigation_saved_t *saved) {
     int n=0;for(int i=0;i<saved->count;i++)if(find_entry(saved->ids[i]))n++;return n;
 }
 void ps_navigation_init(void) {
+    ps_i18n_init();
     memcpy(registry,builtin,sizeof(builtin));registry_count=(int)(sizeof(builtin)/sizeof(*builtin));
     defaults(&current);navigation_saved_t loaded;
     if(ps_load("navigation1",&loaded,sizeof(loaded))&&valid(&loaded))current=loaded;
@@ -86,6 +88,19 @@ const ps_navigation_entry_t *ps_navigation_item(int index) {
         if(entry&&index--==0)return entry;
     }
     return index==0&&!usable(&current)?&builtin[0]:NULL;
+}
+const char *ps_navigation_label(const ps_navigation_entry_t *entry) {
+    if(!entry)return "";
+    const char *key=NULL;
+    switch(entry->id){
+        case PS_NAV_BOOKS:key="nav.books";break;
+        case PS_NAV_HOME:key="nav.home";break;
+        case PS_NAV_GAMES:key="nav.games";break;
+        case PS_NAV_PRINTERS:key="nav.printers";break;
+        case PS_NAV_APPS:key="nav.apps";break;
+        default:break;
+    }
+    return key?ps_tr(key):entry->label?entry->label:"";
 }
 int ps_navigation_index(ps_route_t route) {
     for(int i=0;i<ps_navigation_count();i++) {
@@ -119,55 +134,56 @@ static void picker_render(uint8_t *fb) {
     ps_view_t v=ps_view();EpdRect r=picker_box();
     ps_fill(fb,0,76,v.w,v.h-76,13);ps_box(fb,r.x,r.y,r.width,r.height,12,15,true);
     ps_box(fb,r.x,r.y,r.width,r.height,12,9,false);
-    ps_text(fb,r.x+16,r.y+13,15,editor.adding?"添加首页入口":"替换首页入口",1);
+    ps_text(fb,r.x+16,r.y+13,15,ps_tr(editor.adding?"settings.nav.add_title":"settings.nav.replace_title"),1);
     ps_icon(fb,r.x+r.width-36,r.y+11,22,PI_CLOSE,3);
     int rows=picker_rows(),rh=picker_row_height(),start=editor.picker_page*rows;
     for(int j=0;j<rows&&start+j<registry_count;j++) {
         const ps_navigation_entry_t *entry=&registry[start+j];int y=picker_row_y()+j*rh;
         int used=draft_index(entry->id);
         ps_icon(fb,r.x+14,y+8,22,entry->icon,2);
-        ps_text_fixed(fb,r.x+46,y+9,14,entry->label,2);
-        if(used>=0)ps_text_fixed(fb,r.x+r.width-76,y+13,10,"已显示",5);
+        ps_text_fixed(fb,r.x+46,y+9,14,ps_navigation_label(entry),2);
+        if(used>=0)ps_text_fixed(fb,r.x+r.width-76,y+13,10,ps_tr("settings.nav.shown"),5);
         ps_line(fb,r.x+14,y+rh-1,r.x+r.width-15,y+rh-1,13);
     }
     int y=r.y+r.height-36;
-    ps_button(fb,r.x+12,y,76,28,"上一页",false);
+    ps_button(fb,r.x+12,y,76,28,ps_tr("common.prev"),false);
     char page[40];snprintf(page,sizeof(page),"%d / %d",editor.picker_page+1,(registry_count+rows-1)/rows);
     ps_center(fb,r.x+r.width/2,y+7,11,page,5);
-    ps_button(fb,r.x+r.width-88,y,76,28,"下一页",false);
+    ps_button(fb,r.x+r.width-88,y,76,28,ps_tr("common.next"),false);
 }
 void ps_navigation_render(uint8_t *fb) {
-    ps_view_t v=ps_view();ps_heading(fb,"首页导航",NULL);
-    ps_text_fixed(fb,18,84,12,"选择入口后调整；左右滑动按此顺序切换",5);
-    if(!v.landscape)ps_text_fixed(fb,18,111,11,"设置按钮始终保留，完成后才会保存",5);
+    ps_view_t v=ps_view();ps_heading(fb,ps_tr("settings.nav.title"),NULL);
+    ps_i18n_chip(fb,v.w-16-PS_I18N_CHIP_W,32);
+    ps_text_fixed(fb,18,84,12,ps_tr("settings.nav.hint"),5);
+    if(!v.landscape)ps_text_fixed(fb,18,111,11,ps_tr("settings.nav.hint_settings"),5);
     for(int i=0;i<editor.draft.count;i++) {
         int y=row_top()+i*row_height(),h=row_height()-4;bool selected=editor.selected==i;
         const ps_navigation_entry_t *entry=find_entry(editor.draft.ids[i]);
         ps_box(fb,16,y,v.w-32,h,6,selected?11:14,true);
         if(selected)ps_box(fb,16,y,v.w-32,h,6,7,false);
         ps_icon(fb,28,y+(h-22)/2,22,entry?entry->icon:PI_GRID,2);
-        ps_text_fixed(fb,63,y+(h-14)/2,14,entry?entry->label:"未安装应用",2);
+        ps_text_fixed(fb,63,y+(h-14)/2,14,entry?ps_navigation_label(entry):ps_tr("settings.nav.missing"),2);
         char number[12];snprintf(number,sizeof(number),"%d",i+1);
         ps_text(fb,v.w-44,y+(h-12)/2,12,number,5);
     }
     int cw=(v.w-50)/4,y=action_y(),h=v.landscape?29:37;
-    const char *actions[]={"上移","下移","替换","隐藏"};
+    const char *actions[]={ps_tr("settings.nav.up"),ps_tr("settings.nav.down"),ps_tr("settings.nav.replace"),ps_tr("settings.nav.hide")};
     for(int i=0;i<4;i++)ps_button(fb,16+i*(cw+6),y,cw,h,actions[i],false);
     y=more_y();
     if(v.landscape) {
-        ps_button(fb,16,y,102,29,"添加入口",false);
-        ps_button(fb,126,y,102,29,"恢复默认",false);
+        ps_button(fb,16,y,102,29,ps_tr("settings.nav.add"),false);
+        ps_button(fb,126,y,102,29,ps_tr("settings.nav.reset"),false);
     } else {
-        ps_button(fb,16,y,(v.w-42)/2,34,"添加入口",false);
-        ps_button(fb,26+(v.w-42)/2,y,(v.w-42)/2,34,"恢复默认",false);
+        ps_button(fb,16,y,(v.w-42)/2,34,ps_tr("settings.nav.add"),false);
+        ps_button(fb,26+(v.w-42)/2,y,(v.w-42)/2,34,ps_tr("settings.nav.reset"),false);
     }
     y=footer_y();
     if(v.landscape) {
-        ps_button(fb,v.w-220,y,94,31,"取消",false);
-        ps_button(fb,v.w-114,y,98,31,"完成",true);
+        ps_button(fb,v.w-220,y,94,31,ps_tr("common.cancel"),false);
+        ps_button(fb,v.w-114,y,98,31,ps_tr("common.done"),true);
     } else {
-        ps_button(fb,16,y,100,35,"取消",false);
-        ps_button(fb,v.w-116,y,100,35,"完成",true);
+        ps_button(fb,16,y,100,35,ps_tr("common.cancel"),false);
+        ps_button(fb,v.w-116,y,100,35,ps_tr("common.done"),true);
     }
     if(editor.picking)picker_render(fb);
 }
@@ -180,7 +196,7 @@ static void move_selected(int delta) {
 static void hide_selected(void) {
     int pos=editor.selected;
     if(editor.draft.count<=1||(find_entry(editor.draft.ids[pos])&&usable(&editor.draft)<=1)) {
-        ps_toast("至少保留一个首页入口");return;
+        ps_toast(ps_tr("settings.nav.keep_one"));return;
     }
     memmove(editor.draft.ids+pos,editor.draft.ids+pos+1,(editor.draft.count-pos-1)*sizeof(*editor.draft.ids));
     editor.draft.ids[--editor.draft.count]=0;
@@ -189,7 +205,7 @@ static void hide_selected(void) {
 static void choose_entry(uint16_t id) {
     int used=draft_index(id);
     if(editor.adding) {
-        if(used>=0){ps_toast("该入口已在首页，可直接调整顺序");return;}
+        if(used>=0){ps_toast(ps_tr("settings.nav.already"));return;}
         editor.selected=editor.draft.count;editor.draft.ids[editor.draft.count++]=id;
     } else {
         if(used>=0)editor.draft.ids[used]=editor.draft.ids[editor.selected];
@@ -214,6 +230,10 @@ static bool picker_event(const ps_event_t *e) {
 }
 bool ps_navigation_event(const ps_event_t *e) {
     if(!editor.active)return false;
+    if(e->type==PS_TAP){
+        ps_view_t v=ps_view();
+        if(ps_i18n_chip_hit(e->x,e->y,v.w-16-PS_I18N_CHIP_W,32))return true;
+    }
     if(editor.picking)return picker_event(e);
     if(e->type!=PS_TAP)return false;
     ps_view_t v=ps_view();
@@ -227,10 +247,10 @@ bool ps_navigation_event(const ps_event_t *e) {
     }
     y=more_y();int add_w=v.landscape?102:(v.w-42)/2,other_x=v.landscape?126:26+add_w;
     if(ps_hit(e->x,e->y,16,y,add_w,v.landscape?29:34)) {
-        if(editor.draft.count>=PS_NAV_MAX_VISIBLE)ps_toast("首页最多保留五个入口，请先隐藏或替换");
+        if(editor.draft.count>=PS_NAV_MAX_VISIBLE)ps_toast(ps_tr("settings.nav.full"));
         else {
             bool available=false;for(int i=0;i<registry_count;i++)if(draft_index(registry[i].id)<0)available=true;
-            if(!available)ps_toast("所有可用入口都已显示");
+            if(!available)ps_toast(ps_tr("settings.nav.none_left"));
             else {editor.adding=true;editor.picker_page=0;editor.picking=true;}
         }return true;
     }
@@ -238,8 +258,8 @@ bool ps_navigation_event(const ps_event_t *e) {
     y=footer_y();int cancel_x=v.landscape?v.w-220:16,done_x=v.landscape?v.w-114:v.w-116;
     if(ps_hit(e->x,e->y,cancel_x,y,v.landscape?94:100,v.landscape?31:35)) {editor.active=false;ps_back();return true;}
     if(ps_hit(e->x,e->y,done_x,y,v.landscape?98:100,v.landscape?31:35)) {
-        if(!usable(&editor.draft)){ps_toast("至少保留一个可用入口");return true;}
-        if(!ps_store("navigation1",&editor.draft,sizeof(editor.draft))) {ps_toast("未能保存，调整内容已保留，请重试");return true;}
+        if(!usable(&editor.draft)){ps_toast(ps_tr("settings.nav.keep_usable"));return true;}
+        if(!ps_store("navigation1",&editor.draft,sizeof(editor.draft))) {ps_toast(ps_tr("settings.nav.save_failed"));return true;}
         current=editor.draft;editor.active=false;ps_back();return true;
     }
     return false;
