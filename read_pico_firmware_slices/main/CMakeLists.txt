@@ -54,6 +54,7 @@ idf_component_register(
         "system/pico_reader.c"
         "system/pico_home.c"
         "system/pico_home_pga.c"
+        "system/pico_home_portal.c"
         "system/pico_games.c"
         "ui/ui_kit.c"
         "ui/ui_image.c"

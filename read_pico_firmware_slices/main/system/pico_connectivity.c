@@ -11,6 +11,7 @@
  */
 #include "pico_system.h"
 #include "pico_connectivity.h"
+#include "pico_home_portal.h"
 #include "read_pico_connectivity.h"
 #include "read_pico_sd.h"
 #include "ui_wifi_qr.h"
@@ -510,7 +511,7 @@ bool ps_connectivity_request_transfer(read_pico_transfer_mode_t mode){
 
 static void cc_action(int id,bool details){
     if(id==CC_MANAGE_WIFI){ps_navigate(PS_WIFI);return;}
-    if(id==CC_MANAGE_OPEN){read_pico_management_start();cc_manage_sync();return;}
+    if(id==CC_MANAGE_OPEN){ps_home_portal_stop();read_pico_management_start();cc_manage_sync();return;}
     if(id==CC_MANAGE_STOP){read_pico_management_stop();cc_manage_sync();return;}
     if(cc_confirm){
         if(cc_stopping)return;
@@ -620,7 +621,7 @@ void ps_connectivity_enter(ps_route_t route){
     }
     if(route==PS_WIRELESS_MANAGE){
         memset(&cc_management,0,sizeof(cc_management));cc_qr_ready=false;
-        if(changed&&cc_status.connected&&!read_pico_management_active())read_pico_management_start();
+        if(changed&&cc_status.connected&&!read_pico_management_active()){ps_home_portal_stop();read_pico_management_start();}
         cc_manage_sync();
     }else cc_prepare_qr();
     if(route==PS_WIFI)cc_scan_if_ready();

@@ -12,6 +12,7 @@
  */
 #include "pico_home_pga.h"
 #include "read_pico_home_link.h"
+#include "read_pico_management.h"
 #include "pico_system.h"
 #include "pico_datetime.h"
 #include "esp_crt_bundle.h"
@@ -41,7 +42,7 @@ typedef struct {
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_worker;
 static pga_store_t *s_store;
-static bool s_ready, s_queued, s_busy, s_online, s_at_home, s_stop;
+static bool s_ready, s_queued, s_busy, s_online, s_at_home, s_stop, s_portal_owner;
 #define s_config (s_store->config)
 #define s_snap (s_store->snap)
 #define s_tokens (s_store->tokens)
@@ -202,6 +203,8 @@ static void fill_status(pico_app_home_status_t *st) {
     if (st->busy) st->flags |= PGA_HOME_BUSY;
     if (st->external) st->flags |= PGA_HOME_EXTERNAL;
     if (st->has_cf) st->flags |= PGA_HOME_CF;
+    if (s_portal_owner) st->flags |= PGA_HOME_PORTAL;
+    if (read_pico_management_active()) st->flags |= PGA_HOME_MANAGE;
     const char *text = rp_home_result_text((rp_home_result_t)st->result);
     snprintf(st->error, sizeof(st->error), "%s", text ? text : "");
 }
@@ -310,6 +313,13 @@ bool ps_home_pga_config(uint32_t command, pico_app_home_config_t *config) {
     }
     if (command != PGA_HOME_CONFIG_SET) return false;
     lock();
+    if (s_portal_owner || read_pico_management_active()) {
+        unlock();
+        memset(config->ha_token, 0, sizeof(config->ha_token));
+        memset(config->cf_access_client_id, 0, sizeof(config->cf_access_client_id));
+        memset(config->cf_access_client_secret, 0, sizeof(config->cf_access_client_secret));
+        return false;
+    }
     rp_home_config_t *next = &s_store->edit;
     *next = s_config;
     next->version = RP_HOME_CONFIG_VERSION;
@@ -466,6 +476,50 @@ void ps_home_pga_input_done(const char *text) {
     if (!s_input_open) return;
     snprintf(s_input, sizeof(s_input), "%s", text ? text : "");
     s_input_ready = true;
+}
+
+bool ps_home_pga_portal_load(rp_home_config_t *config, rp_home_snapshot_t *snapshot) {
+    ps_home_pga_init();
+    if (!s_ready || !config || !snapshot) return false;
+    lock();
+    *config = s_config;
+    *snapshot = s_snap;
+    unlock();
+    return true;
+}
+
+bool ps_home_pga_portal_commit(const rp_home_config_t *config, bool *queued) {
+    if (queued) *queued = false;
+    ps_home_pga_init();
+    if (!s_ready || !config || !rp_home_config_valid(config)) return false;
+    int wifi = ps_wifi_connected_index();
+    bool online = wifi >= 0;
+    bool home = online && config->home_wifi[0] && !strcmp(config->home_wifi, ps_wifi_name(wifi));
+    lock();
+    s_store->edit = s_config;
+    s_config = *config;
+    bool ok = save_config_locked();
+    if (!ok) s_config = s_store->edit;
+    memset(&s_store->edit, 0, sizeof(s_store->edit));
+    bool queue = ok && s_worker && online && s_config.enabled;
+    if (queue) {
+        s_online = online;
+        s_at_home = home;
+        s_queued = true;
+        s_busy = true;
+    }
+    unlock();
+    if (queue && s_worker) xTaskNotifyGive(s_worker);
+    if (queued) *queued = queue;
+    return ok;
+}
+
+void ps_home_pga_portal_set_owner(bool portal_owns_writes) {
+    ps_home_pga_init();
+    if (!s_lock) return;
+    lock();
+    s_portal_owner = portal_owns_writes;
+    unlock();
 }
 
 bool ps_home_pga_suspend(uint32_t timeout_ms) {

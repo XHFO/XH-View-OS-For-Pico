@@ -1,3 +1,4 @@
+#include "pico_home_portal.h"
 /* 真实家庭服务界面，只在事件/tick排队；绘制读取已提交快照。
  * Real home services: events/ticks queue work; rendering only reads committed snapshots.
  * 冻结：没有配置时为空状态，绝不把示例视为真实连接；凭据仅NVS/私有宿主配置。
@@ -306,6 +307,7 @@ static bool real_manage_sync(void) {
     return changed;
 }
 static void real_manage_begin(void) {
+    ps_home_portal_stop();
     real_manage = true;
     read_pico_management_start();
     real_manage_sync();

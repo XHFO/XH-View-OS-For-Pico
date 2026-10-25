@@ -96,6 +96,8 @@ void ps_heading(uint8_t *fb,const char *title,const char *subtitle){(void)fb;(vo
 void ui_wifi_qr_draw(uint8_t *fb,EpdRect area){(void)fb;CHECK(area.x>=0&&area.y>=0&&area.x+area.width<=view.w*19/10&&area.y+area.height<=view.h*19/10);qr_draws++;}
 #endif
 
+void ps_home_portal_stop(void) {}
+
 #include "../main/system/pico_connectivity.c"
 
 static void fixture(void){

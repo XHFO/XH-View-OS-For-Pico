@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  * 中文：家庭连接 TF 工具包（kind 130）；经宿主 ABI 监看 HA/打印机，含 Cloudflare Access。
  * English: Home-link TF package (kind 130); monitors HA/printers via host ABI, including Cloudflare Access.
- * 薄宿主 manage 仍为 home_module_missing；本包用设备侧配置+宿主 HTTP，不声称手机 manage 已接通。
- * Thin-host manage stays home_module_missing; this package uses on-device config + host HTTP.
+ * 手机扫码写入与 Mac 管理页共用 PGA 存储。门户开着时本机与 Mac 都不保存，避免抢写。
+ * The phone portal and the Mac manage page share the PGA store. While the portal is open, neither the device keyboard nor Mac saves.
  */
 #include "pico_app_sdk.h"
 
-enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10100 };
+enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10101 };
 enum { PAGE_MONITOR, PAGE_SETUP, PAGE_PRINTERS };
 
 static const pico_app_host_t *host;
@@ -58,6 +58,16 @@ static void request_sync(void) {
 
 static bool save_config(void) {
     if (!has_home()) return false;
+    status.bytes = sizeof(status);
+    (void)host->home_link(PGA_HOME_STATUS, &status);
+    if (status.flags & PGA_HOME_PORTAL) {
+        host->toast("手机正在填写，本机暂不保存");
+        return false;
+    }
+    if (status.flags & PGA_HOME_MANAGE) {
+        host->toast("请先关闭电脑管理会话");
+        return false;
+    }
     config.bytes = sizeof(config);
     bool ok = host->home_link_config(PGA_HOME_CONFIG_SET, &config);
     host->set(config.ha_token, 0, sizeof(config.ha_token));
@@ -170,10 +180,10 @@ static void render_setup(uint8_t *fb) {
     pico_app_view_t v = host->view();
     host->fill(fb, 0, 0, v.w, v.h, 15);
     host->heading(fb, "连接设置", "设备本地保存");
-    host->wrap(fb, 24, 110, v.w - 48, 12, 4,
-               "手机 manage 在薄宿主仍返回 home_module_missing。此处配置仅存本机，供本工具包使用。", 5);
+    host->wrap(fb, 24, 100, v.w - 48, 12, 3,
+               "点「手机填写」在局域网扫码。电脑管理页可稍后读取同一份配置，两边不要同时保存。", 5);
     char line[192];
-    int y = 170;
+    int y = 148;
     const char *labels[] = {"本地地址", "外部 HTTPS", "HA 令牌", "CF Client ID", "CF Client Secret", "家庭 Wi‑Fi"};
     for (int i = 0; i < 6; i++) {
         host->format(line, sizeof(line), "%s：%s", labels[i],
@@ -183,8 +193,8 @@ static void render_setup(uint8_t *fb) {
                      : i == 3 ? (config.has_cf_id ? "已保存" : "（未设）")
                      : i == 4 ? (config.has_cf_secret ? "已保存" : "（未设）")
                               : (config.home_wifi[0] ? config.home_wifi : "（未设）"));
-        host->button(fb, 16, y, v.w - 32, 36, line, setup_field == (unsigned)i);
-        y += 42;
+        host->button(fb, 16, y, v.w - 32, 32, line, setup_field == (unsigned)i);
+        y += 36;
     }
     host->format(line, sizeof(line), "启用 %s · 外部 %s · 外控 %s · Access %s",
                  config.enabled ? "开" : "关", config.external_enabled ? "开" : "关",
@@ -192,7 +202,7 @@ static void render_setup(uint8_t *fb) {
                  (config.has_cf_id && config.has_cf_secret) ? "已配置" : "无");
     host->text(fb, 24, y + 8, 13, line, 5);
     int bw = (v.w - 48) / 3;
-    host->button(fb, 16, v.h - 56, bw, 40, "开关项", false);
+    host->button(fb, 16, v.h - 56, bw, 40, "手机填写", false);
     host->button(fb, 24 + bw, v.h - 56, bw, 40, "保存", false);
     host->button(fb, 32 + 2 * bw, v.h - 56, bw, 40, "返回", false);
 }
@@ -224,7 +234,9 @@ static void render_printers(uint8_t *fb) {
             y += 72;
         }
     }
-    host->button(fb, 16, v.h - 56, v.w - 32, 40, "返回监看", false);
+    int bw = (v.w - 40) / 2;
+    host->button(fb, 16, v.h - 56, bw, 40, "手机填写", false);
+    host->button(fb, 24 + bw, v.h - 56, bw, 40, "返回监看", false);
 }
 
 static void render(uint8_t *fb) {
@@ -299,9 +311,25 @@ static bool event_monitor(const pico_app_event_t *e) {
 }
 
 static bool event_setup(const pico_app_event_t *e) {
-    int y = 170;
+    if (e->type == PGA_TAP && hit_bottom3(e, 0)) {
+        status.bytes = sizeof(status);
+        if (!host->home_link(PGA_HOME_OPEN_SETUP, &status)) host->toast("请先连接 Wi-Fi，或关闭管理网页");
+        return true;
+    }
+    if (e->type == PGA_TAP && hit_bottom3(e, 1)) {
+        config.enabled = 1;
+        save_config();
+        return true;
+    }
+    if ((e->type == PGA_TAP && hit_bottom3(e, 2)) || e->type == PGA_SWIPE_R) {
+        page = PAGE_MONITOR;
+        host->dirty();
+        return true;
+    }
+    if (e->type != PGA_TAP) return false;
+    int y = 148;
     for (int i = 0; i < 6; i++) {
-        if (e->y >= y && e->y < y + 36) {
+        if (e->y >= y && e->y < y + 32) {
             setup_field = (unsigned)i;
             if (i == 0) open_input(0, config.local, "本地");
             else if (i == 1) open_input(1, config.external, "外部");
@@ -311,26 +339,15 @@ static bool event_setup(const pico_app_event_t *e) {
             else open_input(5, config.home_wifi, "WiFi");
             return true;
         }
-        y += 42;
+        y += 36;
     }
-    if (hit_bottom3(e, 0)) {
-        /* cycle: enabled -> external_enabled -> external_control */
+    if (e->y >= y && e->y < y + 28) {
         if (!config.enabled) config.enabled = 1;
         else if (!config.external_enabled) config.external_enabled = 1;
         else if (!config.external_control) config.external_control = 1;
         else {
             config.enabled = config.external_enabled = config.external_control = 0;
         }
-        host->dirty();
-        return true;
-    }
-    if (hit_bottom3(e, 1)) {
-        config.enabled = 1;
-        save_config();
-        return true;
-    }
-    if (hit_bottom3(e, 2) || e->type == PGA_SWIPE_R) {
-        page = PAGE_MONITOR;
         host->dirty();
         return true;
     }
@@ -342,6 +359,13 @@ static bool event(const pico_app_event_t *e) {
     if (e->type == PGA_TAP || e->type == PGA_SWIPE_L || e->type == PGA_SWIPE_R) {
         if (page == PAGE_SETUP) return event_setup(e);
         if (page == PAGE_PRINTERS) {
+            pico_app_view_t v = host->view();
+            int bw = (v.w - 40) / 2;
+            if (e->type == PGA_TAP && e->x >= 16 && e->x < 16 + bw && e->y >= v.h - 56) {
+                status.bytes = sizeof(status);
+                if (!host->home_link(PGA_HOME_OPEN_SETUP, &status)) host->toast("请先连接 Wi-Fi，或关闭管理网页");
+                return true;
+            }
             if (e->type == PGA_TAP || e->type == PGA_SWIPE_R) {
                 page = PAGE_MONITOR;
                 host->dirty();

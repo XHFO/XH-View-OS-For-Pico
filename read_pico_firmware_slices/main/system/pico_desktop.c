@@ -17,6 +17,7 @@
 #define PICO_HOME_LINK_FULL 0
 #endif
 #include "read_pico_management.h"
+#include "pico_home_portal.h"
 #include "read_pico_sd.h"
 #include "read_pico_pmu.h"
 #include "esp_heap_caps.h"
@@ -233,6 +234,7 @@ int ps_desktop_image_read(const char *path,uint8_t **data,size_t *bytes){
 static void launch(uint16_t id){if(id==512){ps_navigate(PS_CLOUDFLARE);return;}if(!ps_desktop_prepare()){ps_toast("尚无灵犀画板，请先从多屏灵犀推送");return;}ps_navigate(PS_CANVAS);}
 void ps_desktop_init(void){
     power_sample();usb_scan=true;
+    ps_home_portal_register();
     read_pico_management_set_extension(ps_desktop_handle);
     read_pico_management_set_image_extension(ps_desktop_image_read);
     (void)ps_lock_image_prepare();
@@ -256,6 +258,7 @@ static int error_reply(char *out,size_t capacity,const char *error,int status){
 }
 int ps_desktop_handle(const char *method,const char *path,const char *type,const void *body,size_t bytes,char *out,size_t capacity){
     if(!strncmp(path,"/api/manage/pico/weread/",24))return ps_weread_handle(method,path,type,body,bytes,out,capacity);
+    if(!strcmp(path,"/api/manage/pico/home-link"))return ps_home_portal_mac_handle(method,out,capacity);
     if(!strcmp(path,"/api/manage/pico/status")&&!strcmp(method,"GET")){
         char power[144];ps_desktop_power_status(power,sizeof(power));
         unsigned s=atomic_load(&state);if(s>4)s=3;
@@ -263,7 +266,13 @@ int ps_desktop_handle(const char *method,const char *path,const char *type,const
         static const char *lock_states[]={"idle","pending","saved","error"};unsigned ls=atomic_load(&lock_state);if(ls>3)ls=3;
         unsigned dimensions=atomic_load(&lock_dimensions);
         unsigned cs=atomic_load(&cloudflare_state);if(cs>4)cs=3;
-        snprintf(out,capacity,"{\"protocol\":1,\"version\":\"%s\",\"home_link_mode\":\"%s\",\"content\":{\"supported\":true,\"max_bytes\":268435456,\"max_page_items\":64},\"config\":{\"auto_sleep_minutes\":%u,\"double_tap_wake\":%s,\"lock_style\":%u,\"cover_layout\":%u,\"state\":%u,\"revision\":%u},\"canvas\":{\"supported\":true,\"width\":684,\"height\":1216,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"display_intent\":true,\"dual_orientation\":true,\"pair_max_bytes\":840032,\"orientation\":\"%s\",\"state\":\"%s\",\"revision\":%u,\"app_channels\":[\"cloudflare\"],\"app_receipts\":{\"cloudflare\":{\"state\":\"%s\",\"revision\":%u,\"orientation\":\"%s\"}}},\"image_lock\":{\"supported\":true,\"available\":%s,\"width\":%u,\"height\":%u,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"state\":\"%s\",\"revision\":%u},\"power\":%s}",ps_version(),(PICO_HOME_LINK_FULL?"full":"thin"),options&255u,options&256u?"true":"false",atomic_load(&lock_style_snapshot),atomic_load(&cover_layout_snapshot),atomic_load(&power_state),atomic_load(&power_revision),CANVAS_LIMIT,orientation(),canvas_states[s],atomic_load(&revision),canvas_states[cs],atomic_load(&cloudflare_revision),orientation(),atomic_load(&lock_available)?"true":"false",dimensions&65535u,dimensions>>16,LOCK_LIMIT,lock_states[ls],atomic_load(&lock_revision),power);return 200;
+        int wrote=snprintf(out,capacity,"{\"protocol\":1,\"version\":\"%s\",\"home_link_mode\":\"%s\",\"content\":{\"supported\":true,\"max_bytes\":268435456,\"max_page_items\":64},\"config\":{\"auto_sleep_minutes\":%u,\"double_tap_wake\":%s,\"lock_style\":%u,\"cover_layout\":%u,\"state\":%u,\"revision\":%u},\"canvas\":{\"supported\":true,\"width\":684,\"height\":1216,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"display_intent\":true,\"dual_orientation\":true,\"pair_max_bytes\":840032,\"orientation\":\"%s\",\"state\":\"%s\",\"revision\":%u,\"app_channels\":[\"cloudflare\"],\"app_receipts\":{\"cloudflare\":{\"state\":\"%s\",\"revision\":%u,\"orientation\":\"%s\"}}},\"image_lock\":{\"supported\":true,\"available\":%s,\"width\":%u,\"height\":%u,\"formats\":[\"image/bmp\"],\"max_bytes\":%u,\"bit_depths\":[1,4],\"gray_levels\":16,\"state\":\"%s\",\"revision\":%u},\"power\":%s}",ps_version(),(PICO_HOME_LINK_FULL?"full":"pga"),options&255u,options&256u?"true":"false",atomic_load(&lock_style_snapshot),atomic_load(&cover_layout_snapshot),atomic_load(&power_state),atomic_load(&power_revision),CANVAS_LIMIT,orientation(),canvas_states[s],atomic_load(&revision),canvas_states[cs],atomic_load(&cloudflare_revision),orientation(),atomic_load(&lock_available)?"true":"false",dimensions&65535u,dimensions>>16,LOCK_LIMIT,lock_states[ls],atomic_load(&lock_revision),power);
+        if(wrote>0&&(size_t)wrote<capacity&&out[wrote-1]=='}'){
+            char extra[192];ps_home_portal_status_suffix(extra,sizeof(extra));
+            size_t extra_len=strlen(extra);
+            if(extra[0]==','&&(size_t)wrote+extra_len<capacity){out[wrote-1]=0;memcpy(out+wrote-1,extra,extra_len);out[wrote-1+extra_len]='}';out[wrote+extra_len]=0;}
+        }
+        return 200;
     }
     if(!strcmp(path,"/api/manage/pico/config")&&!strcmp(method,"PUT")){
         const char *end=NULL;
