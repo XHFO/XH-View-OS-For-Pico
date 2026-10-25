@@ -1,5 +1,5 @@
-# 共享模型与TLS适配；PICO_HOME_LINK_FULL=OFF 时仅薄宿主桩+JSON隔离器。
-# Shared model/TLS adapter; with PICO_HOME_LINK_FULL=OFF only thin-host stubs + JSON isolator.
+# 共享模型与TLS适配；PICO_HOME_LINK_FULL=OFF 时仅薄宿主桩+JSON隔离器（manage 返回 home_module_missing）。
+# Shared model/TLS adapter; with PICO_HOME_LINK_FULL=OFF only thin-host stubs + JSON isolator (manage returns home_module_missing).
 if(NOT DEFINED PICO_HOME_LINK_FULL)
     set(PICO_HOME_LINK_FULL OFF CACHE BOOL "Statically link full Home Assistant/printer stack")
 endif()

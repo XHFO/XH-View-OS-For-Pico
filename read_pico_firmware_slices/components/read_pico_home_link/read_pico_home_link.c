@@ -408,6 +408,10 @@ static rp_home_result_t http_request(void *unused, const rp_home_http_request_t 
     memset(auth, 0, sizeof(auth));
     if (r->content_type)
         esp_http_client_set_header(h, "Content-Type", r->content_type);
+    if (r->cf_access_client_id && *r->cf_access_client_id && r->cf_access_client_secret && *r->cf_access_client_secret) {
+        esp_http_client_set_header(h, "CF-Access-Client-Id", r->cf_access_client_id);
+        esp_http_client_set_header(h, "CF-Access-Client-Secret", r->cf_access_client_secret);
+    }
     size_t length = r->body ? strlen(r->body) : 0;
     rp_home_result_t result = RP_HOME_OFFLINE;
     esp_err_t opened = esp_http_client_open(h, (int)length);
@@ -472,6 +476,14 @@ static rp_home_result_t http_request(void *unused, const rp_home_http_request_t 
         char type[96];
         snprintf(type, sizeof(type), "Content-Type: %s", r->content_type);
         ok = ok && config_line(f, "header", type);
+    }
+    if (r->cf_access_client_id && *r->cf_access_client_id && r->cf_access_client_secret && *r->cf_access_client_secret) {
+        char cf[192];
+        snprintf(cf, sizeof(cf), "CF-Access-Client-Id: %s", r->cf_access_client_id);
+        ok = ok && config_line(f, "header", cf);
+        snprintf(cf, sizeof(cf), "CF-Access-Client-Secret: %s", r->cf_access_client_secret);
+        ok = ok && config_line(f, "header", cf);
+        memset(cf, 0, sizeof(cf));
     }
     if (r->body)
         ok = ok && config_line(f, "data-binary", r->body);

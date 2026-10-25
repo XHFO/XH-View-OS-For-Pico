@@ -107,11 +107,15 @@ static bool at_home(const rp_home_web_request_t *r,const rp_home_config_t *c) {
     return r->current_wifi ? r->network_online&&*c->home_wifi&&!strcmp(r->current_wifi,c->home_wifi) : r->at_home;
 }
 static bool home_update(const rp_home_web_request_t *r,cJSON *j,rp_home_config_t *c) {
-    if(!keys(j,"enabled local external home_wifi external_enabled external_control ha_token rooms clear")||
+    if(!keys(j,"enabled local external home_wifi external_enabled external_control ha_token cf_access_client_id cf_access_client_secret rooms clear")||
        !flag(j,"enabled",&c->enabled)||!flag(j,"external_enabled",&c->external_enabled)||!flag(j,"external_control",&c->external_control)||
        !text(j,"local",c->local,sizeof(c->local),false)||!text(j,"external",c->external,sizeof(c->external),false)||
        !text(j,"home_wifi",c->home_wifi,sizeof(c->home_wifi),false)||!text(j,"ha_token",c->ha_token,sizeof(c->ha_token),true)||
-       !clears(j,"ha_token",c->ha_token,sizeof(c->ha_token),"ha_token"))return false;
+       !text(j,"cf_access_client_id",c->cf_access_client_id,sizeof(c->cf_access_client_id),true)||
+       !text(j,"cf_access_client_secret",c->cf_access_client_secret,sizeof(c->cf_access_client_secret),true)||
+       !clears(j,"ha_token",c->ha_token,sizeof(c->ha_token),"ha_token cf_access_client_id cf_access_client_secret")||
+       !clears(j,"cf_access_client_id",c->cf_access_client_id,sizeof(c->cf_access_client_id),"ha_token cf_access_client_id cf_access_client_secret")||
+       !clears(j,"cf_access_client_secret",c->cf_access_client_secret,sizeof(c->cf_access_client_secret),"ha_token cf_access_client_id cf_access_client_secret"))return false;
     if(item(j,"home_wifi")&&!saved_wifi(r,c->home_wifi))return false;
     cJSON *rooms=item(j,"rooms");if(!rooms)return true;
     if(!cJSON_IsArray(rooms)||cJSON_GetArraySize(rooms)>RP_HOME_ROOMS)return false;
@@ -188,7 +192,7 @@ static void status_json(writer_t *w,const rp_home_snapshot_t *s) {
 static void home_json(writer_t *w,const rp_home_web_request_t *r,const rp_home_config_t *c,const rp_home_snapshot_t *s) {
     writef(w,"{\"config\":{\"enabled\":%s,\"local\":",boolean(c->enabled));quoted(w,c->local);
     writef(w,",\"external\":");quoted(w,c->external);writef(w,",\"home_wifi\":");quoted(w,c->home_wifi);
-    writef(w,",\"external_enabled\":%s,\"external_control\":%s,\"has_token\":%s,\"rooms\":[",boolean(c->external_enabled),boolean(c->external_control),boolean(*c->ha_token));
+    writef(w,",\"external_enabled\":%s,\"external_control\":%s,\"has_token\":%s,\"has_cf_access_client_id\":%s,\"has_cf_access_client_secret\":%s,\"rooms\":[",boolean(c->external_enabled),boolean(c->external_control),boolean(*c->ha_token),boolean(*c->cf_access_client_id),boolean(*c->cf_access_client_secret));
     for(unsigned i=0;i<c->room_count&&i<RP_HOME_ROOMS;i++){if(i)writef(w,",");writef(w,"{\"entity\":");quoted(w,c->rooms[i].entity);writef(w,",\"room\":");quoted(w,c->rooms[i].room);writef(w,"}");}
     writef(w,"]},\"status\":");status_json(w,s);writef(w,",\"network_online\":%s,\"at_home\":%s,\"saved_wifi\":[",boolean(r->network_online),boolean(at_home(r,c)));
     size_t count=r->saved_wifi?r->saved_wifi_count:0;for(size_t i=0;i<count&&i<RP_HOME_WEB_WIFI_LIMIT;i++){if(i)writef(w,",");quoted(w,r->saved_wifi[i]?r->saved_wifi[i]:"");}

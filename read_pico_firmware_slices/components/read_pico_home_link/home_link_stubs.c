@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  * 中文：家庭服务薄宿主桩；完整 HA/打印机逻辑迁至 TF tools/home-link.pga。
  * English: Thin-host stubs for home services; full HA/printer logic moves to TF tools/home-link.pga.
- * 冻结：不发明凭据或假连接；未加载模块时返回未配置空状态；电源挂起始终可完成；不常驻大块配置/快照。
- * Frozen: Never invent credentials or fake links; report unconfigured empty state without a module; power suspend always completes; do not retain large config/snapshot BSS.
+ * 冻结：不发明凭据或假连接；manage home/printer/bambu 一律 503 home_module_missing（PUT 不假成功、不写 NVS）；电源挂起始终可完成；不常驻大块配置/快照。
+ * Frozen: Never invent credentials or fake links; manage home/printer/bambu always 503 home_module_missing (PUT is not fake-ok and does not persist); power suspend always completes; do not retain large config/snapshot BSS.
  */
 #include "read_pico_home_link.h"
 #include "home_link_web.h"

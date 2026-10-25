@@ -6,7 +6,7 @@
  */
 #include "pico_app_sdk.h"
 
-enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10000 };
+enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10001 };
 
 static const pico_app_host_t *host;
 
@@ -30,8 +30,8 @@ static void render(uint8_t *fb) {
     host->fill(fb, 0, 0, v.w, v.h, 15);
     host->heading(fb, "家庭连接", "TF 工具包");
     host->wrap(fb, 24, 120, v.w - 48, 14, 6,
-               "这是 home-link 工具包骨架。完整 Home Assistant 与打印机监看将在后续版本迁入本模块；"
-               "当前固件在未安装或未配置时保持空状态，阅读与书架不受影响。",
+               "家庭工具包骨架（契约见 HOME-LINK-CONTRACT）。薄宿主 manage 对 home/printers/bambu 返回 "
+               "home_module_missing，不会假成功保存。完整 HA/打印机监看仍在迁入；阅读与书架不受影响。",
                5);
     host->button(fb, 16, v.h - 56, v.w - 32, 40, "返回", false);
 }
@@ -44,7 +44,7 @@ static bool event(const pico_app_event_t *e) {
             host->navigate(PGA_PAGE_LAUNCHER);
             return true;
         }
-        host->toast("完整监看逻辑尚未迁入此包");
+        host->toast("监看未迁入；薄宿主 PUT 不会保存 HA");
         return true;
     }
     if (e->type == PGA_SWIPE_R) {

@@ -78,25 +78,57 @@ bool rp_home_config_unpack_version(const void *input, size_t bytes, rp_home_conf
     const unsigned char *in = input;
     uint32_t header[3];
     memcpy(header, in, 12);
-    if (header[0] != 0x48504b31u || header[1] != sizeof(*c))
+    uint32_t stored_size = header[1];
+    if (header[0] != 0x48504b31u ||
+        (stored_size != sizeof(*c) && stored_size != RP_HOME_CONFIG_SIZE_V2))
         return false;
-    unsigned char *raw = (unsigned char *)c;
-    memset(c, 0, sizeof(*c));
+    unsigned char temp[sizeof(rp_home_config_t)];
+    memset(temp, 0, sizeof(temp));
     size_t at = 12, used = 0;
     while (at < bytes) {
         unsigned control = in[at++];
         size_t n = (control & 127u) + 1;
-        if (used + n > sizeof(*c))
+        if (used + n > stored_size)
             goto bad;
         if (!(control & 128u)) {
             if (at + n > bytes)
                 goto bad;
-            memcpy(raw + used, in + at, n);
+            memcpy(temp + used, in + at, n);
             at += n;
         }
         used += n;
     }
-    if (used == sizeof(*c) && config_crc(raw, sizeof(*c)) == header[2]) {
+    if (used != stored_size || config_crc(temp, stored_size) != header[2])
+        goto bad;
+    memset(c, 0, sizeof(*c));
+    memcpy(c, temp, stored_size <= sizeof(*c) ? stored_size : sizeof(*c));
+    if (stored_size == RP_HOME_CONFIG_SIZE_V2 && stored_size < sizeof(*c)) {
+        /* v2 layout ended at ha_token; CF fields and trailing rooms/printers follow at new offsets.
+         * Copy rooms/printers from old offsets: after ha_token at 192+192+48+1024 + 4+4 = ...
+         * Safer path: rebuild from known v2 field offsets. */
+        typedef struct {
+            uint32_t version;
+            uint8_t enabled, external_enabled, external_control, room_count;
+            char local[192], external[192], home_wifi[48], ha_token[1024];
+            rp_home_room_t rooms[RP_HOME_ROOMS];
+            rp_home_printer_config_t printers[RP_HOME_PRINTERS];
+        } rp_home_config_v2_t;
+        _Static_assert(sizeof(rp_home_config_v2_t) == RP_HOME_CONFIG_SIZE_V2, "v2 config size");
+        const rp_home_config_v2_t *old = (const rp_home_config_v2_t *)temp;
+        memset(c, 0, sizeof(*c));
+        c->version = old->version;
+        c->enabled = old->enabled;
+        c->external_enabled = old->external_enabled;
+        c->external_control = old->external_control;
+        c->room_count = old->room_count;
+        memcpy(c->local, old->local, sizeof(c->local));
+        memcpy(c->external, old->external, sizeof(c->external));
+        memcpy(c->home_wifi, old->home_wifi, sizeof(c->home_wifi));
+        memcpy(c->ha_token, old->ha_token, sizeof(c->ha_token));
+        memcpy(c->rooms, old->rooms, sizeof(c->rooms));
+        memcpy(c->printers, old->printers, sizeof(c->printers));
+    }
+    {
         uint32_t previous = c->version;
         if (rp_home_config_upgrade(c)) {
             if (stored_version) *stored_version = previous;
@@ -169,9 +201,14 @@ bool rp_home_config_valid(const rp_home_config_t *c) {
         c->external_enabled > 1 || c->external_control > 1)
         return false;
     if (!terminated(c->local, sizeof(c->local)) || !terminated(c->external, sizeof(c->external)) ||
-        !terminated(c->home_wifi, sizeof(c->home_wifi)) || !terminated(c->ha_token, sizeof(c->ha_token)))
+        !terminated(c->home_wifi, sizeof(c->home_wifi)) || !terminated(c->ha_token, sizeof(c->ha_token)) ||
+        !terminated(c->cf_access_client_id, sizeof(c->cf_access_client_id)) ||
+        !terminated(c->cf_access_client_secret, sizeof(c->cf_access_client_secret)))
         return false;
-    if ((*c->local && !url(c->local, false)) || (*c->external && !url(c->external, true)) || !header(c->ha_token))
+    if ((*c->local && !url(c->local, false)) || (*c->external && !url(c->external, true)) || !header(c->ha_token) ||
+        !header(c->cf_access_client_id) || !header(c->cf_access_client_secret))
+        return false;
+    if ((*c->cf_access_client_id != 0) != (*c->cf_access_client_secret != 0))
         return false;
     for (unsigned i = 0; i < c->room_count; i++)
         if (!terminated(c->rooms[i].entity, sizeof(c->rooms[i].entity)) || !atom(c->rooms[i].entity) ||
@@ -211,7 +248,7 @@ bool rp_home_config_valid(const rp_home_config_t *c) {
     return true;
 }
 bool rp_home_config_upgrade(rp_home_config_t *c) {
-    if (!c || (c->version != 1u && c->version != RP_HOME_CONFIG_VERSION))
+    if (!c || (c->version != 1u && c->version != 2u && c->version != RP_HOME_CONFIG_VERSION))
         return false;
     if (c->version == 1u) {
         for (unsigned i = 0; i < RP_HOME_PRINTERS; i++) {
@@ -234,6 +271,11 @@ bool rp_home_config_upgrade(rp_home_config_t *c) {
                 memset(p->client_secret, 0, sizeof(p->client_secret));
             }
         }
+        c->version = RP_HOME_CONFIG_VERSION;
+    }
+    if (c->version == 2u) {
+        memset(c->cf_access_client_id, 0, sizeof(c->cf_access_client_id));
+        memset(c->cf_access_client_secret, 0, sizeof(c->cf_access_client_secret));
         c->version = RP_HOME_CONFIG_VERSION;
     }
     return rp_home_config_valid(c);
@@ -636,20 +678,49 @@ static uint32_t auth_hash(const rp_home_printer_config_t *p) {
     }
     return h;
 }
+static bool find_bytes(const char *hay, size_t n, const char *needle) {
+    size_t m = strlen(needle);
+    if (!hay || !m || n < m)
+        return false;
+    for (size_t i = 0; i + m <= n; i++)
+        if (!memcmp(hay + i, needle, m))
+            return true;
+    return false;
+}
+static bool access_challenge(int status, const char *body, size_t n) {
+    if (status == 302 || status == 401 || status == 403) {
+        if (find_bytes(body, n, "cloudflareaccess.com") || find_bytes(body, n, "CF_AppSession") ||
+            find_bytes(body, n, "Cloudflare Access") || find_bytes(body, n, "access.cloudflare") ||
+            find_bytes(body, n, "cf-access") || find_bytes(body, n, "CF_Authorization"))
+            return true;
+        /* Redirect/forbidden with HTML login and no HA JSON object. */
+        if (n && body[0] == '<' &&
+            (find_bytes(body, n, "cloudflare") || find_bytes(body, n, "Access") || find_bytes(body, n, "login")))
+            return true;
+    }
+    if (status >= 200 && status < 400 && n > 32 && body[0] == '<' &&
+        (find_bytes(body, n, "cloudflareaccess.com") || find_bytes(body, n, "Cloudflare Access") ||
+         find_bytes(body, n, "CF_AppSession")))
+        return true;
+    return false;
+}
 static rp_home_result_t request(const rp_home_transport_t *t, const char *method, const char *url_, const char *bearer,
-                                const char *body, char *response, size_t capacity, size_t *bytes, int *status) {
+                                const char *body, char *response, size_t capacity, size_t *bytes, int *status,
+                                const char *cf_id, const char *cf_secret) {
     *bytes = 0;
     *status = 0;
     if (!t || !t->http)
         return RP_HOME_UNSUPPORTED;
     rp_home_http_request_t r = {method, url_, bearer,
                                 body ? (*body == '{' ? "application/json" : "application/x-www-form-urlencoded") : NULL,
-                                body};
+                                body, cf_id && *cf_id ? cf_id : NULL, cf_secret && *cf_secret ? cf_secret : NULL};
     rp_home_result_t result = t->http(t->context, &r, response, capacity, bytes, status);
     if (result != RP_HOME_OK)
         return result;
     if (*bytes >= capacity)
         return RP_HOME_TOO_LARGE;
+    if (access_challenge(*status, response, *bytes))
+        return RP_HOME_ACCESS;
     return *status == 401 || *status == 403  ? RP_HOME_AUTH
            : *status >= 200 && *status < 300 ? RP_HOME_OK
                                              : RP_HOME_HTTP;
@@ -669,7 +740,7 @@ static bool endpoint(const rp_home_config_t *c, bool at_home, char *out, size_t 
 /* HA模板通过正式area_name读取注册表，既不猜名称也不下载完整设备注册表。
  * Official area_name resolves registry rooms without guessing names or downloading the full device registry. */
 static void fetch_rooms(const rp_home_config_t *c, rp_home_snapshot_t *s, const rp_home_transport_t *t,
-                        const char *base, char *response) {
+                        const char *base, char *response, bool external) {
     s->rooms_synced = 0;
     if (!s->entity_count)
         return;
@@ -695,8 +766,10 @@ static void fetch_rooms(const rp_home_config_t *c, rp_home_snapshot_t *s, const 
     snprintf(target, sizeof(target), "%s/api/template", base);
     size_t bytes = 0;
     int status = 0;
+    const char *cf_id = external && *c->cf_access_client_id ? c->cf_access_client_id : NULL;
+    const char *cf_sec = external && *c->cf_access_client_secret ? c->cf_access_client_secret : NULL;
     rp_home_result_t result =
-        request(t, "POST", target, c->ha_token, body, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status);
+        request(t, "POST", target, c->ha_token, body, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status, cf_id, cf_sec);
     free(body);
     if (result != RP_HOME_OK)
         return;
@@ -739,17 +812,21 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
         rp_home_result_t result = RP_HOME_OFFLINE;
         if (endpoint(c, at_home, base, sizeof(base), &external)) {
             snprintf(target, sizeof(target), "%s/api/states", base);
-            result = request(t, "GET", target, c->ha_token, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status);
+            result = request(t, "GET", target, c->ha_token, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status,
+                             external && *c->cf_access_client_id ? c->cf_access_client_id : NULL,
+                             external && *c->cf_access_client_secret ? c->cf_access_client_secret : NULL);
         }
         if (result != RP_HOME_OK && at_home && c->external_enabled && *c->external && result != RP_HOME_AUTH &&
             endpoint(c, false, base, sizeof(base), &external)) {
             snprintf(target, sizeof(target), "%s/api/states", base);
-            result = request(t, "GET", target, c->ha_token, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status);
+            result = request(t, "GET", target, c->ha_token, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status,
+                             *c->cf_access_client_id ? c->cf_access_client_id : NULL,
+                             *c->cf_access_client_secret ? c->cf_access_client_secret : NULL);
         }
         if (result == RP_HOME_OK)
             result = rp_home_parse_ha(response, bytes, c, s, now);
         if (result == RP_HOME_OK)
-            fetch_rooms(c, s, t, base, response);
+            fetch_rooms(c, s, t, base, response, external);
         s->result = result;
         s->http_status = status;
         s->external = external;
@@ -759,7 +836,7 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
         if (endpoint(c, true, base, sizeof(base), &external)) {
             snprintf(target, sizeof(target), "%s/api/", base);
             rp_home_result_t found =
-                request(t, "GET", target, NULL, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status);
+                request(t, "GET", target, NULL, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status, NULL, NULL);
             s->result = found == RP_HOME_OK || status == 401 ? RP_HOME_OK : found;
             s->http_status = status;
             s->external = 0;
@@ -792,7 +869,7 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
                     char form[1280];
                     result = rp_home_form_body(p->client_id, p->client_secret, form, sizeof(form))
                                  ? request(t, "POST", "https://api.formlabs.com/developer/v1/o/token/", NULL, form,
-                                           response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status)
+                                           response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status, NULL, NULL)
                                  : RP_HOME_INVALID;
                     memset(form, 0, sizeof(form));
                     if (result != RP_HOME_OK)
@@ -814,7 +891,7 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
                 }
                 snprintf(target, sizeof(target), "https://api.formlabs.com/developer/v1/printers/%s/", p->serial);
                 result =
-                    request(t, "GET", target, token->value, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status);
+                    request(t, "GET", target, token->value, NULL, response, RP_HOME_HTTP_LIMIT + 1, &bytes, &status, NULL, NULL);
                 if (result == RP_HOME_AUTH && attempt == 0) {
                     memset(token->value, 0, sizeof(token->value));
                     continue;
@@ -868,8 +945,12 @@ rp_home_result_t rp_home_control(const rp_home_config_t *c, const rp_home_entity
     if (!t || !t->http)
         return RP_HOME_UNSUPPORTED;
     size_t bytes = 0;
-    rp_home_http_request_t r = {"POST", target, c->ha_token, "application/json", body};
+    rp_home_http_request_t r = {"POST", target, c->ha_token, "application/json", body,
+                                external && *c->cf_access_client_id ? c->cf_access_client_id : NULL,
+                                external && *c->cf_access_client_secret ? c->cf_access_client_secret : NULL};
     rp_home_result_t result = t->http(t->context, &r, response, sizeof(response), &bytes, status);
+    if (result == RP_HOME_OK && access_challenge(*status, response, bytes))
+        result = RP_HOME_ACCESS;
     memset(response, 0, sizeof(response));
     return result != RP_HOME_OK               ? result
            : *status == 401 || *status == 403 ? RP_HOME_AUTH
@@ -878,8 +959,9 @@ rp_home_result_t rp_home_control(const rp_home_config_t *c, const rp_home_entity
 }
 const char *rp_home_result_text(rp_home_result_t r) {
     static const char *labels[] = {
-        "尚未配置",          "正在连接",       "已更新",           "网络不可用", "凭据无效或权限不足", "服务器返回错误",
+        "尚未配置",          "正在连接",       "已更新",           "网络不可用", "HA令牌无效或权限不足", "服务器返回错误",
         "TLS安全连接或证书校验失败", "响应或设置无效", "响应超过容量限制", "内存不足",   "当前传输不支持",
-        "设备时间未校准，请设置日期与时间"};
+        "设备时间未校准，请设置日期与时间",
+        "Cloudflare Access拦截（需Service Token，非浏览器登录）"};
     return (unsigned)r < sizeof(labels) / sizeof(labels[0]) ? labels[r] : "未知错误";
 }

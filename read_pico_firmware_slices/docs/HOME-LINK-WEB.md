@@ -51,7 +51,7 @@ Mutations return `{ "ok": true, "queued": true/false }`; save/delete use 200, qu
 }
 ```
 
-`PUT /home` accepts the config fields above, plus write-only `ha_token` and `clear:["ha_token"]`. GET never returns `ha_token`. Missing fields preserve existing values. Empty credential strings also preserve old values; explicit clear is required. `rooms` replaces the entire manual map, at most 24 unique entity IDs; `[]` clears mappings. An explicitly supplied `home_wifi` must match a remembered SSID when the adapter supplies the SSID list.
+`PUT /home` accepts the config fields above, plus write-only `ha_token` and `clear:["ha_token"]`. GET never returns `ha_token`. Full builds also accept write-only `cf_access_client_id` / `cf_access_client_secret` and `clear` of those keys; GET returns only `has_cf_access_client_id` / `has_cf_access_client_secret`. Thin host (`PICO_HOME_LINK_FULL=OFF`) does not serve this schema—see [HOME-LINK-CONTRACT.md](HOME-LINK-CONTRACT.md) (`home_module_missing`). Missing fields preserve existing values. Empty credential strings also preserve old values; explicit clear is required. `rooms` replaces the entire manual map, at most 24 unique entity IDs; `[]` clears mappings. An explicitly supplied `home_wifi` must match a remembered SSID when the adapter supplies the SSID list.
 
 `PUT /home` 接受上述配置字段及只写的 `ha_token`、`clear:["ha_token"]`。GET 不返回令牌；缺失字段保留原值，空凭据也保留，清除必须明确指定。`rooms` 全量替换手动映射，最多 24 个不重复实体 ID；`[]` 清空映射。HTTP 层提供记忆网络时，显式提交的 `home_wifi` 必须属于该列表。
 

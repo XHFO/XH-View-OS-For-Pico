@@ -123,3 +123,9 @@
 - Matching `main/system/pico_{home,desktop,connectivity,games,launcher,navigation}*` sources were included alongside tools because they implement the proprietary UI/features for batches A–C.
 - `tools/pico_games_test/` (host test build dir) was not copied.
 - No remotes were added to the public MindReset firmware checkout; this private repo is a separate clone.
+
+## 2026-10-26 contract freeze
+
+- Added `read_pico_firmware_slices/docs/HOME-LINK-CONTRACT.md` (thin-host manage 503 `home_module_missing`, CF Access JSON, `home_link_mode`, PGA kind 130).
+- Cloudflare Access write-only `cf_access_client_id` / `cf_access_client_secret`; GET `has_*` only.
+- PGA home-link.pga v10001 still skeleton (not full HA).

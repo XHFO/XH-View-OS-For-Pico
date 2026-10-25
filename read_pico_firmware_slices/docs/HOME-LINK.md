@@ -16,6 +16,8 @@ Probe Local HA in phone management saves, resolves and probes `homeassistant.loc
 
 - 家庭 Wi-Fi 匹配时优先访问本地地址；启用外部地址后，离家或本地网络连接失败时使用外部地址。外部控制默认关闭，需明确开启；身份验证错误不会通过更换地址绕过。
   Prefer the local endpoint on the selected home Wi-Fi. Enabling the remote endpoint allows access away from home and fallback after local network failure. Remote control is opt-in; authentication failures are not retried against another endpoint.
+- 外部 HA 若前置 **Cloudflare Access**：在手机管理页填写 Access **Service Token** 的 `cf_access_client_id` / `cf_access_client_secret`（只写；GET 仅 `has_*`）。设备在**外部**请求上附加 `CF-Access-Client-Id` / `CF-Access-Client-Secret`；本地家庭 Wi‑Fi 路径不加这些头。不支持浏览器 Cookie / 一次性 PIN。Access 登录页（302/403 HTML）与 HA 令牌错误区分提示。详见 [HOME-LINK-CONTRACT.md](HOME-LINK-CONTRACT.md)。
+  If remote HA sits behind **Cloudflare Access**, enter an Access **Service Token** (`cf_access_client_id` / `cf_access_client_secret`, write-only; GET exposes `has_*` only). The device attaches `CF-Access-Client-Id` / `CF-Access-Client-Secret` on **external** requests only—not on the local home Wi‑Fi path. Browser cookie / one-time PIN flows are unsupported. Access login HTML (302/403) is reported separately from a bad HA token. See [HOME-LINK-CONTRACT.md](HOME-LINK-CONTRACT.md).
 - 默认只接收标准开关、灯、空调、风扇、温度与湿度实体。支持按房间、名称、种类排序，排除实体和不可用实体，以及手动顺序。房间读取 HA 的 `area_name()`，也可手动覆盖。
   Accept standard switches, lights, climate, fans, temperature and humidity sensors. Sort by room/name/type, exclude individual or unavailable entities and retain manual order. Read HA areas through `area_name()` with manual overrides.
 - 每个完整快照最多保留 96 个支持的实体，超过实体限额明确提示。手动房间映射和房间选择器最多保存 24 项；这不限制已保留实体携带的 HA 房间名称，也不会因为出现第 25 个房间就丢弃其实体。HTTP 响应上限 192 KiB；过大响应保留上次成功数据，不显示半份结果。大型家庭建议在 HA 侧提供适合本设备的实体范围。

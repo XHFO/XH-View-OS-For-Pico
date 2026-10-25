@@ -17,12 +17,16 @@
 #define RP_HOME_ROOMS 24
 #define RP_HOME_HTTP_LIMIT (192u*1024u)
 #define RP_HOME_MQTT_LIMIT (64u*1024u)
-#define RP_HOME_CONFIG_VERSION 2u
-#define RP_HOME_CONFIG_PACK_LIMIT 16400u
+#define RP_HOME_CONFIG_VERSION 3u
+#define RP_HOME_CONFIG_PACK_LIMIT 16800u
+#define RP_HOME_CONFIG_SIZE_V2 16116u
+/// v2 packed sizeof before Cloudflare Access token fields. / Prior packed size before CF Access fields.
+
 
 typedef enum {RP_HOME_NONE,RP_HOME_HA,RP_HOME_BAMBU_LAN,RP_HOME_BAMBU_CLOUD,RP_HOME_FORMLABS} rp_home_source_t;
 typedef enum {RP_HOME_EMPTY,RP_HOME_BUSY,RP_HOME_OK,RP_HOME_OFFLINE,RP_HOME_AUTH,RP_HOME_HTTP,
-    RP_HOME_TLS,RP_HOME_INVALID,RP_HOME_TOO_LARGE,RP_HOME_NOMEM,RP_HOME_UNSUPPORTED,RP_HOME_TIME=11} rp_home_result_t;
+    RP_HOME_TLS,RP_HOME_INVALID,RP_HOME_TOO_LARGE,RP_HOME_NOMEM,RP_HOME_UNSUPPORTED,RP_HOME_TIME=11,
+    RP_HOME_ACCESS=12} rp_home_result_t;
 typedef enum {RP_HOME_LIGHT,RP_HOME_SWITCH,RP_HOME_CLIMATE,RP_HOME_FAN,RP_HOME_TEMPERATURE,RP_HOME_HUMIDITY} rp_home_kind_t;
 
 typedef struct {
@@ -40,6 +44,9 @@ typedef struct {
     uint32_t version;
     uint8_t enabled,external_enabled,external_control,room_count;
     char local[192],external[192],home_wifi[48],ha_token[1024];
+    /// Cloudflare Access Service Token；仅外部/远程 HA 请求附带，本地家庭 Wi‑Fi 路径不加。
+    /// Cloudflare Access Service Token; attached only on remote/external HA requests, never on local home Wi‑Fi.
+    char cf_access_client_id[96],cf_access_client_secret[64];
     rp_home_room_t rooms[RP_HOME_ROOMS];
     rp_home_printer_config_t printers[RP_HOME_PRINTERS];
 } rp_home_config_t;
@@ -68,6 +75,8 @@ typedef struct {
 } rp_home_snapshot_t;
 typedef struct {
     const char *method,*url,*bearer,*content_type,*body;
+    /// 可选；非空时附加 CF-Access-Client-Id/Secret（外部 Access）。/ Optional CF Access service-token headers.
+    const char *cf_access_client_id,*cf_access_client_secret;
 } rp_home_http_request_t;
 typedef struct {
     /// 限额内返回完整响应，必须校验证书并禁止跨源重定向。/ Return a complete bounded response, verify TLS, and reject cross-origin redirects.

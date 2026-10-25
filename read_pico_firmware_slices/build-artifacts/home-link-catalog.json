@@ -8,14 +8,14 @@
       "title": "家庭连接",
       "description": "Home Assistant 与打印机监看 · TF 可选工具包",
       "file": "home-link.pga",
-      "version": 10000,
+      "version": 10001,
       "abi": 1,
       "directory": "apps/tools",
-      "bytes": 36080,
-      "sha256": "7125eea9444136e871690df1baaed9c72b5cddbc39c4bef0123950703a2a97b4",
-      "source_sha256": "f8aabf25bd0283a57c244668940a7805d4f2a08016ec63b71f90ab267abdb928",
+      "bytes": 36112,
+      "sha256": "69bb1d21027cdbcf420376c1619f8fbc0a5e00b0aff798391d7a37eec10fb46a",
+      "source_sha256": "fedbd5273dd933a5fc90ecddbd1ceafec30e340b9a96cb23895728c8665dc584",
       "inputs": {
-        "apps/src/home_link.c": "3a3239ea822b246d4857802f6912d45321ab5b2581b497c8a4abd1652115a5ee",
+        "apps/src/home_link.c": "e232e04594668285f7fa2e2d1de1b3250ff6f36acd742b3c3727ba3cae0b909b",
         "components/read_pico_apps/include/pico_app_sdk.h": "d2dceaa0bd96e46a8d2ad2b850d9800dee7a702e0080d4571145c87b31f90aed"
       },
       "targets": [
