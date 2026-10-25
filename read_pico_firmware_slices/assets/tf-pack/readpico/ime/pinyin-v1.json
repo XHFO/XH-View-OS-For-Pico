@@ -1,0 +1,13 @@
+{
+  "format": "PICOIME1",
+  "entries": 43730,
+  "phrases": 32000,
+  "characters": 11730,
+  "bytes": 1096619,
+  "sha256": "aee000d364c6214011c6f15c2f29384d397252d15e0521d85666fa1a461e5e21",
+  "sources": {
+    "jieba": "0.42.1",
+    "pypinyin": "0.55.0"
+  },
+  "jieba_dict_sha256": "7197c3211ddd98962b036cdf40324d1ea2bfaa12bd028e68faa70111a88e12a8"
+}
