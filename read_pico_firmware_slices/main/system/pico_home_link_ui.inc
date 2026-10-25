@@ -164,9 +164,9 @@ static void real_ha_render(uint8_t *fb) {
         char b[96];
         home_surface(fb, r.x, r.y, r.w, r.h, e->on && e->kind < 4);
         int badge = v.landscape ? 24 : 30;
-        ps_box(fb, r.x + r.w - badge - 8, r.y + 9, badge, badge, badge / 2, e->on ? PS_THEME_SELECTED : PS_THEME_INSET,
-               true);
-        ps_icon(fb, r.x + r.w - badge - 4, r.y + 13, badge - 8, entity_icons[e->kind], e->on ? WHITE : MUTED);
+        home_touch_mark(fb, r.x + r.w - badge - 8, r.y + 9, badge, e->on && e->kind < 4);
+        ps_icon(fb, r.x + r.w - badge - 4, r.y + 13, badge - 8, entity_icons[e->kind],
+                (e->on && e->kind < 4) ? BLACK : MUTED);
         ps_wrap(fb, r.x + 10, r.y + 8, r.w - badge - 24, v.landscape ? 9 : 11, 1, e->name, BLACK);
         if (!e->available)
             copy_text(b, sizeof(b), "不可用");
@@ -192,12 +192,8 @@ static void real_ha_render(uint8_t *fb) {
 static bool real_ha_event(const ps_event_t *e) {
     ps_view_t v = ps_view();
     if (real_room_picker) {
-        int rows = v.landscape ? 2 : 5,
-            next = page_action(e, real_rooms_page, real_room_count ? (real_room_count + rows - 1) / rows : 1);
-        if (next != real_rooms_page) {
-            real_rooms_page = next;
-            return true;
-        }
+        int rows = v.landscape ? 2 : 5;
+        if (page_gesture(e, &real_rooms_page, real_room_count ? (real_room_count + rows - 1) / rows : 1)) return true;
         if (e->type == PS_TAP)
             for (int i = 0; i < rows && real_rooms_page * rows + i < real_room_count; i++)
                 if (ps_hit(e->x, e->y, 16, 112 + i * 56, v.w - 32, 46)) {
@@ -244,12 +240,8 @@ static bool real_ha_event(const ps_event_t *e) {
             return true;
         }
     }
-    int list[RP_HOME_ENTITIES], n = link_entities(list, false), per = entities_per_page(),
-                                next = page_action(e, real_page, n ? (n + per - 1) / per : 1);
-    if (next != real_page) {
-        real_page = next;
-        return true;
-    }
+    int list[RP_HOME_ENTITIES], n = link_entities(list, false), per = entities_per_page();
+    if (page_gesture(e, &real_page, n ? (n + per - 1) / per : 1)) return true;
     if (e->type != PS_TAP && e->type != PS_LONG)
         return false;
     for (int i = 0; i < per && real_page * per + i < n; i++)
@@ -430,11 +422,8 @@ static bool real_ha_settings_event(const ps_event_t *e) {
         return false;
     }
     int rows = v.landscape ? 1 : 4, list[RP_HOME_ENTITIES], n = link_entities(list, true),
-        *page = ha_tab == 1 ? &filter_page : &layout_page, next = page_action(e, *page, n ? (n + rows - 1) / rows : 1);
-    if (next != *page) {
-        *page = next;
-        return true;
-    }
+        *page = ha_tab == 1 ? &filter_page : &layout_page;
+    if (page_gesture(e, page, n ? (n + rows - 1) / rows : 1)) return true;
     if (e->type == PS_TAP && ha_tab == 1) {
         if (ps_hit(e->x, e->y, 16, 132, v.w - 32, 30)) {
             hc.types ^= (uint8_t)(1u << clampi((e->x - 16) / ((v.w - 32) / 6), 0, 5));
@@ -574,10 +563,10 @@ static bool real_printer_event(const ps_event_t *e, bool settings) {
     ps_view_t v = ps_view();
     if (real_manage) return real_manage_event(e);
     if (real_import) {
-        int rows = v.landscape ? 2 : 5,
-            next = page_action(e, real_import_page,
-                               link_snapshot.import_count ? (link_snapshot.import_count + rows - 1) / rows : 1);
-        if (next != real_import_page) { real_import_page = next; return true; }
+        int rows = v.landscape ? 2 : 5;
+        if (page_gesture(e, &real_import_page,
+                         link_snapshot.import_count ? (link_snapshot.import_count + rows - 1) / rows : 1))
+            return true;
         if (e->type == PS_TAP)
             for (int i = 0; i < rows && real_import_page * rows + i < link_snapshot.import_count; i++)
                 if (ps_hit(e->x, e->y, 16, 120 + i * 52, v.w - 32, 43)) {

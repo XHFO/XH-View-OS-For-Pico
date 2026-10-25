@@ -5,6 +5,7 @@
  * Frozen: Load one app at a time; stop workers and save before unloading, retain failures in the original app for retry or explicit discard, dismiss outside non-destructively, and keep rendering free of file IO.
  */
 #include "pico_system.h"
+#include "pico_scroll.h"
 #include "pico_power.h"
 #include "pico_theme.h"
 #include "pico_navigation.h"
@@ -43,6 +44,8 @@ typedef struct { pico_app_package_t info; } game_item_t;
 // 应用目录仅由UI线程扫描/显示；载入器及AI不借用此表。 / Only the UI scans/paints this catalog; the loader and AI never borrow it.
 static PICO_UI_CACHE_ATTR game_item_t s_items[PICO_APP_CATALOG_MAX];
 static unsigned s_count,s_bad,s_page;
+static ps_scroll_track_t games_scroll;
+_Static_assert(PS_PRESS==0&&PS_MOVE==1&&PS_RELEASE==2&&PS_TAP==3&&PS_LONG==4&&PS_SWIPE_L==5&&PS_SWIPE_R==6&&PS_SWIPE_U==7&&PS_SWIPE_D==8&&PS_CANCEL==9,"pico_scroll.h event numbers");
 static ps_route_t s_origin=PS_GAMES;
 static bool s_scanned,s_in_call,s_pinned,s_catalog_dirty,s_discard;
 static bool s_power_paused,s_recovery_outside;
@@ -612,7 +615,18 @@ bool ps_games_event(const ps_event_t *event) {
     if(ps_route()==PS_GAMES){
         if(s_remove>=0){if(event->type==PS_TAP){int w=v.w-40;if(w>500)w=500;int x=(v.w-w)/2,y=(v.h-220)/2,bw=(w-52)/2;if(!ps_hit(event->x,event->y,x,y,w,220)||ps_hit(event->x,event->y,x+20,y+150,bw,42))s_remove=-1;else if(ps_hit(event->x,event->y,x+32+bw,y+150,bw,42)){char id[32];snprintf(id,sizeof(id),"%s",s_items[s_remove].info.id);s_remove=-1;if(!ps_games_remove(id))ps_toast(s_error);}ps_dirty();}return true;}
         if(event->type==PS_TAP&&ps_hit(event->x,event->y,v.w-90,87,74,30)){ps_games_rescan();return true;}
-        if((event->type==PS_TAP&&event->y>=v.h-44)||(event->type==PS_SWIPE_U||event->type==PS_SWIPE_D)){int delta=event->type==PS_SWIPE_U?1:event->type==PS_SWIPE_D?-1:event->x>v.w/2?1:-1;int page=(int)s_page+delta;if(page>=0&&(unsigned)page<(s_count+5)/6){s_page=(unsigned)page;ps_dirty();}return true;}
+        // 上下滑动越过阈值即翻页；底栏点击保持原范围。左右滑动不在此消费。
+        // Vertical drags turn the page once they clear the threshold; the bottom bar keeps its hit area. Horizontal swipes are not consumed here.
+        {
+            bool consume=false;
+            int d=ps_scroll_step(&games_scroll,event->type,event->x0,event->y0,event->x,event->y,PS_SCROLL_AXIS_Y,&consume);
+            bool bar=!consume&&event->type==PS_TAP&&event->y>=v.h-44;
+            if(bar) d=event->x>v.w/2?1:-1;
+            if(d||consume||bar){
+                if(d){int page=(int)s_page+d;if(page>=0&&(unsigned)page<(s_count+5)/6){s_page=(unsigned)page;ps_dirty();}}
+                return true;
+            }
+        }
         if(event->type!=PS_TAP&&event->type!=PS_LONG)return false;
         for(unsigned i=s_page*6;i<s_count&&i<(s_page+1)*6;i++){int x,y,w,h;card_rect(i%6,&x,&y,&w,&h);if(ps_hit(event->x,event->y,x,y,w,h)){if(event->type==PS_LONG)s_remove=(int)i;else if(!open_item(i))ps_toast(s_error);ps_dirty();return true;}}
         return false;

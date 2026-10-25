@@ -16,6 +16,7 @@
  * Frozen: Re-entering lock retains a valid excerpt, fills an empty queue on demand, and advances only when due; low-battery pause never consumes it.
  */
 #include "pico_system.h"
+#include "pico_scroll.h"
 #include "pico_clock_digits_sparse.h"
 #include "pico_power.h"
 #include "pico_desktop.h"
@@ -143,6 +144,12 @@ static uint32_t random_u32(void) {
     rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5;
     return rng_state;
 }
+// 触摸标记用细圆角方框，不用半径等于边长一半的实心圆。实心圆在墨水屏上会糊成一块；命中仍是整张卡片。
+// Touch marks are hairline rounded squares, not filled disks (radius = half the side). Disks bloom on e-ink; the hit target stays the whole card.
+static void home_touch_mark(uint8_t *fb,int x,int y,int size,bool on) {
+    int radius=4; if(radius>size/2) radius=size/2;
+    ps_box(fb,x,y,size,size,radius,on?PS_THEME_INK:PS_THEME_BORDER,false);
+}
 // 表面与轻阴影只占现有卡片内部及2像素间隙，不扩展触摸判定。
 // Surfaces and soft shadows use only the existing card and two pixels of its gap, without enlarging hit regions.
 static void home_surface(uint8_t *fb,int x,int y,int w,int h,bool inset) {
@@ -172,13 +179,25 @@ static void page_bar(uint8_t *fb,int page,int total) {
     ps_center(fb,v.w/2,y+10,12,b,BLACK);
     ps_button(fb,v.w-104,y,76,34,"下一页",false);
 }
-static int page_action(const ps_event_t *e,int page,int total) {
-    ps_view_t v=ps_view(); int d=0;
-    if (e->type==PS_SWIPE_L) d=1;
-    else if (e->type==PS_SWIPE_R) d=-1;
-    else if (e->type==PS_TAP && ps_hit(e->x,e->y,28,v.h-88,76,34)) d=-1;
-    else if (e->type==PS_TAP && ps_hit(e->x,e->y,v.w-104,v.h-88,76,34)) d=1;
-    return clampi(page+d,0,total-1);
+static ps_scroll_track_t home_scroll;
+// 左右滑动在手指越过阈值时就翻页，不必等到松手。底部按钮仍按原矩形命中。
+// Horizontal paging commits once the finger passes the threshold, without waiting for lift. Bottom buttons keep their hit rectangles.
+static bool page_gesture(const ps_event_t *e,int *page,int total) {
+    bool consume=false;
+    int d=ps_scroll_step(&home_scroll,e->type,e->x0,e->y0,e->x,e->y,PS_SCROLL_AXIS_X,&consume);
+    if(!d){
+        if(consume) return true;
+        if(e->type==PS_TAP){
+            ps_view_t v=ps_view();
+            if(ps_hit(e->x,e->y,28,v.h-88,76,34)) d=-1;
+            else if(ps_hit(e->x,e->y,v.w-104,v.h-88,76,34)) d=1;
+        }
+        if(!d) return false;
+    }
+    if(total<1) total=1;
+    int next=clampi(*page+d,0,total-1);
+    if(next==*page){ ps_scroll_disarm(&home_scroll); return false; }
+    *page=next; return true;
 }
 static bool home_reachable(void) {
     int i=ps_wifi_connected_index();
@@ -281,16 +300,16 @@ static void render_ha(uint8_t *fb) {
         home_surface(fb,r.x,r.y,r.w,r.h,on);
         if(v.landscape){
             bool compact=hc.compact!=0;int badge=compact?24:30,bx=r.x+r.w-badge-8,by=r.y+(compact?10:13);
-            ps_box(fb,bx,by,badge,badge,badge/2,on?PS_THEME_SELECTED:PS_THEME_INSET,true);
-            ps_icon(fb,bx+4,by+4,badge-8,entity_icons[t],on?PS_THEME_ON_SELECTED:PS_THEME_SECONDARY);
+            home_touch_mark(fb,bx,by,badge,on);
+            ps_icon(fb,bx+4,by+4,badge-8,entity_icons[t],on?PS_THEME_INK:PS_THEME_SECONDARY);
             snprintf(b,sizeof(b),"%s · %s",rooms[id/6],entity_names[t]);
             ps_wrap(fb,r.x+10,r.y+(compact?5:9),r.w-badge-24,compact?8:10,1,b,MUTED);
             entity_value(id,b,sizeof(b));
             ps_wrap(fb,r.x+10,r.y+(compact?23:39),r.w-badge-24,t>=4?(compact?13:17):(compact?10:13),1,b,PS_THEME_INK);
         }else{
             ps_text(fb,r.x+12,r.y+12,10,section?type_names[t]:rooms[id/6],MUTED);
-            ps_box(fb,r.x+r.w-45,r.y+14,32,32,16,on?PS_THEME_SELECTED:PS_THEME_INSET,true);
-            ps_icon(fb,r.x+r.w-39,r.y+20,20,entity_icons[t],on?PS_THEME_ON_SELECTED:PS_THEME_SECONDARY);
+            home_touch_mark(fb,r.x+r.w-45,r.y+14,32,on);
+            ps_icon(fb,r.x+r.w-39,r.y+20,20,entity_icons[t],on?PS_THEME_INK:PS_THEME_SECONDARY);
             ps_text(fb,r.x+12,r.y+49,14,entity_names[t],PS_THEME_INK);
             entity_value(id,b,sizeof(b));
             ps_wrap(fb,r.x+12,r.y+83,r.w-24,t>=4?23:16,1,b,PS_THEME_INK);
@@ -321,8 +340,7 @@ static bool ha_event(const ps_event_t *e) {
     }
     int list[ENTITY_COUNT],n=entity_list(list),per=entities_per_page(),total=n?(n+per-1)/per:1;
     if (e->type==PS_TAP) for (int i=0;i<6;i++) if (in_rect(e,room_rect(i))) { section=i; dashboard_page=0; return true; }
-    int next=page_action(e,dashboard_page,total);
-    if (next!=dashboard_page) { dashboard_page=next; return true; }
+    if (page_gesture(e,&dashboard_page,total)) return true;
     if (e->type!=PS_TAP && e->type!=PS_LONG) return false;
     for (int i=0;i<per && dashboard_page*per+i<n;i++) if (in_rect(e,entity_rect(i))) {
         int id=list[dashboard_page*per+i],t=id%6;
@@ -480,7 +498,7 @@ static bool ha_settings_event(const ps_event_t *e) {
     ps_view_t v=ps_view();
     if(wifi_picker){
         int per=v.landscape?4:8,n=ps_wifi_count(),total=n?(n+per-1)/per:1;
-        int next=page_action(e,wifi_choice_page,total);if(next!=wifi_choice_page){wifi_choice_page=next;return true;}
+        if(page_gesture(e,&wifi_choice_page,total))return true;
         if(e->type!=PS_TAP)return false;
         if(n<=per&&ps_hit(e->x,e->y,16,v.h-88,v.w-32,34)){wifi_picker=false;return true;}
         for(int i=0;i<per&&wifi_choice_page*per+i<n;i++){int id=wifi_choice_page*per+i,y=163+i*(v.landscape?25:43);if(ps_hit(e->x,e->y,16,y,v.w-32,v.landscape?23:36)){copy_text(hc.home_wifi,sizeof(hc.home_wifi),ps_wifi_name(id));wifi_picker=false;save_home();return true;}}
@@ -492,8 +510,11 @@ static bool ha_settings_event(const ps_event_t *e) {
     if (ha_tab==0) return connection_event(e);
     int per=ha_tab==1?filter_rows():layout_rows();
     int *page=ha_tab==1?&filter_page:&layout_page;
-    int next=(v.landscape && e->type==PS_TAP)?*page:page_action(e,*page,(ENTITY_COUNT+per-1)/per);
-    if (next!=*page) { *page=next; return true; }
+    if(v.landscape && e->type==PS_TAP){
+        bool consume=false;
+        (void)ps_scroll_step(&home_scroll,e->type,e->x0,e->y0,e->x,e->y,PS_SCROLL_AXIS_X,&consume);
+        if(consume) return true;
+    }else if(page_gesture(e,page,(ENTITY_COUNT+per-1)/per)) return true;
     if (e->type!=PS_TAP) return false;
     if (ha_tab==1) {
         if (ps_hit(e->x,e->y,16,166,v.w-32,32)) hc.types^=(uint8_t)(1u<<clampi((e->x-16)/((v.w-32)/6),0,5));

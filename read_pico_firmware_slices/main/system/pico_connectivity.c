@@ -10,6 +10,7 @@
  * User revision: enable/scan without saved networks, let scanning enable WiFi, and allow manual entry while off; remember only successful connections.
  */
 #include "pico_system.h"
+#include "pico_scroll.h"
 #include "pico_connectivity.h"
 #include "read_pico_connectivity.h"
 #include "read_pico_sd.h"
@@ -558,10 +559,15 @@ static void cc_action(int id,bool details){
     if(id==CC_AUTO_JOIN){int at=cc_saved_index(cc_selected.ssid);if(at>=0)cc_accept(read_pico_connectivity_set_auto_join(cc_selected.ssid,!cc_status.saved[at].auto_join));}
 }
 
+static ps_scroll_track_t cc_list_scroll;
 bool ps_connectivity_event(const ps_event_t *event){
-    if(event->type==PS_SWIPE_U||event->type==PS_SWIPE_L||event->type==PS_SWIPE_D||event->type==PS_SWIPE_R){
-        if(cc_confirm||cc_page!=PS_WIFI||cc_view!=CC_LIST)return false;
-        cc_action(event->type==PS_SWIPE_U||event->type==PS_SWIPE_L?CC_NEXT:CC_PREVIOUS,false);return true;
+    // 列表在拖动越过阈值时就翻一页，松手合成的滑动不再翻第二次。确认框和详情不抢手势。
+    // The list turns one page once the drag crosses the threshold; the synthesized lift swipe does not turn again. Confirms and details do not take the gesture.
+    if(!cc_confirm&&cc_page==PS_WIFI&&cc_view==CC_LIST){
+        bool consume=false;
+        int d=ps_scroll_step(&cc_list_scroll,event->type,event->x0,event->y0,event->x,event->y,PS_SCROLL_AXIS_BOTH,&consume);
+        if(d){cc_action(d>0?CC_NEXT:CC_PREVIOUS,false);return true;}
+        if(consume)return true;
     }
     if(event->type!=PS_TAP)return false;
     cc_control_t controls[24];int count=cc_controls(controls);
