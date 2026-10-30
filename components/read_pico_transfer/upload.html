@@ -1,0 +1,133 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: 2026 mindreset
+SPDX-License-Identifier: Apache-2.0
+双模式传书与热点配网表单；服务器决定容量和凭据是否有效。
+Dual-mode upload and AP provisioning form; the server validates capacity and credentials.
+冻结：逐个发送原始文件，不使用 multipart；仅热点显示配网且不自动断网。
+Frozen: send raw files sequentially without multipart; AP-only provisioning never disconnects automatically.
+-->
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f5f4ee">
+<title>传书到小纸 Pico</title>
+<style>
+*{box-sizing:border-box}body{font:16px/1.65 system-ui,sans-serif;max-width:720px;margin:0 auto;padding:28px 18px 48px;color:#242723;background:#f5f4ee}h1{font-size:29px;line-height:1.25;margin:8px 0 12px;letter-spacing:-.04em}h2{font-size:20px;line-height:1.4;margin:0 0 8px}p{margin:8px 0 16px}.eyebrow{font-size:12px;letter-spacing:.12em;color:#62685d}.hint,small{color:#62685d}.card{background:#fff;border:1px solid #dedfd7;border-radius:18px;padding:22px;margin-top:18px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}button,input{font:inherit;max-width:100%}button{min-height:46px;padding:9px 16px;border:1px solid #c8cdc0;border-radius:10px;background:#fff;color:inherit;cursor:pointer}.primary{background:#2d4033;border-color:#2d4033;color:#fff;font-weight:600}.picker{display:block;margin:16px 0 8px;padding:15px;border:1px dashed #a8b0a0;border-radius:12px}input[type=file]{display:block;width:100%;margin-top:10px;font-size:14px}input[type=file]::file-selector-button{font:inherit;padding:8px 12px;border:0;border-radius:7px;background:#e9ede5;color:#242723;margin-right:10px}input:not([type=file]){width:100%;min-height:46px;border:1px solid #c8cdc0;border-radius:9px;padding:9px 12px;margin:5px 0 12px}button:disabled,input:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #5e7c65;outline-offset:3px}progress{display:block;width:100%;height:10px;accent-color:#2d4033}ul{list-style:none;padding:0;margin:12px 0 0}li{overflow-wrap:anywhere;padding:14px 0;border-top:1px solid #e7e9e1}li button{margin:10px 8px 0 0;font-size:14px}li[data-state=failed],li[data-state=invalid]{color:#90442d}li[data-state=saved]{color:#2d5738}small{display:block}summary{cursor:pointer;font-size:18px;font-weight:600;min-height:44px}details p:first-of-type{margin-top:12px}.status{font-size:14px;color:#4a5848;overflow-wrap:anywhere}.finish{border-left:3px solid #57765c;padding-left:14px;margin-top:16px}.finish p{margin:5px 0}#progressText{font-size:14px;overflow-wrap:anywhere}#searchForm{display:flex;gap:8px;align-items:start;margin-top:14px}#searchForm input{flex:1;min-width:0;margin:0}#searchForm button{flex:none}.selection{font-size:14px;margin:6px 0;color:#62685d}[hidden]{display:none!important}@media(max-width:420px){body{padding:22px 12px 36px}.card{padding:18px 16px}.actions>button{flex:1}h1{font-size:27px}}
+:root{color-scheme:light}input::placeholder{color:#62685d;opacity:1}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark}body{color:#eef3eb;background:#171c19}.eyebrow,.hint,small,.selection{color:#b5c0af}.card{background:#242b25;border-color:#465043}button{background:#2f3830;border-color:#66745f}.primary{background:#b9d2a9;border-color:#b9d2a9;color:#18251b}.picker{border-color:#7c8e73}input[type=file]::file-selector-button{background:#3b493b;color:#eef3eb}input:not([type=file]){background:#1c231d;border-color:#66745f;color:#eef3eb}input::placeholder{color:#aab5a5}button:focus-visible,input:focus-visible,summary:focus-visible{outline-color:#bed9af}progress{accent-color:#b9d2a9}li{border-color:#465043}li[data-state=failed],li[data-state=invalid]{color:#ffb8a0}li[data-state=saved]{color:#b9ddb8}.status{color:#bfceb8}.finish{border-color:#9bbd93}}
+</style>
+<header><div class="eyebrow">READ PICO / 无线传输</div>
+<h1>把想读的书，放进小纸。</h1>
+<p class="hint">手机与小纸 Pico 保持在同一网络，设备停留在传书页。</p>
+<p id="info" class="status" role="status">正在连接设备，查询可用空间…</p><button id="reconnect" type="button">重新连接 / 刷新列表</button></header>
+<section class="card"><h2>传入图书</h2>
+<p class="hint">支持 TXT、EPUB，可一次选择多本。同名文件会单独询问，未经确认不会替换。</p>
+<label class="picker" for="files">选择手机或电脑中的图书<input id="files" type="file" accept=".txt,.epub" multiple></label>
+<p id="selection" class="selection">尚未选择图书</p>
+<div class="actions"><button id="send" class="primary" disabled>上传图书</button></div>
+<p class="hint"><small>全部保存成功后，在设备点“完成，打开书架”，即可在本地 TXT / EPUB 书架阅读。</small></p></section>
+<details class="card"><summary>传入字体</summary>
+<p id="fontInfo" class="status">正在查询字体存储…</p>
+<label class="picker" for="fontFiles">选择完整中文 TTF 字体<input id="fontFiles" type="file" accept=".ttf" multiple disabled></label>
+<p id="fontSelection" class="selection">尚未选择字体</p>
+<button id="sendFonts" class="primary" disabled>上传字体</button>
+<p class="hint"><small>字体保存在 TF 卡。上传后在设备停止传书，再到“选择 TF 卡真实字体”选用。请使用有授权的完整中文 TrueType TTF；不支持 OTF、TTC 或 WOFF。传书期间设备使用内置字体。</small></p></details>
+<section class="card" aria-label="传输结果"><h2>传输进度</h2>
+<p id="queueSummary" role="status">选择文件后开始传输</p>
+<p id="progressText" role="status"></p><progress id="progress" aria-labelledby="queueSummary progressText" value="0" max="1"></progress>
+<div class="actions"><button id="cancel" disabled>停止本次传输</button><button id="retryFailed" hidden disabled>重试未完成文件</button></div>
+<div id="completion" class="finish" hidden><strong>已保存到设备</strong><p id="handoff">全部完成后，在设备点“完成，打开书架”。</p></div>
+<ul id="results" aria-live="polite"></ul>
+<p class="hint"><small>发送到 100% 后还需等待设备校验和保存。失败可在此页重试；刷新网页后需重新选择文件。在设备停止或离开传书页，会中断尚未完成的传输。</small></p></section>
+<details class="card"><summary>设备里的图书</summary><p id="scope" class="status"></p>
+<form id="searchForm"><input id="search" aria-label="搜索书名" placeholder="书名 / 拼音 / 首字母" maxlength="64"><button id="searchButton">搜索</button></form>
+<p class="hint"><small>支持拼音、首字母和英文；ü 可输入 v。删除前会再次确认。</small></p>
+<p id="listState" role="status"></p><ul id="books"></ul>
+<div class="actions"><button id="previous" disabled>上一页</button><button id="next" disabled>下一页</button></div>
+</details>
+<details id="network" class="card" hidden><summary>让设备连接家中 Wi-Fi</summary>
+<p class="hint">使用 2.4 GHz WiFi。保存后热点继续工作；传完本批文件后，在设备重新选择“同一 Wi-Fi”，再把手机连接到同一网络。</p>
+<p id="saved"></p>
+<form id="wifiForm">
+<label for="ssid">网络名称（SSID）</label><br><input id="ssid" name="ssid" maxlength="32" autocomplete="off" required><br>
+<label for="password">WiFi 密码（开放网络留空）</label><br><input id="password" name="password" type="password" maxlength="64" autocomplete="new-password"><br>
+<button id="saveWifi" type="submit">保存网络</button>
+<button id="forgetWifi" type="button">遗忘网络</button>
+</form><p id="wifiResult" role="status"></p>
+</details>
+<script>
+const $=id=>document.getElementById(id);let policy,busy=false,configuring=false,cancelled=false,activeXHR=null,page=0,pages=0;const allItems=[],activeRequests=new Set();
+const size=n=>n>=1073741824?(n/1073741824).toFixed(1)+' GB':n>=1048576?(n/1048576).toFixed(2)+' MB':Math.ceil(n/1024)+' KB';
+function selection(){for(const [id,note,send,label] of [['files','selection','send','图书'],['fontFiles','fontSelection','sendFonts','字体']]){const files=[...($(id).files||[])];$(note).textContent=files.length?'已选择 '+files.length+' 个文件 · '+size(files.reduce((n,f)=>n+f.size,0)):'尚未选择'+label;$(send).textContent=files.length?'上传'+label+'（'+files.length+'）':'上传'+label;$(send).disabled=busy||configuring||!policy||!files.length||(id==='fontFiles'&&!policy.fonts_enabled);}}
+function summary(){const count=s=>allItems.filter(i=>i.status===s).length,retry=allItems.filter(i=>i.retryable).length,saved=count('saved')+count('saved-warning');$('queueSummary').textContent=allItems.length?'已保存 '+saved+' · 需处理 '+(count('failed')+count('invalid')+count('saved-warning'))+' · 已跳过 '+count('skipped')+' · 未上传 '+count('cancelled'):'选择文件后开始传输';$('retryFailed').hidden=!retry;$('retryFailed').disabled=busy||configuring||!retry;$('retryFailed').textContent='重试未完成文件（'+retry+'）';$('completion').hidden=!saved;$('handoff').textContent=busy?'其余文件仍在传输，请保持设备停留在传书页。':'在设备点“完成，打开书架”，进入本地 TXT / EPUB 书架；字体请在结束传书后到“选择 TF 卡真实字体”选用。';}
+function result(item,status,message,retryable=false){item.status=status;item.retryable=retryable;item.row.dataset.state=status;item.row.textContent=item.file.name+'：'+message;if(retryable)button(item.row,'重试此文件',()=>run([item]));summary();}
+async function info(){
+  const r=await request('/info',{cache:'no-store'});if(r.status!==200)throw Error(r.body.error||'无法查询存储空间');policy=r.body;
+  $('info').textContent='已连接 · '+(policy.mode==='sta'?'已有 Wi-Fi':'设备热点')+' · 图书存入'+(policy.is_flash?'内置存储':'TF 卡')+' · 可用 '+size(policy.free_bytes)+(policy.file_limit?' · 每本上限 '+size(policy.file_limit):'');
+  $('fontInfo').textContent=policy.fonts_enabled?'字体存入 TF 卡 · 每个文件上限 '+size(policy.font_limit):'字体需要可读写的 TF 卡。请在设备检查卡片，再重新进入传书。';
+  $('fontFiles').disabled=busy||!policy.fonts_enabled;selection();
+  $('network').hidden=policy.mode!=='ap';$('saved').textContent=policy.wifi_configured?'已保存：'+policy.wifi_ssid:'尚未保存网络';
+}
+function lock(value){busy=value;const blocked=value||configuring;$('files').disabled=$('search').disabled=$('searchButton').disabled=$('previous').disabled=$('next').disabled=blocked;$('fontFiles').disabled=blocked||!policy?.fonts_enabled;$('saveWifi').disabled=$('forgetWifi').disabled=$('reconnect').disabled=blocked;$('cancel').disabled=!value;document.querySelectorAll('[data-mutate]').forEach(b=>b.disabled=blocked);if(!blocked){$('previous').disabled=page<=0;$('next').disabled=page+1>=pages;}selection();summary();}
+function button(parent,label,action){const b=document.createElement('button');b.type='button';b.textContent=label;b.dataset.mutate='1';b.disabled=busy||configuring;b.onclick=action;parent.append(b);return b;}
+async function request(url,options){const controller=new AbortController();activeRequests.add(controller);const timeout=setTimeout(()=>controller.abort(),15000);try{let response;try{response=await fetch(url,{...options,signal:controller.signal});}catch(e){throw Error(cancelled?'已取消；未完成文件可重试':controller.signal.aborted?'设备响应超时，请检查连接后重试':'连接中断，请确认手机仍连接设备所在网络，再重试');}let body;try{body=await response.json();}catch(e){throw Error(controller.signal.aborted?'设备响应超时，请检查连接后重试':'未收到有效设备响应，请检查连接后重试');}return {status:response.status,body};}finally{clearTimeout(timeout);activeRequests.delete(controller);}}
+function cleanupButton(row,name,item){button(row,'重试清理阅读进度',async()=>{if(busy||configuring)return;lock(true);try{const r=await request('/books?name='+encodeURIComponent(name)+'&action=retry_progress',{method:'POST'});if(r.status!==200)throw Error(r.body.error||'清理失败');if(item)result(item,item.warning?'saved-warning':'saved','已保存；阅读进度已清理'+(item.warning?' · '+item.warning:''));else row.textContent=name+'：阅读进度已清理';}catch(e){const note=document.createElement('small');note.textContent=e.message;row.append(note);}finally{lock(false);}});}
+async function loadBooks(){if(new TextEncoder().encode($('search').value).length>64)throw Error('搜索词最多64字节，请缩短后重试');const r=await request('/books?page='+page+'&q='+encodeURIComponent($('search').value));if(r.status!==200)throw Error(r.body.error||'无法读取图书列表');const data=r.body;pages=data.pages;if(page&&page>=pages){page=0;return loadBooks();}$('scope').textContent='这里列出本次图书存储位置：'+data.root_label+'。另一存储中的图书不在此列表。';$('listState').textContent=data.total?'共 '+data.total+' 本 · 第 '+(page+1)+' / '+pages+' 页':$('search').value?'没有找到匹配的图书':'这里还没有图书，上传成功后会显示在这里。';$('books').replaceChildren();for(const item of data.items){const row=document.createElement('li'),title=document.createElement('span'),detail=document.createElement('small');title.textContent=item.name;detail.textContent=size(item.size)+' · '+data.root_label;row.append(title,detail);button(row,'删除',()=>removeBook(item,row)).ariaLabel='删除 '+item.name;$('books').append(row);}$('previous').disabled=busy||page<=0;$('next').disabled=busy||page+1>=pages;}
+async function removeBook(item,row){if(busy||!confirm('永久删除当前存储中的图书？\n\n'+item.name+'\n'+size(item.size)+'\n\n此操作不可撤销。'))return;lock(true);try{const r=await request('/books?name='+encodeURIComponent(item.name),{method:'DELETE'});if(r.body.progress_cleanup_failed){const notice=document.createElement('li');notice.textContent=item.name+'：'+r.body.error;$('results').append(notice);cleanupButton(notice,r.body.name||item.name);}else if(r.status!==200)throw Error(r.body.error||'删除失败');page=0;await info();await loadBooks();}catch(e){const note=document.createElement('small');note.textContent=e.message;row.append(note);}finally{lock(false);}}
+function upload(file,overwrite,kind='book'){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();activeXHR=xhr;let last=0;$('progress').max=file.size;$('progress').value=0;$('progressText').textContent=file.name+' · 正在发送到设备…';xhr.open('PUT',(kind==='font'?'/fonts':'/upload')+'?name='+encodeURIComponent(file.name)+(overwrite?'&overwrite=1':''));xhr.timeout=Math.max(60000,Math.min(1800000,Math.ceil(file.size/16384)*1000+30000));xhr.ontimeout=()=>{activeXHR=null;reject(Error('传输超时，未确认保存结果；请恢复连接后重试'));};xhr.upload.onprogress=e=>{const now=Date.now(),total=e.total||file.size;if(now-last<250&&e.loaded!==total)return;last=now;$('progress').max=total;$('progress').value=e.loaded;$('progressText').textContent=file.name+' · 已发送 '+Math.min(100,Math.floor(e.loaded/total*100))+'% · '+size(e.loaded)+' / '+size(total)+(e.loaded>=total?' · 等待设备校验并保存，请勿离开传书页':'');};xhr.onload=()=>{activeXHR=null;try{resolve({status:xhr.status,body:JSON.parse(xhr.responseText)});}catch(e){reject(Error('未确认保存结果，请检查设备图书列表后重试'));}};xhr.onerror=()=>{activeXHR=null;reject(Error('网络中断，未确认保存结果；请恢复连接后重试，同名文件仍会询问'));};xhr.onabort=()=>{activeXHR=null;reject(Error('已取消；若设备已完成保存，请先检查结果'));};xhr.send(file);});}
+async function run(items){
+  if(busy||configuring||!items.length)return;cancelled=false;
+  for(const item of items){if(!allItems.includes(item))allItems.push(item);item.status='queued';item.retryable=false;}
+  lock(true);
+  for(let i=0;i<items.length;i++){
+    const item=items[i],{file,row,kind='book'}=item,font=kind==='font';let valid=true;
+    if(cancelled){result(item,'cancelled','未上传（本次传输已停止）',true);continue;}
+    row.textContent=file.name+'：检查文件（'+(i+1)+' / '+items.length+'）…';
+    try{
+      await info();if(cancelled)throw Error('已取消');
+      if(font&&!policy.fonts_enabled)throw Error('字体需要 TF 卡，请挂载后重新进入传书');
+      if(!(font?/\.ttf$/i:/\.(txt|epub)$/i).test(file.name)){valid=false;throw Error(font?'字体仅支持 TTF，请重新选择文件':'图书仅支持 TXT / EPUB，请重新选择文件');}
+      if(!file.size){valid=false;throw Error('文件为空，请检查原文件后重新选择');}
+      const limit=font?policy.font_limit:policy.file_limit;
+      if(limit&&file.size>limit){valid=false;throw Error('超过单文件上限 '+size(limit)+'，请更换文件');}
+      if(file.size>policy.free_bytes)throw Error('剩余空间不足（替换也须暂存完整新文件）');
+      const existing=await request((font?'/fonts':'/books')+'?name='+encodeURIComponent(file.name));
+      if(cancelled)throw Error('已取消');
+      let overwrite=false;
+      if(existing.status===200){
+        overwrite=confirm('同名'+(font?'字体':'图书')+'已存在：\n\n'+file.name+'\n\n确定：'+(font?'替换字体':'替换并清除旧阅读进度')+'\n取消：保留原文件，跳过本次上传\n\n要保留两份，请先在手机上重命名再上传。');
+        if(!overwrite){result(item,'skipped','已跳过，原文件保留');continue;}
+      }else if(existing.status!==404)throw Error(existing.body.error||'无法检查文件');
+      if(cancelled)throw Error('已取消');
+      row.textContent=file.name+'：上传中（'+(i+1)+' / '+items.length+'）';
+      let r=await upload(file,overwrite,kind);
+      if(r.status===409&&!cancelled){
+        if(confirm('设备上的同名文件刚刚发生变化：'+file.name+'\n\n确定：'+(font?'替换字体':'替换并清除旧阅读进度')+'\n取消：保留原文件，跳过本次上传'))r=await upload(file,true,kind);
+        else{result(item,'skipped','已跳过，原文件保留');continue;}
+      }
+      item.warning=r.body.warning||'';
+      if(r.body.progress_cleanup_failed){result(item,'saved-warning',(r.body.error||'文件已保存，但旧阅读进度清理失败')+(item.warning?' · '+item.warning:''));cleanupButton(row,r.body.name||file.name,item);}
+      else if(r.status!==200)throw Error(r.body.error||'上传失败');
+      else result(item,item.warning?'saved-warning':'saved','已保存到'+(font?' TF 卡字体目录':policy.is_flash?'内置书库':' TF 卡书库')+(item.warning?' · '+item.warning:''));
+    }catch(e){result(item,cancelled?'cancelled':valid?'failed':'invalid',e.message,valid);}
+  }
+  $('progressText').textContent=cancelled?'本次传输已停止。已保存的文件仍保留；未完成文件可单独或一起重试。':'本次传输已结束。请查看逐个结果；重试只发送未完成文件。';
+  try{page=0;await info();await loadBooks();}catch(e){$('listState').textContent=e.message;}lock(false);
+}
+function queueFiles(id,kind){if(busy||configuring)return;const files=[...($(id).files||[])];if(!files.length)return;const items=files.map(file=>{const row=document.createElement('li');row.textContent=file.name+'：排队中';$('results').append(row);return {file,row,kind};});run(items);}
+$('send').onclick=()=>queueFiles('files','book');
+$('sendFonts').onclick=()=>queueFiles('fontFiles','font');
+$('files').onchange=$('fontFiles').onchange=selection;
+$('retryFailed').onclick=()=>run(allItems.filter(i=>i.retryable));
+$('cancel').onclick=()=>{cancelled=true;if(activeXHR)activeXHR.abort();for(const controller of activeRequests)controller.abort();};
+$('searchForm').onsubmit=e=>{e.preventDefault();if(busy||configuring)return;page=0;loadBooks().catch(e=>$('listState').textContent=e.message);};
+$('previous').onclick=()=>{if(busy||configuring||page<=0)return;--page;loadBooks().catch(e=>$('listState').textContent=e.message);};
+$('next').onclick=()=>{if(busy||configuring||page+1>=pages)return;++page;loadBooks().catch(e=>$('listState').textContent=e.message);};
+async function reconnect(){if(busy||configuring)return;configuring=true;lock(false);try{await info();await loadBooks();}catch(e){$('info').textContent=e.message+'。请保持设备在传书页，再点“重新连接”。';}finally{configuring=false;lock(false);}}
+$('reconnect').onclick=reconnect;reconnect();
+async function configure(method,body){if(busy||configuring)return;configuring=true;lock(false);$('saveWifi').disabled=$('forgetWifi').disabled=$('reconnect').disabled=true;$('wifiResult').textContent=method==='DELETE'?'正在遗忘网络…':'正在保存网络…';try{const r=await request('/wifi',{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});if(r.status!==200)throw Error(r.body.error||'配置失败');$('password').value='';$('wifiResult').textContent=method==='DELETE'?'已遗忘网络。':'已保存。传完本批文件后，在设备重新选择“同一 Wi-Fi”；热点暂时保持连接。';await info();}catch(e){$('wifiResult').textContent=e.message;}finally{configuring=false;lock(false);}}
+$('wifiForm').onsubmit=e=>{e.preventDefault();const ssid=$('ssid').value,password=$('password').value;if(new TextEncoder().encode(ssid).length>32){$('wifiResult').textContent='SSID 超过32字节，请缩短名称。';return;}configure('POST',{ssid,password});};
+$('forgetWifi').onclick=()=>configure('DELETE');
+</script>
+</html>

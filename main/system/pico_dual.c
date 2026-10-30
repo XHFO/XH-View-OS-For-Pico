@@ -1,0 +1,687 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * 双机配对页、TF生命周期、阅读联动。/ Pairing page, TF lifecycle and linked reading.
+ * 冻结：共享分页使用竖屏及主机完整字体；按用户要求支持同步字号，主机按原正文锚点重排后才放行副机。
+ * Frozen: Shared portrait pagination uses the primary's full font; requested shared sizing reflows the primary's text anchor before releasing the secondary.
+ * 同步不导出TF，不绕过编辑或电源保护。/ Synchronization never exports TF or bypasses edit/power guards.
+ */
+#include "pico_dual.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include "../apps/app_book.h"
+#include "book_store.h"
+#include "dual_link.h"
+#include "read_pico_dual_ble.h"
+#include "esp_random.h"
+#include "pico_connectivity.h"
+#include "pico_power.h"
+#include "pico_ink.h"
+#include "read_pico_connectivity.h"
+#include "read_pico_sd.h"
+#include "ttf_font.h"
+#ifdef PICO_NATIVE_PREVIEW
+#include "native_preview_book_vfs.h"
+#endif
+typedef struct {
+    uint32_t magic;
+    uint8_t role;
+    char host[48], code[7];
+} dual_settings_t;
+static dual_settings_t settings;
+static dual_link_t* dual_session;
+static dl_status_t status;
+static bool loaded;
+static dl_orientation_t orientation = { .inverted = true };
+static uint8_t stored_orientation = 0xff;
+static int64_t orientation_store_at;
+static uint8_t orientation_bits(void) {
+    return orientation.inverted | (orientation.primary_flip << 1) | (orientation.secondary_flip << 2);
+}
+static void orientation_save(void) {
+    uint8_t bits = orientation_bits();
+    if (bits != stored_orientation && ps_now() >= orientation_store_at) {
+        if (ps_store("dualorient1", &bits, sizeof(bits))) stored_orientation = bits;
+        else { orientation_store_at = ps_now() + 1000; ps_toast("屏幕方向保存失败，请检查 TF 卡"); }
+    }
+}
+static uint32_t applied, presented, stored, content_revision;
+static int64_t last_tick, last_ip, last_work;
+static unsigned library_revision;
+static char primary_ip[48];
+static char draft_host[48];
+static char draft_local_ip[48], draft_input[16];
+static bool draft_short;
+static uint32_t ble_generation;
+#ifdef PICO_NATIVE_PREVIEW
+static bool native_wifi = true;
+void ps_dual_native_wifi(bool online) { native_wifi = online; }
+#endif
+static void load(void) {
+    if (loaded) return;
+    loaded = true;
+    if (!ps_load("dualconfig1", &settings, sizeof(settings)) || settings.magic != 0x44554c31 ||
+        settings.role > 2)
+        memset(&settings, 0, sizeof(settings));
+    settings.host[47] = 0;
+    settings.code[6] = 0;
+    uint8_t bits;
+    if (ps_load("dualorient1", &bits, sizeof(bits)) && bits < 8) {
+        orientation = (dl_orientation_t){ !!(bits & 1), !!(bits & 2), !!(bits & 4) };
+        stored_orientation = bits;
+    }
+}
+bool ps_dual_enabled(void) {
+    load();
+    return settings.role != 0;
+}
+int ps_dual_role(void) {
+    load();
+    return settings.role;
+}
+bool ps_dual_holds_awake(void) {
+    return ps_dual_enabled() && dual_session &&
+        (status.connected || status.data_connected || status.scanning || status.busy);
+}
+void ps_dual_suspend(void) {
+    pico_dual_ble_stop();
+    ble_generation = 0;
+    if (dual_session) {
+        dl_destroy(dual_session);
+        dual_session = NULL;
+    }
+    memset(&status, 0, sizeof(status));
+    applied = presented = stored = content_revision = 0;
+}
+bool ps_dual_configure(int role, const char* host, const char* code) {
+    load();
+    if (role < 0 || role > 2 || ps_power_pending() || ps_storage_busy() || ps_usb_held())
+        return false;
+    dual_settings_t next = { .magic = 0x44554c31, .role = (uint8_t)role };
+    if (role) {
+        if (!code || strlen(code) != 6) return false;
+        for (int i = 0; i < 6; i++)
+            if (code[i] < '0' || code[i] > '9') return false;
+        if (role == 2 && (!host || !*host || strlen(host) >= sizeof(next.host))) return false;
+        snprintf(next.host, sizeof(next.host), "%s", host ? host : "");
+        snprintf(next.code, sizeof(next.code), "%s", code);
+    }
+    if (!ps_store("dualconfig1", &next, sizeof(next))) {
+        ps_toast("设置保存失败，请检查 TF 卡");
+        return false;
+    }
+    ps_dual_suspend();
+    settings = next;
+    ps_dual_rotation_changed();
+    ps_dirty();
+    return true;
+}
+static bool start(void) {
+    read_pico_sd_info_t sd = { 0 };
+    read_pico_sd_get_info(&sd);
+    if (!sd.mounted || !sd.present) return false;
+    dl_config_t cfg = { .role = settings.role, .port = DL_PORT };
+    snprintf(cfg.host, sizeof(cfg.host), "%s", settings.host);
+    snprintf(cfg.code, sizeof(cfg.code), "%s", settings.code);
+    book_store_root_t roots[2];
+    int n = 0;
+    if (book_store_roots(roots, &n) != ESP_OK) return false;
+    for (int i = 0; i < n && cfg.root_count < 2; i++)
+        if (!roots[i].is_flash) {
+            snprintf(cfg.roots[cfg.root_count++], DL_PATH, "%s", roots[i].path);
+            if (!cfg.destination[0]) snprintf(cfg.destination, DL_PATH, "%s", roots[i].path);
+        }
+    if (!cfg.root_count) return false;
+    snprintf(cfg.roots[cfg.root_count++], DL_PATH, "/sdcard");
+    if (settings.role == 1) {
+        const char* font = ttf_font_path();
+        if (!font || ttf_font_path_is_builtin(font)) font = TTF_FONT_DEFAULT_SD;
+        struct stat st;
+        if (stat(font, &st) || !S_ISREG(st.st_mode)) {
+            status.error = "primary font unavailable";
+            return false;
+        }
+        snprintf(cfg.font, sizeof(cfg.font), "%s", font);
+    }
+    dual_session = dl_create(&cfg);
+    if (!dual_session) {
+        status.error = "allocation or configuration failed";
+        return false;
+    }
+    dl_orientation_restore(dual_session, &orientation);
+    dl_reading_t saved = { 0 };
+    if (settings.role == 1) {
+        // 旧记录是新结构的76字节前缀；保留原书和页码，并使用原固定48字号。
+        // The old record is the 76-byte prefix; retain its book/spread with the former fixed size of 48.
+        bool restored = ps_load("dualreading2", &saved, sizeof(saved));
+        if (!restored) {
+            memset(&saved, 0, sizeof(saved));
+            restored = ps_load("dualreading1", &saved, offsetof(dl_reading_t, font_px));
+            saved.font_px = DL_FONT_DEFAULT;
+        }
+        if (restored) dl_restore(dual_session, &saved);
+    }
+    library_revision = book_store_revision();
+    return true;
+}
+// 主机基准与两端翻转单独存储，不改系统方向偏好。/ Separate the primary base and role flips from system preferences.
+int ps_dual_base_rotation(void) {
+    load();
+    return orientation.inverted ? EPD_ROT_INVERTED_PORTRAIT : EPD_ROT_PORTRAIT;
+}
+int ps_dual_rotation(void) {
+    load();
+    bool flip = settings.role == 1 ? orientation.primary_flip : orientation.secondary_flip;
+    return (orientation.inverted != flip) ? EPD_ROT_INVERTED_PORTRAIT : EPD_ROT_PORTRAIT;
+}
+static void orientation_update(void) {
+    dl_status_t current;
+    dl_status(dual_session, &current);
+    orientation = current.orientation;
+    orientation_save();
+    ps_dirty();
+}
+bool ps_dual_flip(int role, bool enabled) {
+    load();
+    if (!settings.role || ps_power_pending() || ps_storage_busy() || ps_usb_held() || ps_content_held()) return false;
+    if (!dual_session && !start()) return false;
+    if (!dl_flip(dual_session, role, enabled)) return false;
+    orientation_update();
+    return true;
+}
+bool ps_dual_rotate(void) {
+    load();
+    return ps_dual_flip(settings.role, !(settings.role == 1 ? orientation.primary_flip : orientation.secondary_flip));
+}
+bool ps_dual_orient(int rotation) {
+    if (settings.role != 1 || !dual_session) return false;
+    if (!dl_orient(dual_session, rotation == EPD_ROT_INVERTED_PORTRAIT)) return false;
+    orientation_update();
+    return true;
+}
+static bool open_request(const char* path, uint32_t page) {
+    if (!dual_session || !(page ? dl_open_at(dual_session, path, page) : dl_open_path(dual_session, path))) {
+        ps_toast("请等待双机连接和书库同步完成");
+        return false;
+    }
+    dl_status_t current;
+    dl_status(dual_session, &current);
+    if (!current.synced)
+        ps_toast(current.scanning ? "正在校验书库，完成后自动打开"
+                 : current.data_connected ? "正在同步图书与字库，完成后自动打开"
+                                          : "等待另一台连接，连接后自动打开");
+    return true;
+}
+bool ps_dual_open(const char* path) {
+    return !ps_dual_enabled() || open_request(path, 0);
+}
+bool ps_dual_open_at(const char* path, uint32_t page) {
+    return ps_dual_enabled() && page && open_request(path, page);
+}
+bool ps_dual_turn(int direction) {
+    if (!ps_dual_enabled()) return false;
+    bool accepted = dual_session && dl_turn(dual_session, direction);
+    if (!accepted) ps_toast("另一台尚未就绪，请稍后再翻页");
+    return accepted;
+}
+bool ps_dual_seek(uint32_t page) {
+    return ps_dual_enabled() && dual_session && !ps_power_pending() && !ps_storage_busy() &&
+        !ps_usb_busy() && !ps_usb_held() && !ps_content_held() && !ps_transfer_prepared() &&
+        dl_seek(dual_session, page);
+}
+bool ps_dual_resize(uint8_t px) {
+    return ps_dual_enabled() && dual_session && !ps_power_pending() && !ps_storage_busy() &&
+        !ps_usb_busy() && !ps_usb_held() && !ps_content_held() && !ps_transfer_prepared() &&
+        dl_resize(dual_session, px);
+}
+bool ps_dual_reflow_resolved(uint32_t revision, uint32_t spread) {
+    return dual_session && dl_reflow_resolved(dual_session, revision, spread);
+}
+bool ps_dual_reflow_failed(uint32_t revision) {
+    return dual_session && dl_reflow_failed(dual_session, revision);
+}
+bool ps_dual_resume(void) {
+    dl_status_t current; dl_status(dual_session, &current);
+    if (!current.connected || !current.synced || (settings.role == 2 && !current.left_ready) ||
+        !dl_reading_path(dual_session) || !dl_font_path(dual_session)) return false;
+    applied = presented = 0;
+    return true;
+}
+void ps_dual_presented(uint32_t page) {
+    if (!dual_session || !applied) return;
+    dl_status_t current; dl_status(dual_session, &current);
+    if (current.reading.reflow_pending || current.reading.revision != applied || page != current.reading.spread + (settings.role == 2 ? 2u : 1u)) return;
+    if (settings.role == 1) (void)dl_presented(dual_session, applied);
+    presented = applied;
+}
+void ps_dual_total(uint32_t total) {
+    if (dual_session) dl_total(dual_session, total);
+}
+const char* ps_dual_font(void) {
+    return dual_session ? dl_font_path(dual_session) : NULL;
+}
+const char* ps_dual_path(void) {
+    return dual_session ? dl_reading_path(dual_session) : NULL;
+}
+static bool idle_reading_route(void) {
+    switch (ps_route()) {
+        case PS_SHELF: case PS_DUAL: case PS_DEVICE: case PS_READING_SETTINGS:
+        case PS_INPUT_SETTINGS: case PS_SLEEP_SETTINGS: case PS_QUICK_SETTINGS:
+        case PS_POWER: case PS_SOUND: case PS_DATETIME: return true;
+        default: return false;
+    }
+}
+bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw) {
+    if (!ps_dual_enabled()) return false;
+    bool safe = !ps_storage_busy() && !ps_usb_busy() && !ps_usb_held() && !ps_content_held() &&
+                !ps_transfer_prepared() && !ps_power_pending();
+    if (!safe) {
+        ps_dual_suspend();
+        return false;
+    }
+    if (ctx->now_ms - last_tick < 10) return false;
+    last_tick = ctx->now_ms;
+    read_pico_connectivity_status_t* net = NULL;
+    // 日常联网快照只用于设置页；读书不复制大扫描数组。/ Full Wi-Fi snapshots are only needed by setup, not each reading tick.
+    bool online = read_pico_connectivity_online();
+#ifdef PICO_NATIVE_PREVIEW
+    online = native_wifi;
+#endif
+    if (ps_route() == PS_DUAL && ctx->now_ms - last_ip >= 1000) {
+        last_ip = ctx->now_ms;
+        net = malloc(sizeof(*net));
+        if (net) {
+            read_pico_connectivity_get_status(net);
+            snprintf(primary_ip, sizeof(primary_ip), "%s", net->ip);
+            free(net);
+        }
+    }
+    // 浮层只延后切换正文，不能停止通信心跳；触摸/笔迹仍让路。
+    // Overlays defer opening the reader, not link servicing; active touch and ink still take priority.
+    bool ui_idle = ps_background_io_allowed();
+    if ((ctx->touch && ctx->touch->touched) || ps_reader_editor_ink_active() || ps_ink_pending())
+        return false;
+    if (!dual_session && !start()) return false;
+    dl_status_t before = status;
+    esp_err_t ble_result = pico_dual_ble_configure(settings.role, settings.code);
+    pico_dual_ble_status_t ble;
+    pico_dual_ble_status(&ble);
+    if (ble_generation != ble.generation) {
+        dl_control_connected(dual_session, false);
+        ble_generation = ble.generation;
+        applied = 0;
+    }
+    if (!ble.connected) applied = 0;
+    dl_control_connected(dual_session, ble.connected);
+    dl_tick(dual_session, ctx->now_ms, online);
+    last_work = ctx->now_ms;
+    uint8_t packet[DL_CONTROL_MAX];
+    for (unsigned i = 0; i < 4; ++i) {
+        size_t n = pico_dual_ble_receive(packet, sizeof(packet));
+        if (!n) break;
+        (void)dl_control_receive(dual_session, packet, n);
+    }
+    if (pico_dual_ble_can_send()) {
+        size_t n = dl_control_take(dual_session, packet, sizeof(packet));
+        if (n) (void)pico_dual_ble_send(packet, n);
+    }
+    dl_status(dual_session, &status);
+    if (memcmp(&orientation, &status.orientation, sizeof(orientation))) {
+        orientation = status.orientation;
+        ps_dirty();
+    }
+    orientation_save();
+    if (app != &app_book && ui_idle && !ctx->consumed) ps_dual_rotation_changed();
+    if (!status.error && ble_result != ESP_OK) status.error = "Bluetooth startup unavailable";
+    else if (!status.error && ble.error && !ble.connected)
+        status.error = "Bluetooth pairing pending; check matching code";
+    if (status.content_revision != content_revision) {
+        content_revision = status.content_revision;
+        book_store_notify_changed();
+        library_revision = book_store_revision();
+    }
+    if (ps_route() == PS_DUAL &&
+        (before.connected != status.connected || before.data_connected != status.data_connected || before.synced != status.synced ||
+         before.scanning != status.scanning || before.books != status.books ||
+         before.error != status.error || before.expected != status.expected ||
+         (status.expected && (uint64_t)before.received * 20 / status.expected !=
+                                 (uint64_t)status.received * 20 / status.expected)))
+        ps_dirty();
+    if (settings.role == 1 && !status.reading.reflow_pending && status.reading.revision != stored && dl_reading_path(dual_session)) {
+        if (ps_store("dualreading2", &status.reading, sizeof(status.reading)))
+            stored = status.reading.revision;
+    }
+    const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
+    if (ui_idle && status.connected && status.synced && (settings.role == 1 || status.left_ready) &&
+        path && font && status.reading.revision != applied &&
+        (app == &app_book || (app->product_shell && idle_reading_route()))) {
+        if (app_book_dual_apply(path, font, status.reading.spread + (settings.role == 2 ? 2 : 1),
+                status.reading.font_px, status.reading.reflow_pending, status.reading.revision)) {
+            applied = status.reading.revision;
+            ps_power_activity(ctx->now_ms);
+            if (app != &app_book) ps_legacy(&app_book);
+        }
+    }
+    // 只响应书库变化；按时钟重扫会使大字库刚同步完就再次失去就绪状态。
+    // Rescan on library changes only; timed rescans can invalidate a slow sync as soon as it completes.
+    if (app->product_shell && (ps_route() == PS_DUAL || ps_route() == PS_SHELF) &&
+        status.synced && !status.busy && library_revision != book_store_revision()) {
+        library_revision = book_store_revision();
+        dl_rescan(dual_session);
+    }
+    (void)redraw;
+    return false;
+}
+void ps_dual_enter(void) {
+    load();
+}
+void ps_dual_render(uint8_t* fb) {
+    ps_view_t v = ps_view();
+    ps_heading(fb, "双机阅读 · 实验版", "两台小纸 Pico，共同打开一本书");
+    int x = 20, w = v.w - 40;
+    char text[128];
+    ps_button(fb, x, 104, (w - 16) / 3, 40, "关闭", settings.role == 0);
+    ps_button(fb, x + (w - 16) / 3 + 8, 104, (w - 16) / 3, 40, "主机", settings.role == 1);
+    ps_button(fb, x + 2 * ((w - 16) / 3 + 8), 104, (w - 16) / 3, 40, "从机", settings.role == 2);
+    if (!settings.role) {
+        ps_text(fb, x, 170, 14, "先将两台设备连接到同一个 Wi-Fi", 1);
+        ps_text(fb, x, 200, 12, "一台选择主机，另一台选择从机", 4);
+        ps_button(fb, x, 250, w, 42, "打开 Wi-Fi 设置", false);
+        return;
+    }
+    for (int role = 1; role <= 2; ++role) {
+        int center = x + role * ((w - 16) / 3 + 8) + (w - 16) / 6;
+        bool on = role == 1 ? orientation.primary_flip : orientation.secondary_flip;
+        ps_center(fb, center, 153, 10, "旋转屏幕 180°", 2);
+        ps_box(fb, center - 19, 171, 38, 22, 11, on ? 1 : 11, true);
+        ps_box(fb, center + (on ? 0 : -16), 174, 16, 16, 8, 15, true);
+    }
+    ps_text(fb, x, 156, 10, "自动方向", 4);
+    ps_text(fb, x, 174, 10, "同步主机", 4);
+    snprintf(
+        text, sizeof(text), "%s  %s", settings.role == 1 ? "主机地址" : "连接地址",
+        settings.role == 1 ? (primary_ip[0] ? primary_ip : "等待 Wi-Fi") : settings.host);
+    ps_text(fb, x, 224, 13, text, 1);
+    snprintf(text, sizeof(text), "配对码  %s", settings.code);
+    ps_text(fb, x, 252, 16, text, 1);
+    const char* state = status.synced      ? "双机书库一致，可以打开图书"
+                        : status.error     ? "请检查网络、TF 卡和配对码"
+                        : status.scanning  ? "正在校验本机书库"
+                        : status.data_connected ? "正在补齐图书与共享字体"
+                                           : "等待另一台设备连接";
+    ps_text(fb, x, 290, 12, state, 2);
+    snprintf(
+        text, sizeof(text), "本机 %u 项 · 对端 %u 项 · 新增 %u 项", status.books, status.peer_books,
+        status.imported);
+    ps_text(fb, x, 316, 11, text, 5);
+    if (status.error) {
+        ps_text(fb, x, 340, 10, status.error, 5);
+    } else if (status.expected) {
+        snprintf(text, sizeof(text), "接收进度 %u%% · %u / %u KB",
+                 (unsigned)((uint64_t)status.received*100/status.expected),
+                 (unsigned)(status.received/1024), (unsigned)((status.expected+1023)/1024));
+        ps_text(fb, x, 340, 10, text, 3);
+    }
+    snprintf(text, sizeof(text), "Wi-Fi 数据 %s · 蓝牙翻页 %s", status.data_connected ? "已连接" : "未连接",
+             status.connected ? "已连接" : "等待配对");
+    ps_text(fb, x, 362, 10, text, 3);
+    int bottom = 404;
+    ps_button(fb, x, bottom, (w - 8) / 2, 38, "重新连接与同步", false);
+    ps_button(fb, x + (w + 8) / 2, bottom, (w - 8) / 2, 38, "打开书架", false);
+    if (!v.landscape) {
+        ps_text(fb, x, 452, 13, "主机显示单页，从机显示下一页", 1);
+        ps_text(fb, x, 484, 12, "主机电源短按：上一组双页", 3);
+        ps_text(fb, x, 512, 12, "从机电源短按：下一组双页", 3);
+        ps_text(fb, x, 540, 12, "长按电源：锁屏、关机或重启", 3);
+        ps_text(fb, x, 584, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
+        ps_text(fb, x, 606, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
+    }
+}
+// 只读当前网络，不扫描网段或保存未完成配置。/ Read the current network without scanning hosts or persisting an unfinished setup.
+static bool local_address(char out[48]) {
+    out[0] = 0;
+    read_pico_connectivity_status_t* net = malloc(sizeof(*net));
+    if (!net) return false;
+    read_pico_connectivity_get_status(net);
+    bool online = net->connected && !net->suspended && net->ip[0];
+    if (online) snprintf(out, 48, "%s", net->ip);
+    free(net);
+    return online;
+}
+static bool parse_ipv4(const char* text, unsigned parts[4]) {
+    if (!text || !*text) return false;
+    for (int i = 0; i < 4; i++) {
+        unsigned n = 0, digits = 0;
+        while (*text >= '0' && *text <= '9') {
+            n = n * 10 + (unsigned)(*text++ - '0');
+            if (++digits > 3 || n > 255) return false;
+        }
+        if (!digits || (i < 3 ? *text++ != '.' : *text != 0)) return false;
+        parts[i] = n;
+    }
+    return parts[0] != 0 && parts[0] < 224 && parts[3] != 0 && parts[3] != 255;
+}
+static void secondary_host(const char* input);
+static void secondary_code(const char* input);
+static void edit_host(const char* initial) {
+    char hint[96], copy[16];
+    snprintf(copy, sizeof(copy), "%s", initial ? initial : "");
+    char* last = strrchr(draft_local_ip, '.');
+    if (last)
+        snprintf(hint, sizeof(hint), "自动补全 %.*s · 也可填完整 IP", (int)(last - draft_local_ip + 1), draft_local_ip);
+    else snprintf(hint, sizeof(hint), "输入主机配对页显示的完整 IP");
+    ps_edit_numeric("主机地址 1/2", copy, 15, true, "下一步", hint, secondary_host);
+}
+static void edit_code(const char* initial) {
+    char hint[96], copy[7];
+    snprintf(copy, sizeof(copy), "%s", initial ? initial : "");
+    snprintf(hint, sizeof(hint), "连接 %s · 查看主机六位码", draft_host);
+    ps_edit_numeric("配对码 2/2", copy, 6, false, "配对", hint, secondary_code);
+}
+static void secondary_begin(void) {
+    if (!local_address(draft_local_ip)) {
+        ps_toast("请先连接与主机相同的 Wi-Fi");
+        return;
+    }
+    draft_input[0] = draft_host[0] = 0;
+    edit_host("");
+}
+static void secondary_host(const char* input) {
+    char local[48], candidate[48];
+    unsigned parts[4];
+    snprintf(draft_input, sizeof(draft_input), "%s", input ? input : "");
+    if (!local_address(local)) {
+        edit_host(draft_input);ps_toast("Wi-Fi 已断开，请返回连接网络");return;
+    }
+    snprintf(draft_local_ip, sizeof(draft_local_ip), "%s", local);
+    draft_short = !strchr(draft_input, '.');
+    if (draft_short) {
+        const char* last = strrchr(local, '.');
+        if (!last || !draft_input[0] || strlen(draft_input) > 3) {
+            edit_host(draft_input);ps_toast("输入地址最后一段：1–254");return;
+        }
+        snprintf(candidate, sizeof(candidate), "%.*s%s", (int)(last-local+1), local, draft_input);
+    } else snprintf(candidate, sizeof(candidate), "%s", draft_input);
+    if (!parse_ipv4(candidate, parts)) {
+        edit_host(draft_input);ps_toast("地址无效，请检查每一段数字");return;
+    }
+    snprintf(draft_host, sizeof(draft_host), "%u.%u.%u.%u", parts[0], parts[1], parts[2], parts[3]);
+    if (!strcmp(draft_host, local)) {
+        edit_host(draft_input);ps_toast("这是本机地址，请填主机地址");return;
+    }
+    edit_code("");
+}
+static void secondary_code(const char* input) {
+    char code[7], local[48];
+    snprintf(code, sizeof(code), "%s", input ? input : "");
+    bool valid = strlen(code) == 6;
+    for (int i = 0; code[i]; i++) if (code[i] < '0' || code[i] > '9') valid = false;
+    if (!valid) {edit_code(code);ps_toast("请输入主机显示的六位数字");return;}
+    if (!local_address(local)) {edit_code(code);ps_toast("Wi-Fi 已断开，请返回连接网络");return;}
+    if (draft_short && strcmp(local, draft_local_ip)) {
+        snprintf(draft_local_ip, sizeof(draft_local_ip), "%s", local);
+        edit_host(draft_input);ps_toast("本机地址已变化，请重新核对主机");return;
+    }
+    if (!ps_dual_configure(2, draft_host, code)) {
+        edit_code(code);ps_toast("配置未保存，请检查 TF 卡是否可写");return;
+    }
+    ps_toast("配置已保存，正在连接主机");
+}
+bool ps_dual_event(const ps_event_t* e) {
+    if (e->type != PS_TAP) return false;
+    ps_view_t v = ps_view();
+    int x = 20, w = v.w - 40;
+    if (e->y >= 104 && e->y < 144) {
+        int role = (e->x - x) / ((w - 16) / 3 + 8);
+        if (role == 0)
+            ps_dual_configure(0, "", "");
+        else if (role == 1) {
+            if (settings.role == 1) return true;
+            char code[7];
+            snprintf(code, sizeof(code), "%06u", (unsigned)(esp_random() % 1000000));
+            ps_dual_configure(1, "", code);
+        } else if (role == 2)
+            secondary_begin();
+        return true;
+    }
+    if (!settings.role && e->y >= 250 && e->y < 292) {
+        ps_navigate(PS_WIFI);
+        return true;
+    }
+    if (settings.role && e->y >= 150 && e->y < 198) {
+        for (int role = 1; role <= 2; ++role) {
+            int left = x + role * ((w - 16) / 3 + 8);
+            if (e->x >= left && e->x < left + (w - 16) / 3) {
+                bool on = role == 1 ? orientation.primary_flip : orientation.secondary_flip;
+                if (!ps_dual_flip(role, !on)) ps_toast("请先连接主机再调整方向");
+                return true;
+            }
+        }
+    }
+    int bottom = 404;
+    if (settings.role && e->y >= bottom && e->y < bottom + 38) {
+        if (e->x < v.w / 2) {
+            if (dual_session)
+                dl_rescan(dual_session);
+            else
+                start();
+            ps_dirty();
+        } else
+            ps_navigate(PS_SHELF);
+        return true;
+    }
+    return false;
+}
+
+void ps_dual_status(dl_status_t* out) {
+    if (dual_session)
+        dl_status(dual_session, out);
+    else {
+        *out = status;
+        out->orientation = orientation;
+    }
+}
+
+// 可信USB调试仅操作已校验目录序号和普通翻页；不接收路径、不输出配对码、不清书库。
+// Trusted USB diagnostics use verified catalog indices and normal turns, never paths, pairing secrets or erasure.
+bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
+    bool primary = !strcmp(line, "RPICO DUAL PRIMARY");
+    bool item = !strncmp(line, "RPICO DUAL ITEM ", 16);
+    bool open = !strncmp(line, "RPICO DUAL OPEN ", 16);
+    bool next = !strcmp(line, "RPICO DUAL NEXT"), previous = !strcmp(line, "RPICO DUAL PREVIOUS");
+    bool shelf = !strcmp(line, "RPICO DUAL SHELF");
+    bool rescan = !strcmp(line, "RPICO DUAL RESCAN");
+    bool rotate = !strcmp(line, "RPICO DUAL ROTATE");
+    bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
+    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
+    load();
+    bool accepted = true;
+    if (item || open) {
+        const char* digits = line + 16;
+        unsigned index = 0;
+        accepted = *digits != 0 && strlen(digits) <= 3;
+        for (const char* c = digits; accepted && *c; ++c) {
+            if (*c < '0' || *c > '9') accepted = false;
+            else index = index * 10 + (unsigned)(*c - '0');
+        }
+        uint8_t id[32]; uint32_t bytes = 0;
+        const char* path = accepted ? dl_entry(dual_session, index, id, &bytes) : NULL;
+        accepted = path != NULL;
+        if (item) {
+            char hex[65] = {0};
+            if (path) for (unsigned i=0; i<32; ++i) snprintf(hex+2*i,3,"%02x",id[i]);
+            const char* ext = path ? strrchr(path, '.') : NULL;
+            snprintf(out,capacity,"{\"dual_item\":true,\"accepted\":%s,\"index\":%u,\"id\":\"%s\",\"bytes\":%u,\"font\":%s}",
+                accepted?"true":"false",index,hex,(unsigned)bytes,ext&&!strcasecmp(ext,".ttf")?"true":"false");
+            return true;
+        }
+        if (accepted) {
+            accepted = ps_background_io_allowed() && !ps_power_pending() && !ps_storage_busy() &&
+                !ps_usb_busy() && !ps_usb_held() && !ps_content_held() && !ps_transfer_prepared() &&
+                ps_route()!=PS_EDITOR && !app_book_global_has_selection();
+            if (accepted) {
+                ps_navigate(PS_SHELF);
+                accepted = ps_route()==PS_SHELF && ps_dual_open(path);
+            }
+        }
+    } else if (next || previous) {
+        accepted = app_book_global_is_open() && ps_background_io_allowed() &&
+            !app_book_global_has_selection() && !ps_power_pending() && dual_session &&
+            dl_turn(dual_session, next ? 1 : -1);
+    } else if (font) {
+        const char* px = line + 16;
+        accepted = strlen(px) == 2 && px[0] >= '0' && px[0] <= '9' && px[1] >= '0' && px[1] <= '9' &&
+            app_book_global_is_open() && ps_background_io_allowed() && !app_book_global_has_selection() &&
+            ps_dual_resize((uint8_t)((px[0] - '0') * 10 + px[1] - '0'));
+    } else if (rescan || rotate) {
+        accepted = dual_session && ps_background_io_allowed() && !ps_power_pending() &&
+            !ps_storage_busy() && !ps_usb_busy() && !ps_usb_held() && !ps_content_held() &&
+            !ps_transfer_prepared() && ps_route()!=PS_EDITOR && !app_book_global_has_selection() && ps_dual_enabled();
+        if (accepted) { if (rotate) accepted = ps_dual_rotate(); else dl_rescan(dual_session); ps_dirty(); }
+    } else if (shelf) {
+        accepted = ps_background_io_allowed() && !ps_power_pending() && ps_route()!=PS_EDITOR &&
+            !app_book_global_has_selection();
+        if (accepted) { ps_navigate(PS_SHELF); accepted = ps_route()==PS_SHELF; }
+    }
+    if (primary) {
+        if (settings.role != 1) {
+            char code[7];
+            snprintf(code, sizeof(code), "%06u", (unsigned)(esp_random() % 1000000));
+            accepted = ps_dual_configure(1, "", code);
+        }
+        if (accepted) ps_navigate(PS_DUAL);
+    }
+    dl_status_t state;
+    ps_dual_status(&state);
+    pico_dual_ble_status_t ble;
+    pico_dual_ble_status(&ble);
+    app_book_dual_status_t book; app_book_dual_status(&book);
+    char book_id[65];
+    for (unsigned i=0; i<32; ++i) snprintf(book_id+2*i,3,"%02x",state.reading.book[i]);
+    snprintf(
+        out, capacity,
+        "{\"dual\":true,\"accepted\":%s,\"role\":%u,\"connected\":%s,\"synced\":%s,\"scanning\":%s,"
+        "\"books\":%u,\"peer_books\":%u,\"spread\":%u,\"data_connected\":%s,"
+        "\"ble_active\":%s,\"ble_error\":%d,\"error\":%s,"
+        "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
+        "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
+        "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"orientation\":%u,"
+        "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
+        accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
+        state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
+        state.peer_books, (unsigned)state.reading.spread, state.data_connected ? "true" : "false",
+        ble.active ? "true" : "false", ble.error, state.error ? "true" : "false",
+        ps_background_io_blockers(),(unsigned)(ps_now()-last_tick),(unsigned)(ps_now()-last_work),
+        state.busy?"true":"false",(unsigned)state.received,(unsigned)state.expected,(unsigned)state.sent,
+        state.receiving?"true":"false",state.sending?"true":"false",
+        state.reused,(unsigned)state.verified_bytes,(unsigned)state.resumed,
+        state.listed?"true":"false",state.peer_listed?"true":"false",
+        state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
+        (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
+        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
+        book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
+        book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
+    return true;
+}

@@ -1,0 +1,190 @@
+/*
+ * SPDX-FileCopyrightText: 2026 mindreset
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * demo 页的统一接口。每个页面是一个 app_desc_t，放在 main/apps/ 下自己的文件里，
+ * 绘制、命中、轮询和页内状态都封在那一个文件中；app_loop.c 只按这套回调调度，
+ * 加一个页面不必再改主循环。
+ *
+ * Shared page contract. Each page is an app_desc_t in its own main/apps/ file.
+ * Draw, hit-test, poll and page state stay there. app_loop.c only dispatches
+ * these callbacks; adding a page does not touch the loop.
+ *
+ * 冻结：手势回调替代旧触摸回调；三键接管页须保留强刷与菜单出口。
+ * Frozen: Gesture callbacks replace legacy touch callbacks. Pages owning keys
+ * must retain full refresh and menu exits.
+ * 冻结：工程返回恢复最近切页来源；产品来源跨子页保留，普通菜单动作逐层返回产品，避免误入硬件工程页。
+ * Frozen: Legacy return restores the latest origin; product origins survive nested pages and ordinary menu actions return within the product rather than entering hardware demos.
+ * 冻结：统一系统页可声明自有菜单与锁屏，避免旧把手和电源策略覆盖产品导航；旧页默认不变。
+ * Frozen: A shell may own its menu handle, font selection and lock callback so legacy policy does not override product navigation. Legacy defaults remain.
+ * 冻结：用户要求正文长按连续拖选和进度拖动；连续事件须显式启用，页面反馈刷新保留接触，全局中断仍取消。
+ * Frozen: User-requested continuous selection/progress dragging requires explicit opt-in; page feedback retains the contact and global interruptions still cancel.
+ */
+
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "cst836u.h"
+#include "epd_highlevel.h"
+#include "epdiy.h"
+#include "app_config.h"
+#include "sc7a20h_lab.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/// 回调返回值告诉主循环该怎么把 framebuffer 推上屏。
+/// / What the loop should do with the framebuffer.
+typedef enum {
+    /// 什么都没变，不刷屏。/ Nothing changed.
+    APP_REDRAW_NONE = 0,
+    /// 只有 area_hint() 那块变了，使用 APP_DYNAMIC_REFRESH_MODE。回调必须自己先画好 fb。
+    /// / Push area_hint() with APP_DYNAMIC_REFRESH_MODE. Caller paints fb first.
+    APP_REDRAW_AREA,
+    /// 由主循环调 render() 重画整页，使用 APP_PAGE_REFRESH_MODE。
+    /// / Loop calls render() and presents with APP_PAGE_REFRESH_MODE.
+    APP_REDRAW_PAGE,
+    /// 同上；APP_PAGE_FORCE_FULL 置 1 时升为整屏 GC16，否则仍走 APP_PAGE_REFRESH_MODE。
+    /// / Same; full-screen GC16 when APP_PAGE_FORCE_FULL is 1.
+    APP_REDRAW_FULL,
+    /// 回调自己已经刷完屏了（自检、刷新测试这类要分步显示进度的页）。
+    /// / Page already presented (self-test, refresh bench, …).
+    APP_REDRAW_DONE,
+} app_redraw_t;
+
+typedef struct app_desc_s app_desc_t;
+typedef struct ui_gesture_event_s ui_gesture_event_t;
+
+typedef struct {
+    EpdiyHighlevelState* hl;
+    uint8_t* fb;
+    sc7a20h_handle_t acc;
+    cst836u_handle_t tp;
+    bool sensor_ready;
+    bool continuous_ready;
+    int64_t now_ms;
+    /// 去抖后的触摸快照：空槽已清零，抬手后保留最后一次坐标。
+    /// / Debounced touch: empty slots cleared; last coords kept after lift.
+    const cst836u_touch_t* touch;
+    const cst836u_info_t* touch_info;
+    /// 本轮是不是按下沿 / 抬起沿，触摸页的跟随节流要用。
+    /// / Press/release edge this tick. Touch tracking uses this to throttle.
+    bool pressed;
+    bool released;
+    /// 独立采样的原始时刻与待消费边沿；零时刻表示当前循环采样。/ Capture timestamp and pending edges; zero means sampled in the current loop.
+    int64_t touch_sample_ms;
+    bool input_pending;
+    /// 分页页（字体列表）当前停在第几页，由 KEY1 和页内按钮共同改。
+    /// / Leaf page index (font list). KEY1 and in-page buttons both change it.
+    int leaf;
+    /// 本轮已经被别的分支处理掉了，页内的跟随逻辑要跳过这一轮。
+    /// / Another branch already handled this tick; skip in-page tracking.
+    bool consumed;
+    /// 连续手势回调可认领当前接触；主循环立即应用，每轮自动清零，抬手只生成 RELEASE。
+    /// A continuous gesture callback may capture this contact; the loop applies it immediately, clears it each tick, and release emits only RELEASE.
+    bool capture_gesture;
+    /// 页面想跳到别的页时填这里，主循环会在本轮末尾切过去。
+    /// / Request a page switch; the loop applies it at the end of the tick.
+    const struct app_desc_s* request_app;
+    /// 本轮末打开工程菜单；产品来源下逐层返回。切页请求优先。
+    /// Open the legacy menu at tick end, or return within a product origin. Page requests take priority.
+    bool request_menu;
+    /// 明确打开工程菜单并离开产品返回域；仅供开发入口使用。
+    /// Explicitly open the engineering menu and leave product navigation; for development entry points only.
+    bool request_developer_menu;
+    /// 产品来源逐层返回并保留根；工程返回恢复最近来源及菜单。优先于其它请求。
+    /// Return through product origins while retaining their root, or restore the latest legacy origin and menu. Overrides other requests.
+    bool request_return;
+} app_ctx_t;
+
+struct app_desc_s {
+    /// 菜单里显示的标题与副标题。/ Menu title and subtitle.
+    const char* title;
+    const char* detail;
+    /// true = 这一页会长时间独占 PMU，主循环的锁屏按键轮询要让路（设备功能自检）。
+    /// / true = page owns the PMU; lock-key poll yields (device self-test).
+    bool holds_pmu;
+    /// true = 进页走 APP_REDRAW_FULL（均衡配置下整屏 GC16）。内容和上一页差别大的页面用，避免差分刷留边。
+    /// / true = enter with APP_REDRAW_FULL so a differential update does not leave a seam.
+    bool enter_full;
+    /// 菜单关闭时接管三键，页面必须提供强刷和菜单入口。
+    /// Own all three keys outside the menu; provide full refresh and menu exits.
+    bool owns_keys;
+    /// true = 停留在本页时不计空闲自动休眠。电源键锁屏仍走全局路径。
+    /// true = idle time does not auto-sleep while this page is current. The power key still locks.
+    bool blocks_idle_sleep;
+    /// 自有菜单把手：停用旧屏下角菜单命中，不影响实体键派发。
+    /// Own the menu handle: suppress the legacy corner hotspot without changing key dispatch.
+    bool custom_menu_handle;
+    /// 产品导航根：子页的普通菜单/返回保留此来源，工程菜单必须明确请求。
+    /// Product navigation root: ordinary menu/back actions retain this origin; engineering menus require an explicit request.
+    bool product_shell;
+    /// 自行管理内置/卡上字体，不接受全局延迟字体重试覆盖。
+    /// Own font selection; suppress global delayed font retries.
+    bool manages_fonts;
+    /// 连续 MOVE/RELEASE；PAGE/AREA 反馈保留跟踪，FULL 和全局中断仍取消。默认保留旧轻点/滑动契约。
+    /// Opt into MOVE/RELEASE; PAGE/AREA feedback keeps tracking, FULL/global interruptions cancel. Default preserves legacy taps/swipes.
+    bool continuous_gestures;
+    /// 自定义电源短按/空闲锁屏；为空时保留全局睡眠路径。
+    /// Optional power-short/idle lock; NULL retains the global sleep path.
+    app_redraw_t (*on_lock)(app_ctx_t* ctx);
+    /// 进页/离页。on_enter 里做上电、唤醒传感器、拉一次数据这类副作用。
+    /// / Enter/exit. on_enter powers up, wakes sensors, takes a first sample.
+    /// 锁屏走软睡/关机前也调 on_exit；下电失败回来再调 on_enter。
+    /// on_exit also runs before a soft-sleep/off lock; on_enter runs again if power-down fails.
+    void (*on_enter)(app_ctx_t* ctx);
+    void (*on_exit)(app_ctx_t* ctx);
+    /// TF 挂载失效：停止并等待后台任务、关闭文件；主循环随后回退字体并重绘，菜单打开时也通知。
+    /// On TF mount loss, join background work and close files before font fallback/redraw; also called behind menus.
+    void (*on_media_lost)(app_ctx_t* ctx);
+    /// 已失效的 TF 经安全重挂并归还本机后通知；只能重扫，不得自动覆盖新卡存档。
+    /// Notify after lost TF media is safely remounted and locally owned; rescan without overwriting replacement-card state.
+    void (*on_media_restored)(app_ctx_t* ctx);
+    /// 纯绘制，不做 I2C 写、蜂鸣这类副作用，整屏强刷才能安全复用它。
+    /// / Paint only. No I2C writes or buzzer. KEY2 full redraw reuses this.
+    void (*render)(app_ctx_t* ctx, uint8_t* fb);
+    /// 自定义推屏。返回 true 表示页面已经刷过。
+    /// / Custom present. Return true if the page updated the display.
+    bool (*present)(app_ctx_t* ctx, app_redraw_t redraw);
+    /// 设置后独占触摸派发，替代 on_touch。/ Exclusive gesture dispatch replaces on_touch.
+    app_redraw_t (*on_gesture)(app_ctx_t* ctx, const ui_gesture_event_t* event);
+    app_redraw_t (*on_touch)(app_ctx_t* ctx, const cst836u_touch_t* touch);
+    /// 默认只收 UI_KEY_1；owns_keys 页面在菜单外接收三键。
+    /// / Only KEY1 normally; owns_keys pages receive all three keys outside the menu.
+    app_redraw_t (*on_key)(app_ctx_t* ctx, int key);
+    /// 可选：owns_keys 页面同键持续按住500ms触发一次，按下回调仍先执行；滑出/中断取消。
+    /// Optional: fire once after a 500ms same-key hold on owns_keys pages; press still fires first, leaving/interruption cancels.
+    app_redraw_t (*on_key_long)(app_ctx_t* ctx, int key);
+    /// 每轮都调，页面自己判断到不到刷新间隔。
+    /// / Called every tick; the page decides if its interval has elapsed.
+    app_redraw_t (*on_tick)(app_ctx_t* ctx);
+    /// APP_REDRAW_AREA 要刷的区域。/ Area for APP_REDRAW_AREA.
+    EpdRect (*area_hint)(app_ctx_t* ctx);
+    /// 同一份实现挂多个 app 时用来区分（加速度计的读数页与诊断页共享绘制代码）。
+    /// / Distinguishes views that share one implementation (IMU live vs lab).
+    void* user;
+};
+
+// 锁屏：浅睡按键或拿起回原页；软睡 EN=0，再短按开机；关机 EN=0，长按开机。
+// Lock: light-sleep key or pickup returns to the page; soft sleep drops EN
+// and a short press powers on; power-off drops EN and needs a long press.
+// 无操作满这段时间走同一条锁屏路径，档位仍由睡眠设置决定。
+// Idle this long, then the same lock path; the sleep setting still picks the mode.
+#define APP_AUTO_SLEEP_MS (2 * 60 * 1000)
+#define APP_LOCK_POLL_MS 200
+#define APP_LOCK_IGNORE_BOOT_MS 2000
+#define APP_LOCK_IGNORE_SELFTEST_MS 2000
+
+/// 按 redraw 把 framebuffer 推上屏，顺带做 pclk 欠载兜底。APP_REDRAW_DONE 直接返回。
+/// / Present fb for redraw, with a pclk-underrun fallback. APP_REDRAW_DONE returns.
+void app_present(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t redraw);
+/// 之后 ms 毫秒内忽略电源键短按，避免开机或自检的残留事件立刻把屏锁掉。
+/// / Ignore short power-key presses for ms so boot/self-test leftovers do not lock.
+void app_lock_ignore_for(int64_t ms);
+
+#ifdef __cplusplus
+}
+#endif

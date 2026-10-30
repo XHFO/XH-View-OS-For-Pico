@@ -1,0 +1,6 @@
+main/system/pico_reader_data.h contains a bounded pinyin index derived from
+Make Me a Hanzi dictionary: https://github.com/skishore/makemeahanzi
+Dictionary license: LGPL-3.0-or-later. Source transformation is provided in
+tools/gen_pico_reader_data.py. Original data source retained in the browser
+preview's assets/input-method/pinyin.json. Each syllable is capped at eight
+characters, reordered for common words. No handwriting recognition data is used.

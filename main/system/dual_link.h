@@ -1,0 +1,92 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * 双机实验分支的有界局域网书库与阅读状态协议。/ Bounded LAN library and reading protocol for the dual-reader branch.
+ * 冻结：单线程增量执行；只追加校验成功的图书，永不覆盖或删除用户文件。
+ * Frozen: Incremental single-thread execution; append verified books, never overwrite or delete user files.
+ */
+#pragma once
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#define DL_PATH 288
+#define DL_BOOKS 512
+#define DL_FILE_MAX (128u * 1024u * 1024u)
+#define DL_PORT 18771
+#define DL_CONTROL_MAX 96
+#define DL_FONT_DEFAULT 48
+#define DL_FONT_MIN 36
+#define DL_FONT_MAX 72
+#define DL_FONT_STEP 4
+typedef struct dual_link dual_link_t;
+typedef struct {
+    int role;  ///< 1主机，2从机。/ 1 primary, 2 secondary.
+    char host[48], code[7];
+    unsigned port;
+    char roots[3][DL_PATH], destination[DL_PATH], font[DL_PATH];
+    unsigned root_count;
+} dl_config_t;
+typedef struct {
+    uint8_t book[32], font[32];
+    uint32_t revision, spread, total;
+    uint8_t font_px; ///< 两端共用正文字号。/ Shared body font size.
+    bool reflow_pending; ///< 主机按原正文锚点重新分页，副机继续等候。/ Primary reflows its text anchor while the secondary waits.
+    uint8_t reflow_from_px; ///< 重排前字号，用于未打开正文时恢复旧页锚点。/ Previous size for recovering the old-page anchor when the reader is closed.
+} dl_reading_t;
+typedef struct {
+    bool inverted, primary_flip, secondary_flip; ///< 主机自动基准与两个独立翻转开关。/ Primary automatic base and two independent flips.
+} dl_orientation_t;
+typedef struct {
+    bool connected, data_connected, scanning, synced, busy;
+    bool left_ready; ///< 主机已完成此版本的左页推屏，从机才能显示。/ Primary presented this revision's left page; secondary may now display.
+    unsigned books, peer_books, imported;
+    uint32_t received, expected, content_revision;
+    uint32_t sent;
+    unsigned reused; ///< 本轮重扫复用的已校验文件。/ Verified files reused in this scan.
+    uint32_t verified_bytes, resumed; ///< 本轮哈希字节及最近续传偏移。/ Scan bytes hashed and last resumed offset.
+    bool listed, peer_listed, done, peer_done, receiving, sending, catalog_valid, peer_catalog_valid;
+    const char* error;
+    dl_reading_t reading;
+    dl_orientation_t orientation;
+} dl_status_t;
+/// 所有接口只从UI线程使用，tick每次至多一个文件块。/ UI-thread only; tick processes at most one file block.
+dual_link_t* dl_create(const dl_config_t* config);
+void dl_destroy(dual_link_t* link);
+void dl_tick(dual_link_t* link, int64_t now_ms, bool available);
+void dl_status(const dual_link_t* link, dl_status_t* out);
+/// 明确开书会重新发布版本；同书保留页组，允许重试失败推屏。/ Explicit opening republishes a revision; reopening retains its spread and can retry failed presentation.
+bool dl_open_path(dual_link_t* link, const char* path);
+/// 原子打开目标书的目标页组；同书等同跳页。/ Atomically open a book at its target spread; the same book seeks instead.
+bool dl_open_at(dual_link_t* link, const char* path, uint32_t page);
+bool dl_turn(dual_link_t* link, int direction);
+/// 请求包含目标页的双页组；两端均须连接，页码从 1 开始。/ Request the spread containing a one-based page; both devices must be connected.
+bool dl_seek(dual_link_t* link, uint32_t page);
+/// 任意端请求共享字号，主机重排后才发布新页码。/ Either device requests a shared size; primary reflow determines the new spread.
+bool dl_resize(dual_link_t* link, uint8_t font_px);
+/// 仅主机可完成当前重排；spread为零基偶数，完成后仍须实际推屏。/ Primary resolves the current reflow to a zero-based even spread; presentation is still required.
+bool dl_reflow_resolved(dual_link_t* link, uint32_t revision, uint32_t spread);
+/// 主机重排失败，恢复旧字号与页组，仍须重新推屏。/ Failed primary reflow restores its old size/spread and requires presentation again.
+bool dl_reflow_failed(dual_link_t* link, uint32_t revision);
+/// UI 确认主机该版本实际推屏成功，旧版本确认不会放行。/ Confirm successful primary presentation; stale revisions cannot release the secondary.
+bool dl_presented(dual_link_t* link, uint32_t revision);
+void dl_total(dual_link_t* link, uint32_t total);
+const char* dl_reading_path(const dual_link_t* link);
+const char* dl_font_path(const dual_link_t* link);
+/// 只读已校验目录条目；序号不接受外部路径。/ Read a verified catalog entry by index, never an external path.
+const char* dl_entry(const dual_link_t* link, unsigned index, uint8_t id[32], uint32_t* bytes);
+/// 仅同一可信存储会话复用元数据未变的摘要；换卡、USB/外部写入前须 destroy。
+/// Reuse unchanged verified entries only within one trusted storage session; destroy before media/USB/external writes.
+void dl_rescan(dual_link_t* link);
+void dl_restore(dual_link_t* link, const dl_reading_t* reading);
+/// 恢复独立于阅读页码的方向偏好；默认倒置竖屏且两端均不翻转。
+/// Restore orientation independently of reading; default inverted portrait with neither device flipped.
+void dl_orientation_restore(dual_link_t* link, const dl_orientation_t* orientation);
+/// 仅主机更新自动基准，离线也有效，重连后广播。/ Only the primary updates the automatic base, including offline; reconnect broadcasts it.
+bool dl_orient(dual_link_t* link, bool inverted);
+/// 设置角色1/2的独立180度开关；主机可离线设置，从机须连接且等待确认。
+/// Set role 1/2's independent 180-degree switch; primary supports offline updates, secondary requires connection and confirmation.
+bool dl_flip(dual_link_t* link, int role, bool enabled);
+
+/// BLE 已加密且认证后才交付控制帧；这些接口只从 UI 线程调用。
+/// Deliver control frames only after BLE encryption/authentication; UI-thread only.
+void dl_control_connected(dual_link_t* link, bool connected);
+size_t dl_control_take(dual_link_t* link, uint8_t* packet, size_t capacity);
+bool dl_control_receive(dual_link_t* link, const uint8_t* packet, size_t bytes);
