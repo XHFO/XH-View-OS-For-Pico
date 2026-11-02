@@ -1,3 +1,13 @@
+## 0.40.0-dual17（独立双机实验版）
+
+- 防误触改为姿态门控：两台屏幕相对（折叠贴合）时屏蔽所有屏幕触摸，展开同向朝上时完全不启用鬼触判断，正常滑动不再误判。
+- 底部三键是独立物理触摸区，始终不被过滤；按中键返回主页会顺带解除屏蔽。屏幕中央/中键带长按 0.9 秒也可恢复，恢复手势等待抬手并给出 2.5 秒放行窗口。
+- 防误触开关继续通过 BLE 两端同步；屏幕朝向也以低频率控制帧交换，用于区分贴合与展开。
+- 关于本机新增 MAC 地址、芯片版本/核心数、Flash/PSRAM 容量和 PMU UID。
+- 扇形快捷菜单恢复为白色实心圆、黑色描边和圈外光圈选中样式；滑动仍只更新圈外小区域，不重绘整圆。
+- 双机翻页时主机不做四帧翻页动画，先确认推屏再让从机跟进，减少从机半拍延迟；从机保留动画。
+- Face-to-face contact pose suppresses every screen touch while unfolded screens bypass ghost detection entirely. Physical keys always work and clear the guard; central hold recovers. Show MAC, chip, flash/PSRAM and PMU UID in About. Restore the original white-disc fan menu with an outside selection halo while keeping small DU updates. Skip the primary's four-frame animation in paired reading so the secondary starts sooner.
+
 ## 0.40.0-dual16（独立双机实验版）
 
 - 恢复电源键翻页短提示音，仅在本机操作被接收时异步播放，遵循提示音总开关与「按键与触摸」选项；远端同步、长按菜单和被浮层阻止的操作不重复发声。

@@ -19,6 +19,13 @@ bool ps_dual_lock_set(bool locked);
 /// 双机贴合防误触开关；两端通过控制通道同步。/ Paired face-to-face guard, synchronized over the control channel.
 bool ps_dual_guard_enabled(void);
 bool ps_dual_guard_set(bool enabled);
+/// 当前两机是否处于屏幕相对（折叠贴合）姿态。
+/// Whether both screens currently face each other (folded contact pose).
+bool ps_dual_contact_likely(void);
+int ps_dual_peer_face(void);
+/// 主机是否已确认当前版本推屏成功；从机据此才允许真正显示。
+/// Whether the primary confirmed this revision's presentation; the secondary may then paint.
+bool ps_dual_left_ready(void);
 /// 取一次“手动翻转待应用”标记，避免从机锁定阻止手动翻转。
 /// Take the one-shot manual-flip marker so a locked secondary still applies its own flip.
 bool ps_dual_take_manual_rotation(void);

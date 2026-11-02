@@ -85,12 +85,17 @@
 #include "nvs.h"
 #include "read_pico_init.h"
 #include "read_pico_pmu.h"
+#ifdef ESP_PLATFORM
+#include "esp_chip_info.h"
+#include "esp_flash.h"
+#include "esp_mac.h"
+#endif
 #include "ttf_font.h"
 #include "ui_menu.h"
 #include "ui_kit.h"
 #include "settings.h"
 
-#define PS_VERSION "0.40.0-dual16"
+#define PS_VERSION "0.40.0-dual17"
 #define PS_OS_NAME "XH View OS For Pico"
 #define PS_RELEASE_LABEL "双机阅读实验版"
 const char *ps_version(void){return PS_VERSION;}
@@ -1076,6 +1081,12 @@ static void apply_rotation(enum EpdRotation rotation) {
     }
     s_dirty = true;
 }
+int ps_contact_face(void) {
+    if (!s_sample_valid) return 0;
+    if (s_last_sample.z_mg > 650) return 1;
+    if (s_last_sample.z_mg < -650) return -1;
+    return 0;
+}
 void ps_dual_rotation_changed(void) {
     bool manual = ps_dual_take_manual_rotation();
     // 从机锁定后不再跟随主机基准；本机手动翻转仍通过一次性标记放行。
@@ -1426,59 +1437,9 @@ static int fan_prompt_x(void) {
 }
 // 快捷动作的运行态：开机、方向锁定、贴合防误触等开关在圆面内部换色。
 // Runtime quick-action states: toggles such as Wi-Fi, rotation lock and touch guard recolor the disc.
-static int fan_state_bits(int id) {
-    int bits = 0;
-    if (id == 8 && ps_wifi_connected_index() >= 0) bits |= 1;
-    if (id == 9 && (ps_dual_enabled() ? ps_dual_rotation_locked() : ps_rotation_locked())) bits |= 1;
-    if (id == 40 && ps_touch_guard_enabled()) bits |= 1;
-    if (id >= 0 && quick_unavailable(id)) bits |= 2;
-    return bits;
-}
-// 灰色层次实心圆：外阴影、深外圈、中灰主体、浅灰内环、白色核心。
-// 选中只在圆内画一个带白底的高对比小标记，不重绘整个圆面，滑动时不会整片闪烁。
-// Layered gray solid disc. Selection adds a small high-contrast white-backed marker
-// instead of repainting the whole disc, so sliding does not flash a large area.
-static void fan_marker_rect(const fan_item_t *item, int *mx, int *my, int *mw, int *mh) {
-    (void)item->r;
-    // 标签下方的小下划线，而不是盖住文字的黑色药丸。
-    // A small underline below the label instead of a black pill over the text.
-    *mw = 28;
-    *mh = 3;
-    *mx = item->x - *mw / 2;
-    *my = item->y + 22;
-}
-static void fan_draw_item(uint8_t *fb, const fan_item_t *item, bool edit, bool selected) {
-    int id = item->id, r = item->r, x = item->x, y = item->y;
-    bool empty = id < 0;
-    int state = empty ? 0 : fan_state_bits(id);
-    bool disabled = !edit && !empty && (state & 2);
-    bool active = !empty && !disabled && (state & 1);
-    ps_box(fb, x - r - 2, y - r + 3, 2 * (r + 2), 2 * (r + 2), r + 2, 13, true);
-    ps_box(fb, x - r, y - r, 2 * r, 2 * r, r, disabled ? 12 : active ? 2 : 10, true);
-    ps_box(fb, x - r + 4, y - r + 4, 2 * r - 8, 2 * r - 8, r - 4,
-           disabled ? 13 : active ? 1 : 12, true);
-    ps_box(fb, x - r + 8, y - r + 8, 2 * r - 16, 2 * r - 16, r - 8,
-           disabled ? 14 : active ? 3 : 14, true);
-    ps_box(fb, x - r + 12, y - r + 12, 2 * r - 24, 2 * r - 24, r - 12,
-           disabled ? 15 : active ? 0 : 15, true);
-    ps_icon_t icon = empty ? PI_PLUS : s_quick[id].icon;
-    int size = (int)lroundf(21.f * fan_scale());
-    int ink = disabled ? 6 : active ? 15 : empty ? 6 : 2;
-    ps_icon(fb, x - size / 2, y - r + (int)lroundf(3.f * fan_scale()), size, icon, ink);
-    ps_text_fixed(fb, x - 15, y + 4, 11, empty ? "添加" : s_quick_short[id], ink);
-    if (selected) {
-        int mx, my, mw, mh;
-        fan_marker_rect(item, &mx, &my, &mw, &mh);
-        // 白底隔离灰色圆面，MODE_DU 局部更新时只处理黑白像素。
-        // White backing isolates the marker from the gray disc for clean MODE_DU updates.
-        ps_box(fb, mx - 3, my - 2, mw + 6, mh + 4, 4, 15, true);
-        ps_box(fb, mx - 3, my - 2, mw + 6, mh + 4, 4, 2, false);
-        ps_box(fb, mx, my, mw, mh, 1, 0, true);
-    }
-}
 static void render_fan_base(uint8_t* fb) {
     ps_view_t v=ps_view();ps_fill(fb,0,0,v.w,v.h,15);bool edit=fan_editor_active();
-    fan_item_t a[QUICK_COUNT];int n=fan_layout(a);int ix=fan_prompt_x();char detail[100];
+    fan_item_t a[QUICK_COUNT];int n=fan_layout(a);float scale=fan_scale();int ix=fan_prompt_x();char detail[100];
     ps_text_fixed(fb,ix,80,12,edit?"编排快捷菜单":"快捷操作",5);
     if(edit) {
         ps_text_fixed(fb,ix,32,18,"长按拖动交换位置",2);
@@ -1494,15 +1455,27 @@ static void render_fan_base(uint8_t* fb) {
     }
     for(int i=0;i<n;i++) {
         if(a[i].id<0&&!edit)continue;
-        fan_draw_item(fb,&a[i],edit,false);
+        int r=a[i].r;
+        ps_box(fb,a[i].x-r,a[i].y-r,r*2,r*2,r,15,true);
+        ps_box(fb,a[i].x-r,a[i].y-r,r*2,r*2,r,a[i].id<0?6:0,false);
+        ps_icon_t icon=a[i].id<0?PI_PLUS:s_quick[a[i].id].icon;
+        int sz=(int)lroundf(21.f*scale);bool unavailable=!edit&&a[i].id>=0&&quick_unavailable(a[i].id);
+        ps_icon(fb,a[i].x-sz/2,a[i].y-r+(int)lroundf(3.f*scale),sz,icon,a[i].id<0||unavailable?6:2);
+        // 两字短名是静态按钮的一部分；滑动只更新圈外光圈和固定标题。
+        // Short names belong to the fixed base; motion changes only the outside halo and fixed title.
+        ps_text_fixed(fb,a[i].x-15,a[i].y+4,11,a[i].id<0?"添加":s_quick_short[a[i].id],a[i].id<0||unavailable?6:2);
     }
     int side=fan_frame_side();ps_center(fb,side?v.w-62:62,v.h-42,10,"安全区",5);
     ps_center(fb,side?v.w-62:62,v.h-25,10,edit?"拖回取消":"松手取消",5);
 }
+
 static void render_fan_cursor(uint8_t *fb) {
     fan_item_t a[QUICK_COUNT];int n=fan_layout(a),selected=fan_frame_selected();bool edit=fan_editor_active();
     if(selected>=0&&selected<n&&(edit||a[selected].id>=0)) {
-        fan_draw_item(fb,&a[selected],edit,true);
+        EpdRect buttons[QUICK_COUNT];int count=0;
+        for(int i=0;i<n;i++)if(edit||a[i].id>=0)buttons[count++]=(EpdRect){a[i].x-a[i].r,a[i].y-a[i].r,a[i].r*2,a[i].r*2};
+        int halo=(int)lroundf(22.f*fan_scale()+360.f*5.f/58.5f);
+        ps_cursor_ring(fb,a[selected].x,a[selected].y,halo,buttons,count);
     }
     const char *label=selected>=0&&selected<n?(a[selected].id<0?"空位置":s_quick[a[selected].id].label):edit?"轻点选择功能位置":"滑向图标，松手打开";
     ps_text_fixed(fb,fan_prompt_x(),106,25,label,2);
@@ -1529,9 +1502,8 @@ static void fan_add_area(EpdRect areas[3],int *count,EpdRect next) {
 static EpdRect fan_cursor_area(int selected) {
     fan_item_t a[QUICK_COUNT];int n=fan_layout(a);
     if(selected<0||selected>=n)return (EpdRect){0};
-    int mx, my, mw, mh;
-    fan_marker_rect(&a[selected], &mx, &my, &mw, &mh);
-    return (EpdRect){mx-5,my-4,mw+10,mh+8};
+    int r=(int)lroundf(22.f*fan_scale()+360.f*5.f/58.5f)+3;
+    return (EpdRect){a[selected].x-r,a[selected].y-r,r*2+1,r*2+1};
 }
 static void fan_area_pixels(uint8_t *fb,const uint8_t *source,EpdRect area,bool threshold) {
     EpdRect r=ui_rotate_rect_to_fb(ps_rect(area.x,area.y,area.width,area.height));
@@ -1562,8 +1534,7 @@ static uint64_t fan_paint_key(void) {
     int state[]={fan_frame_side(),fan_editor_active(),s_quick_edit.save_failed,ps_route(),ps_view().w,ps_view().h};
     for(size_t i=0;i<sizeof(state)/sizeof(state[0]);i++)hash=(hash^(unsigned)state[i])*UINT64_C(1099511628211);
     for(int i=0;i<n;i++) {
-        int fields[]={a[i].id,a[i].x,a[i].y,a[i].r,a[i].ring,a[i].group,
-                      a[i].id>=0?fan_state_bits(a[i].id):0};
+        int fields[]={a[i].id,a[i].x,a[i].y,a[i].r,a[i].ring,a[i].group};
         for(size_t j=0;j<sizeof(fields)/sizeof(fields[0]);j++)hash=(hash^(unsigned)fields[j])*UINT64_C(1099511628211);
     }
     return hash;
@@ -1696,16 +1667,39 @@ static PICO_STORE_COLD void device_about_render(uint8_t *fb){
     ps_surface(fb,16,82,cw,v.landscape?142:100,false);
     ps_text(fb,28,98,18,PS_OS_NAME,1);
     ps_text(fb,28,135,12,PS_RELEASE_LABEL,5);
-    int x=v.landscape?28+cw:16,y=v.landscape?82:198;
-    ps_surface(fb,x,y,cw,138,false);
-    const char *labels[]={"系统版本","设备型号","显示规格"};
-    const char *values[]={PS_VERSION,"小纸 Pico","16 灰阶 · 684×1216"};
-    for(int i=0;i<3;i++){
-        ps_text(fb,x+12,y+i*46+16,11,labels[i],5);
-        ps_text(fb,x+94,y+i*46+15,12,values[i],1);
-        if(i<2)ps_line(fb,x+12,y+(i+1)*46,x+cw-12,y+(i+1)*46,13);
+    char mac[24]="—", chip[48]="—", storage[48]="—", uid[40]="—";
+#ifdef ESP_PLATFORM
+    uint8_t m[6]={0};
+    if(esp_read_mac(m,ESP_MAC_BASE)==ESP_OK)
+        snprintf(mac,sizeof(mac),"%02X:%02X:%02X:%02X:%02X:%02X",m[0],m[1],m[2],m[3],m[4],m[5]);
+    esp_chip_info_t ci;
+    esp_chip_info(&ci);
+    snprintf(chip,sizeof(chip),"ESP32-S3 · rev %u · %u 核",(unsigned)ci.revision,(unsigned)ci.cores);
+    uint32_t flash=0;
+    if(esp_flash_get_size(NULL,&flash)==ESP_OK) {
+        size_t psram=heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        snprintf(storage,sizeof(storage),"%u MB Flash · %u MB PSRAM",
+                 (unsigned)(flash/(1024u*1024u)),(unsigned)(psram/(1024u*1024u)));
     }
-    ps_text(fb,28,v.landscape?230:362,11,"用于先行体验与功能测试",5);
+    uint8_t pmu_uid[PMU_CHIP_UID_LEN];
+    if(read_pico_pmu_uid_get(pmu_uid)==ESP_OK) {
+        size_t o=0;
+        for(size_t i=0;i<sizeof(pmu_uid)&&o+2<sizeof(uid);i++)
+            o+=(size_t)snprintf(uid+o,sizeof(uid)-o,"%02X",pmu_uid[i]);
+    }
+#endif
+    const char *labels[]={"系统版本","设备型号","显示规格","MAC 地址","芯片","存储","设备 UID"};
+    const char *values[]={PS_VERSION,"小纸 Pico","16 灰阶 · 684×1216",mac,chip,storage,uid};
+    int x=v.landscape?28+cw:16,y=v.landscape?82:198,rh=40;
+    int panel_h=(int)(sizeof(labels)/sizeof(labels[0]))*rh+12;
+    ps_surface(fb,x,y,cw,panel_h,false);
+    for(size_t i=0;i<sizeof(labels)/sizeof(labels[0]);i++){
+        int row=y+6+(int)i*rh;
+        ps_text(fb,x+12,row+14,10,labels[i],5);
+        ps_text_fixed(fb,x+104,row+13,11,values[i],1);
+        if(i+1<sizeof(labels)/sizeof(labels[0]))ps_line(fb,x+12,row+rh,x+cw-12,row+rh,13);
+    }
+    ps_text(fb,28,v.landscape?230:520,11,"用于先行体验与功能测试",5);
     ps_button(fb,16,v.h-110,v.w-32,44,"首次使用引导",false);
 }
 static PICO_STORE_COLD void device_render(uint8_t* fb) {

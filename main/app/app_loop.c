@@ -420,7 +420,7 @@ void app_loop_run(const app_loop_config_t* config) {
         // a hit empties this sample and cancels in-flight swipe/long-press state.
         bool guard_blocked = false;
         if (err == ESP_OK) {
-            guard_blocked = app_touch_guard_filter(&touch, ctx.now_ms, ps_dual_enabled(), ps_touch_guard_enabled());
+            guard_blocked = app_touch_guard_filter(&touch, ctx.now_ms, ps_dual_enabled(), ps_touch_guard_enabled(), ps_dual_contact_likely());
             int guard_event = app_touch_guard_take_event();
             if (guard_event == 1) {
                 ps_toast("检测到贴合误触，已屏蔽；长按屏幕中央 1 秒恢复");

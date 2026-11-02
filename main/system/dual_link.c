@@ -147,6 +147,8 @@ struct dual_link {
     dl_reading_t reading;
     dl_orientation_t orientation;
     bool guard, guard_dirty;
+    int8_t face, peer_face;
+    bool face_dirty, face_sent;
     uint32_t orientation_revision, orientation_sequence;
     bool orientation_dirty, orientation_seen, control_compatible, orientation_last;
     uint8_t orientation_request;
@@ -859,6 +861,10 @@ dual_link_t* dl_create(const dl_config_t* cfg) {
     d->orientation.inverted = true;
     d->guard = true;
     d->guard_dirty = false;
+    d->face = 0;
+    d->peer_face = 0;
+    d->face_dirty = false;
+    d->face_sent = false;
     d->orientation_revision = 1;
     return d;
 }
@@ -926,6 +932,7 @@ void dl_control_connected(dual_link_t* d, bool connected) {
     d->request_pending = false; d->request_at = 0;
     d->left_ready = false;
     d->request_sequence = d->peer_sequence = 0;
+    d->face_sent = false;
     d->catalog_dirty = d->state_dirty = true; d->control_sent = 0;
 }
 size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
@@ -972,6 +979,13 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         d->guard_dirty = false;
         return 2;
     }
+    if (d->face_dirty && d->control_compatible) {
+        p[0] = 11;
+        p[1] = (uint8_t)(d->face + 1);
+        d->face_dirty = false;
+        d->face_sent = true;
+        return 2;
+    }
     if (d->cfg.role == 2 && d->request_pending &&
         (!d->request_at || d->now - d->request_at >= 500)) {
         p[0] = nonzero(d->request_book) ? 3 : d->request_page ? 5 : d->request_px ? 6 : 4;
@@ -990,6 +1004,11 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         if (n != 35 || p[1] > 1 || p[34] != CONTROL_VERSION) return false;
         d->control_compatible = true;
         d->peer_catalog_valid = p[1]; memcpy(d->peer_catalog, p + 2, 32);
+        return true;
+    }
+    if (p[0] == 11) {
+        if (n != 2 || p[1] > 2) return false;
+        d->peer_face = (int8_t)p[1] - 1;
         return true;
     }
     if (p[0] == 9 || p[0] == 10) {
@@ -1094,6 +1113,8 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->reading = d->reading;
     out->orientation = d->orientation;
     out->guard = d->guard;
+    out->face = d->face;
+    out->peer_face = d->peer_face;
 }
 static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool reopen) {
     if (!d || !path || !page || page == UINT32_MAX || strlen(path) >= DL_PATH) return false;
@@ -1271,6 +1292,14 @@ bool dl_orient(dual_link_t* d, bool inverted) {
     if (!d || d->cfg.role != 1) return false;
     dl_orientation_t next = d->orientation; next.inverted = inverted;
     dl_orientation_restore(d, &next); return true;
+}
+bool dl_face(dual_link_t* d, int face) {
+    if (!d || face < -1 || face > 1) return false;
+    if (d->face != face || !d->face_sent) {
+        d->face = (int8_t)face;
+        d->face_dirty = true;
+    }
+    return true;
 }
 bool dl_guard(dual_link_t* d, bool enabled) {
     if (!d) return false;

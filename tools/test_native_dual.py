@@ -106,6 +106,7 @@ try:
         assert (a.state['sound_played'],b.state['sound_played'])==sounds
         a.cmd('powerkey');until(lambda:a.state.get('book_page')==1 and b.state.get('book_page')==2,'restore first spread')
         assert (a.state['sound_played'],b.state['sound_played'])==(sounds[0]+1,sounds[1])
+        pump(8)
     b.cmd('sound-options 15')
 
     # 主机基准同步两个屏幕；角色偏移独立，既有设置不变。/ Primary base is shared; role offsets are independent and ordinary settings stay unchanged.

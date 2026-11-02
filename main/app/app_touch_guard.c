@@ -32,7 +32,8 @@ typedef struct {
     int64_t calm_since;
     int64_t wait_since;
     int64_t suspended_until;
-    uint16_t calm_x, calm_y;
+    int64_t edge_since;
+    uint16_t calm_x, calm_y, edge_x, edge_y;
     int64_t last_decay;
     int32_t score;
     uint16_t transitions;
@@ -55,6 +56,7 @@ static void clear_stats(void) {
     g.block_start = 0;
     g.calm_since = 0;
     g.wait_since = 0;
+    g.edge_since = 0;
 }
 
 void app_touch_guard_reset(void) {
@@ -70,6 +72,7 @@ static void begin_block(int64_t now) {
     g.calm_since = 0;
     g.wait_release = false;
     g.suspended_until = 0;
+    g.edge_since = 0;
     g.transition_event = 1;
     clear_stats();
     g.block_start = now;
@@ -84,14 +87,7 @@ static void end_block(void) {
     clear_stats();
 }
 
-static int point_distance(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by) {
-    int dx = (int)ax - (int)bx, dy = (int)ay - (int)by;
-    if (dx < 0) dx = -dx;
-    if (dy < 0) dy = -dy;
-    return dx + dy;
-}
-
-bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, bool enabled) {
+bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, bool enabled, bool contact) {
     if (!g.initialized) app_touch_guard_reset();
     if (!touch) return false;
     // 底部三键是独立物理触摸区（y>=1300），不属于屏幕鬼触范围；
@@ -105,7 +101,9 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
         }
         return false;
     }
-    if (!dual || !enabled) {
+    if (!dual || !enabled || !contact) {
+        // 展开使用时两屏同向朝上，不做鬼触判断；正常滑动不会被误判。
+        // When unfolded both screens face up; skip ghost detection so normal slides pass.
         if (g.blocked) end_block();
         else clear_stats();
         return false;
@@ -133,6 +131,17 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
             clear_stats();
             return false;
         }
+        memset(touch, 0, sizeof(*touch));
+        return true;
+    }
+
+    // 两屏相对贴合时，任何屏幕触摸都可能是耦合鬼触；一律先屏蔽，
+    // 只保留物理三键和中央长按恢复。展开后 contact=false，正常滑动完全不经过这里。
+    // Face-to-face contact: suppress every screen touch; only the physical keys and the
+    // central recovery hold remain. Unfolded contact=false bypasses this entirely.
+    if (!g.blocked) {
+        if (!touch->touched) return false;
+        begin_block(now_ms);
         memset(touch, 0, sizeof(*touch));
         return true;
     }
@@ -182,61 +191,6 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
         return true;
     }
 
-    if (now_ms - g.last_decay >= GUARD_DECAY_MS) {
-        g.last_decay = now_ms;
-        if (g.score > 0) --g.score;
-        if (!touch->touched && !g.prev_active) {
-            // 安静时让累计计数缓慢归零，只有真正持续的鬼触序列才会命中。
-            // Decay counters while quiet so only a sustained ghost sequence trips the guard.
-            if (g.transitions) --g.transitions;
-            if (g.jumps) --g.jumps;
-            if (g.two_point) --g.two_point;
-            if (g.opposite) --g.opposite;
-            if (g.edge_hits) --g.edge_hits;
-        }
-    }
-
-    const int w = 684, h = 1216;
-    if (touch->touched) {
-        if (!g.prev_active) {
-            ++g.transitions;
-            g.score += 2;
-        } else {
-            int jump = point_distance(touch->x, touch->y, g.prev_x, g.prev_y);
-            if (jump > 140) {
-                ++g.jumps;
-                g.score += 3;
-            }
-        }
-        if (touch->count > 1) {
-            ++g.two_point;
-            g.score += 1;
-            int dx = (int)touch->points[0].x - (int)touch->points[1].x;
-            int dy = (int)touch->points[0].y - (int)touch->points[1].y;
-            if (dx < 0) dx = -dx;
-            if (dy < 0) dy = -dy;
-            if (dx > 320 || dy > 520) {
-                ++g.opposite;
-                g.score += 4;
-            }
-        }
-        if (touch->x < GUARD_EDGE_PX || touch->x >= w - GUARD_EDGE_PX ||
-            touch->y < GUARD_EDGE_PX || touch->y >= h - GUARD_EDGE_PX) {
-            ++g.edge_hits;
-            g.score += 1;
-        }
-        g.prev_x = touch->x;
-        g.prev_y = touch->y;
-    }
-    g.prev_active = touch->touched;
-    g.prev_count = touch->count;
-
-    if (g.opposite >= 3 || g.jumps >= 8 || g.transitions >= 12 ||
-        (g.edge_hits >= 10 && g.two_point >= 3) || g.score >= 24) {
-        begin_block(now_ms);
-        memset(touch, 0, sizeof(*touch));
-        return true;
-    }
     return false;
 }
 

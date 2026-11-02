@@ -41,6 +41,9 @@ void ps_wake(void);
 void ps_rotate(void);
 /// 应用双机临时方向或恢复系统方向，不修改两者的偏好。/ Apply paired display direction or restore the system direction without changing preferences.
 void ps_dual_rotation_changed(void);
+/// 最近一次加速度采样的屏幕朝向：+1 屏幕朝上，-1 朝下，0 未知/竖直。
+/// Last accelerometer screen face: +1 up, -1 down, 0 unknown/upright.
+int ps_contact_face(void);
 void ps_rotation_lock(bool locked);
 bool ps_rotation_locked(void);
 /// 双机屏幕贴合防误触：识别电容鬼触并短暂屏蔽。/ Paired face-to-face ghost-touch guard.

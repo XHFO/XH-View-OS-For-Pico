@@ -15,7 +15,7 @@ void app_touch_guard_reset(void);
 
 /// 送入一帧原始触摸；返回 true 时本帧必须丢弃（已改写为空触点）。
 /// Feed one raw sample; when true this frame is suppressed (the touch is rewritten to empty).
-bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, bool enabled);
+bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, bool enabled, bool contact);
 
 /// 当前是否处于贴合误触屏蔽窗口。/ Whether the contact-guard window is currently blocking input.
 bool app_touch_guard_blocked(void);
