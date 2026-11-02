@@ -20,3 +20,10 @@ CONFIG_BT_CTRL_BLE_MAX_ACT=3
 # Prefer PSRAM for ordinary medium buffers; reserve internal memory for radios, stacks and TF DMA.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+
+# 4 MiB APP 槽已接近上限：发布/测试包默认只保留 WARN 与 ERROR 日志。
+# The 4 MiB app slot is nearly full: keep WARN/ERROR logs in release/test builds.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL=2
+CONFIG_LOG_MAXIMUM_LEVEL_WARN=y
+CONFIG_LOG_MAXIMUM_LEVEL=2
