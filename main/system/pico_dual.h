@@ -16,6 +16,9 @@ bool ps_dual_rotate(void);
 /// Paired-session direction lock; independent of the system lock, stops auto turns and keeps manual flips.
 bool ps_dual_rotation_locked(void);
 bool ps_dual_lock_set(bool locked);
+/// 双机贴合防误触开关；两端通过控制通道同步。/ Paired face-to-face guard, synchronized over the control channel.
+bool ps_dual_guard_enabled(void);
+bool ps_dual_guard_set(bool enabled);
 /// 取一次“手动翻转待应用”标记，避免从机锁定阻止手动翻转。
 /// Take the one-shot manual-flip marker so a locked secondary still applies its own flip.
 bool ps_dual_take_manual_rotation(void);

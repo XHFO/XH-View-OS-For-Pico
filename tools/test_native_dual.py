@@ -135,6 +135,12 @@ try:
         orientation_preferences_preserved()
     until(lambda:orientation_is(3,False,False),'default shared orientation')
     assert (a.state['rotation'],b.state['rotation'])==(3,3)
+    # 贴合防误触必须两端同步：主机/从机任一端切换，另一端都跟随。
+    # The face-to-face guard must be synchronized: toggling either role updates both devices.
+    a.cmd('dual-usb RPICO DUAL GUARD OFF');pump(20)
+    assert not a.state['dual_guard'] and not b.state['dual_guard']
+    b.cmd('dual-usb RPICO DUAL GUARD ON');pump(20)
+    assert a.state['dual_guard'] and b.state['dual_guard']
     identities=(page_identity(a),page_identity(b));normal_hash=a.state['physical_hash']
     pose(a,-980)
     assert orientation_is(1,False,False) and (a.state['rotation'],b.state['rotation'])==(1,1)

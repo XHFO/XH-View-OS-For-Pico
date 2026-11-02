@@ -55,6 +55,32 @@ int main(void) {
     assert(!app_touch_guard_filter(&empty, now, true, true));
     assert(!app_touch_guard_blocked());
     assert(app_touch_guard_take_event() == 2);
+    // A deliberate central hold recovers and then waits for lift; the recovery touch must not tap.
+    app_touch_guard_reset();
+    now += 1000;
+    for (int i = 0; i < 8 && !app_touch_guard_blocked(); i++) {
+        cst836u_touch_t ghost = sample(true, 40, 100, 640, 1100);
+        (void)app_touch_guard_filter(&ghost, now, true, true);
+        now += 30;
+    }
+    assert(app_touch_guard_blocked());
+    (void)app_touch_guard_take_event();
+    bool recovered = false;
+    for (int i = 0; i < 30 && !recovered; i++) {
+        cst836u_touch_t hold = sample(true, 342, 608, -1, -1);
+        (void)app_touch_guard_filter(&hold, now, true, true);
+        recovered = !app_touch_guard_blocked();
+        now += 35;
+    }
+    assert(recovered && !app_touch_guard_blocked());
+    // While the recovery finger is still down, input stays suppressed; lifting arms the pass-through.
+    cst836u_touch_t hold = sample(true, 342, 608, -1, -1);
+    (void)app_touch_guard_filter(&hold, now, true, true);
+    now += 40;
+    cst836u_touch_t lift = sample(false, 0, 0, -1, -1);
+    assert(!app_touch_guard_filter(&lift, now, true, true));
+    cst836u_touch_t normal = sample(true, 340, 600, -1, -1);
+    assert(!app_touch_guard_filter(&normal, now + 50, true, true));
     // Disabled or non-dual sessions bypass the filter.
     app_touch_guard_reset();
     cst836u_touch_t t = sample(true, 40, 100, 640, 1100);

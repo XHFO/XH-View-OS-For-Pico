@@ -36,6 +36,7 @@ static bool loaded;
 static dl_orientation_t orientation = { .inverted = true };
 static uint8_t stored_orientation = 0xff;
 static uint8_t rotation_locked;
+static uint8_t guard_enabled = 1;
 static bool manual_rotation;
 static int64_t orientation_store_at;
 static uint8_t orientation_bits(void) {
@@ -75,6 +76,8 @@ static void load(void) {
     }
     uint8_t locked = 0;
     if (ps_load("duallock1", &locked, sizeof(locked))) rotation_locked = locked ? 1 : 0;
+    uint8_t guard = 1;
+    if (ps_load("duaguard1", &guard, sizeof(guard))) guard_enabled = guard ? 1 : 0;
 }
 bool ps_dual_enabled(void) {
     load();
@@ -154,6 +157,7 @@ static bool start(void) {
         return false;
     }
     dl_orientation_restore(dual_session, &orientation);
+    if (!guard_enabled) (void)dl_guard(dual_session, false);
     dl_reading_t saved = { 0 };
     if (settings.role == 1) {
         // 旧记录是新结构的76字节前缀；保留原书和页码，并使用原固定48字号。
@@ -218,6 +222,22 @@ bool ps_dual_lock_set(bool locked) {
         return false;
     }
     rotation_locked = next;
+    ps_dirty();
+    return true;
+}
+bool ps_dual_guard_enabled(void) {
+    load();
+    return guard_enabled != 0;
+}
+bool ps_dual_guard_set(bool enabled) {
+    load();
+    if (!settings.role) return false;
+    if (!dual_session && !start()) return false;
+    if (!dl_guard(dual_session, enabled)) return false;
+    uint8_t next = enabled ? 1 : 0;
+    if (!ps_store("duaguard1", &next, sizeof(next)))
+        ps_toast("防误触已同步，但本地保存失败");
+    guard_enabled = next;
     ps_dirty();
     return true;
 }
@@ -356,6 +376,11 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     dl_status(dual_session, &status);
     if (memcmp(&orientation, &status.orientation, sizeof(orientation))) {
         orientation = status.orientation;
+        ps_dirty();
+    }
+    if (guard_enabled != (status.guard ? 1 : 0)) {
+        guard_enabled = status.guard ? 1 : 0;
+        (void)ps_store("duaguard1", &guard_enabled, sizeof(guard_enabled));
         ps_dirty();
     }
     orientation_save();
@@ -637,8 +662,9 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     bool rescan = !strcmp(line, "RPICO DUAL RESCAN");
     bool rotate = !strcmp(line, "RPICO DUAL ROTATE");
     bool lock = !strncmp(line, "RPICO DUAL LOCK ", 16);
+    bool guard = !strncmp(line, "RPICO DUAL GUARD ", 17);
     bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
-    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
+    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !guard && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
     load();
     bool accepted = true;
     if (item || open) {
@@ -678,7 +704,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         accepted = strlen(px) == 2 && px[0] >= '0' && px[0] <= '9' && px[1] >= '0' && px[1] <= '9' &&
             app_book_global_is_open() && ps_background_io_allowed() && !app_book_global_has_selection() &&
             ps_dual_resize((uint8_t)((px[0] - '0') * 10 + px[1] - '0'));
-    } else if (rescan || rotate || lock) {
+    } else if (rescan || rotate || lock || guard) {
         accepted = dual_session && ps_background_io_allowed() && !ps_power_pending() &&
             !ps_storage_busy() && !ps_usb_busy() && !ps_usb_held() && !ps_content_held() &&
             !ps_transfer_prepared() && ps_route()!=PS_EDITOR && !app_book_global_has_selection() && ps_dual_enabled();
@@ -688,6 +714,10 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
                 const char* value = line + 16;
                 accepted = !strcmp(value, "ON") || !strcmp(value, "OFF");
                 if (accepted) accepted = ps_dual_lock_set(!strcmp(value, "ON"));
+            } else if (guard) {
+                const char* value = line + 17;
+                accepted = !strcmp(value, "ON") || !strcmp(value, "OFF");
+                if (accepted) accepted = ps_dual_guard_set(!strcmp(value, "ON"));
             } else dl_rescan(dual_session);
             ps_dirty();
         }
@@ -719,7 +749,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
         "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
         "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
-        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"orientation\":%u,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"orientation\":%u,"
         "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
         accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
         state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
@@ -732,7 +762,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         state.listed?"true":"false",state.peer_listed?"true":"false",
         state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
         (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
-        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
+        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
         book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
     return true;

@@ -2209,8 +2209,12 @@ static app_redraw_t product_exit(app_ctx_t* ctx) {
     s_open_path[0] = 0;
     s_open_presented = false;
     s_annotation_pending = s_selection = false;
+    // 一次性回到书库根页：清掉阅读子页/历史，避免 ps_navigate 后
+    // 又因旧 history 回到记录页或设置页，也避免连续两次整屏刷新。
+    // Return to the library root in one step: clear child history first, so Back/home
+    // cannot land on a stale records/settings page and the screen refreshes once.
+    ps_switch(0);
     ctx->request_app = app_home_page();
-    ps_navigate(PS_SHELF);
     ps_global_book_return(false);
     return APP_REDRAW_NONE;
 }

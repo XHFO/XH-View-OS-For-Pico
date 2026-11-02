@@ -46,6 +46,7 @@ typedef struct {
     const char* error;
     dl_reading_t reading;
     dl_orientation_t orientation;
+    bool guard; ///< 两端同步的贴合防误触开关。/ Face-to-face guard flag synchronized across both devices.
 } dl_status_t;
 /// 所有接口只从UI线程使用，tick每次至多一个文件块。/ UI-thread only; tick processes at most one file block.
 dual_link_t* dl_create(const dl_config_t* config);
@@ -84,6 +85,9 @@ bool dl_orient(dual_link_t* link, bool inverted);
 /// 设置角色1/2的独立180度开关；主机可离线设置，从机须连接且等待确认。
 /// Set role 1/2's independent 180-degree switch; primary supports offline updates, secondary requires connection and confirmation.
 bool dl_flip(dual_link_t* link, int role, bool enabled);
+/// 同步贴合防误触开关；从机发请求，主机确认后广播。
+/// Synchronize the face-to-face guard; the secondary requests and the primary broadcasts.
+bool dl_guard(dual_link_t* link, bool enabled);
 
 /// BLE 已加密且认证后才交付控制帧；这些接口只从 UI 线程调用。
 /// Deliver control frames only after BLE encryption/authentication; UI-thread only.

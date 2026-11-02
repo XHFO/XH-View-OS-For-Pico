@@ -15,15 +15,24 @@
 #define GUARD_QUIET_MS 500
 #define GUARD_DECAY_MS 220
 #define GUARD_EDGE_PX 30
+#define GUARD_RECOVER_HOLD_MS 900
+#define GUARD_SUSPEND_MS 2500
+#define GUARD_RELEASE_WAIT_MS 1500
 
 typedef struct {
     bool initialized;
     bool blocked;
+    bool wait_release;
     bool prev_active;
     uint8_t prev_count;
     uint16_t prev_x, prev_y;
     int64_t block_until;
     int64_t quiet_since;
+    int64_t block_start;
+    int64_t calm_since;
+    int64_t wait_since;
+    int64_t suspended_until;
+    uint16_t calm_x, calm_y;
     int64_t last_decay;
     int32_t score;
     uint16_t transitions;
@@ -43,6 +52,9 @@ static void clear_stats(void) {
     g.prev_count = 0;
     g.prev_x = g.prev_y = 0;
     g.last_decay = 0;
+    g.block_start = 0;
+    g.calm_since = 0;
+    g.wait_since = 0;
 }
 
 void app_touch_guard_reset(void) {
@@ -54,8 +66,13 @@ static void begin_block(int64_t now) {
     g.blocked = true;
     g.block_until = now + GUARD_BLOCK_MS;
     g.quiet_since = 0;
+    g.block_start = now;
+    g.calm_since = 0;
+    g.wait_release = false;
+    g.suspended_until = 0;
     g.transition_event = 1;
     clear_stats();
+    g.block_start = now;
 }
 
 static void end_block(void) {
@@ -63,6 +80,7 @@ static void end_block(void) {
     g.block_until = 0;
     g.quiet_since = 0;
     g.transition_event = 2;
+    g.wait_release = false;
     clear_stats();
 }
 
@@ -82,14 +100,66 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
         return false;
     }
 
+    // 长按恢复后的短暂放行窗口；窗口内不再识别鬼触，给用户移开屏幕/关开关的时间。
+    // Short pass-through after the recovery hold, so the user can separate the screens or toggle the guard.
+    if (g.suspended_until) {
+        if (now_ms < g.suspended_until) return false;
+        g.suspended_until = 0;
+        clear_stats();
+    }
+    // 恢复长按必须先抬手，不能让同一根手指在恢复后误触页面。
+    // The recovery hold must lift before normal input resumes.
+    if (g.wait_release) {
+        if (!touch->touched) {
+            g.wait_release = false;
+            g.suspended_until = now_ms + GUARD_SUSPEND_MS;
+            clear_stats();
+            return false;
+        }
+        if (now_ms - g.wait_since >= GUARD_RELEASE_WAIT_MS) {
+            g.wait_release = false;
+            g.suspended_until = now_ms + GUARD_SUSPEND_MS;
+            clear_stats();
+            return false;
+        }
+        memset(touch, 0, sizeof(*touch));
+        return true;
+    }
+
     if (g.blocked) {
         // 只要还有触点就继续屏蔽；全部离开并安静 500ms 才恢复。
         // Remain blocked while any contact persists; release only after 500 ms quiet.
         if (touch->touched) {
             g.quiet_since = 0;
             g.block_until = now_ms + GUARD_BLOCK_MS;
+            // 单指停在屏幕中央 0.9s 作为恢复手势；鬼触通常是对置双点/边缘抖动。
+            // A single stationary finger in the central safe zone for 0.9 s recovers;
+            // ghost contact is typically opposed points or edge chatter.
+            const bool center = touch->count == 1 &&
+                touch->x >= 684 / 4 && touch->x < 684 * 3 / 4 &&
+                touch->y >= 1216 / 4 && touch->y < 1216 * 3 / 4;
+            if (center) {
+                int dx = (int)touch->x - (int)g.calm_x;
+                int dy = (int)touch->y - (int)g.calm_y;
+                if (dx < 0) dx = -dx;
+                if (dy < 0) dy = -dy;
+                if (!g.calm_since || dx + dy > 24) {
+                    g.calm_since = now_ms;
+                    g.calm_x = touch->x;
+                    g.calm_y = touch->y;
+                } else if (now_ms - g.calm_since >= GUARD_RECOVER_HOLD_MS) {
+                    end_block();
+                    g.wait_release = true;
+                    g.wait_since = now_ms;
+                    memset(touch, 0, sizeof(*touch));
+                    return true;
+                }
+            } else {
+                g.calm_since = 0;
+            }
         } else if (!g.quiet_since) {
             g.quiet_since = now_ms;
+            g.calm_since = 0;
         } else if (now_ms - g.quiet_since >= GUARD_QUIET_MS) {
             end_block();
             return false;

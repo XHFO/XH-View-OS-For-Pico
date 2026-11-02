@@ -423,7 +423,7 @@ void app_loop_run(const app_loop_config_t* config) {
             guard_blocked = app_touch_guard_filter(&touch, ctx.now_ms, ps_dual_enabled(), ps_touch_guard_enabled());
             int guard_event = app_touch_guard_take_event();
             if (guard_event == 1) {
-                ps_toast("检测到屏幕贴合误触，已暂时屏蔽触摸");
+                ps_toast("检测到贴合误触，已屏蔽；长按屏幕中央 1 秒恢复");
             } else if (guard_event == 2) {
                 ps_toast("触摸已恢复");
             }

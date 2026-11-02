@@ -146,6 +146,7 @@ struct dual_link {
     const char* error;
     dl_reading_t reading;
     dl_orientation_t orientation;
+    bool guard, guard_dirty;
     uint32_t orientation_revision, orientation_sequence;
     bool orientation_dirty, orientation_seen, control_compatible, orientation_last;
     uint8_t orientation_request;
@@ -856,6 +857,8 @@ dual_link_t* dl_create(const dl_config_t* cfg) {
     d->reading.revision = 1;
     d->reading.font_px = DL_FONT_DEFAULT;
     d->orientation.inverted = true;
+    d->guard = true;
+    d->guard_dirty = false;
     d->orientation_revision = 1;
     return d;
 }
@@ -963,6 +966,12 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         p[82] = d->reading.font_px; p[83] = d->reading.reflow_pending; p[84] = d->reading.reflow_from_px;
         d->state_dirty = false; d->orientation_last = false; return 85;
     }
+    if (d->guard_dirty && d->control_compatible) {
+        p[0] = d->cfg.role == 1 ? 9 : 10;
+        p[1] = d->guard ? 1 : 0;
+        d->guard_dirty = false;
+        return 2;
+    }
     if (d->cfg.role == 2 && d->request_pending &&
         (!d->request_at || d->now - d->request_at >= 500)) {
         p[0] = nonzero(d->request_book) ? 3 : d->request_page ? 5 : d->request_px ? 6 : 4;
@@ -981,6 +990,14 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         if (n != 35 || p[1] > 1 || p[34] != CONTROL_VERSION) return false;
         d->control_compatible = true;
         d->peer_catalog_valid = p[1]; memcpy(d->peer_catalog, p + 2, 32);
+        return true;
+    }
+    if (p[0] == 9 || p[0] == 10) {
+        if (n != 2 || p[1] > 1) return false;
+        if (p[0] == 9 && d->cfg.role != 2) return false;
+        if (p[0] == 10 && d->cfg.role != 1) return false;
+        d->guard = p[1] != 0;
+        d->guard_dirty = p[0] == 10;
         return true;
     }
     if (p[0] == 7 || p[0] == 8) {
@@ -1076,6 +1093,7 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->error = d->error;
     out->reading = d->reading;
     out->orientation = d->orientation;
+    out->guard = d->guard;
 }
 static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool reopen) {
     if (!d || !path || !page || page == UINT32_MAX || strlen(path) >= DL_PATH) return false;
@@ -1253,6 +1271,13 @@ bool dl_orient(dual_link_t* d, bool inverted) {
     if (!d || d->cfg.role != 1) return false;
     dl_orientation_t next = d->orientation; next.inverted = inverted;
     dl_orientation_restore(d, &next); return true;
+}
+bool dl_guard(dual_link_t* d, bool enabled) {
+    if (!d) return false;
+    if (d->guard == enabled) return true;
+    d->guard = enabled;
+    d->guard_dirty = true;
+    return true;
 }
 bool dl_flip(dual_link_t* d, int role, bool enabled) {
     if (!d || (role != 1 && role != 2) || (d->cfg.role == 2 &&

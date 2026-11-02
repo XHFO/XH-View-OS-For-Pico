@@ -1170,9 +1170,20 @@ void ps_rotation_lock(bool on) {
 bool ps_rotation_locked(void) {
     return s_config.locked;
 }
-bool ps_touch_guard_enabled(void) { return s_touch_guard != 0; }
+bool ps_touch_guard_enabled(void) {
+    if (ps_dual_enabled()) return ps_dual_guard_enabled();
+    return s_touch_guard != 0;
+}
 bool ps_touch_guard_set(bool enabled) {
     uint8_t next = enabled ? 1 : 0;
+    if (ps_dual_enabled()) {
+        if (!ps_dual_guard_set(enabled)) return false;
+        if (!ps_store("touchguard1", &next, sizeof(next)))
+            ps_toast("防误触已同步，但本地保存失败");
+        s_touch_guard = next;
+        s_dirty = true;
+        return true;
+    }
     if (next == s_touch_guard) return true;
     if (!ps_store("touchguard1", &next, sizeof(next))) {
         ps_toast("防误触设置保存失败");

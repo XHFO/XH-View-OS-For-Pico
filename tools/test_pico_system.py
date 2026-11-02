@@ -148,6 +148,8 @@ static bool ps_dual_rotate(void){return true;}
 static bool ps_dual_rotation_locked(void){return false;}
 static bool ps_dual_lock_set(bool locked){(void)locked;return true;}
 static bool ps_dual_take_manual_rotation(void){return false;}
+static bool ps_dual_guard_enabled(void){return true;}
+static bool ps_dual_guard_set(bool enabled){(void)enabled;return true;}
 static void ps_dual_rotation_changed(void){}
 static bool ps_dual_enabled(void){return false;}
 static void ps_dual_suspend(void){}
