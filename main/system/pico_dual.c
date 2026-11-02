@@ -237,9 +237,10 @@ bool ps_dual_left_ready(void) {
 }
 bool ps_dual_contact_likely(void) {
     int local = ps_contact_face();
-    if (local < 0) return true;
-    if (local == 0) return false;
-    return ps_dual_peer_face() < 0;
+    int peer = ps_dual_peer_face();
+    // 两端都必须有明确朝向且相反，才判为贴合；不假设 z 轴正负对应哪一面。
+    // Require both known and opposite faces; never assume which z sign means screen-up.
+    return local != 0 && peer != 0 && local != peer;
 }
 bool ps_dual_guard_set(bool enabled) {
     load();

@@ -1,3 +1,8 @@
+## 0.40.0-dual19（独立双机实验版）
+
+- 贴合判定改为只认两端都有明确朝向且相反；不再假设加速度计 z 轴正负对应哪一面，避免展开使用时被误判为贴合。
+- Require both readers to report a known, opposite screen face; never assume a z-axis sign, so unfolded use cannot be mistaken for face-to-face contact.
+
 ## 0.40.0-dual18（独立双机实验版）
 
 - 姿态检测改为 200ms 低频直读加速度计，折叠/展开切换不再等待后台 500ms 采样，贴合屏蔽和展开放行更及时。
