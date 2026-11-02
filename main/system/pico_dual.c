@@ -37,6 +37,10 @@ static dl_orientation_t orientation = { .inverted = true };
 static uint8_t stored_orientation = 0xff;
 static uint8_t rotation_locked;
 static uint8_t guard_enabled = 1;
+typedef struct { uint32_t magic; int16_t x, y, z; } dual_base_t;
+static dual_base_t base;
+static bool calibrated;
+static uint32_t base_applied;
 static bool manual_rotation;
 static int64_t orientation_store_at;
 static uint8_t orientation_bits(void) {
@@ -78,6 +82,10 @@ static void load(void) {
     if (ps_load("duallock1", &locked, sizeof(locked))) rotation_locked = locked ? 1 : 0;
     uint8_t guard = 1;
     if (ps_load("duaguard1", &guard, sizeof(guard))) guard_enabled = guard ? 1 : 0;
+    dual_base_t stored;
+    if (ps_load("dualbase1", &stored, sizeof(stored)) && stored.magic == 0x31425344u) {
+        base = stored; calibrated = true;
+    }
 }
 bool ps_dual_enabled(void) {
     load();
@@ -225,6 +233,24 @@ bool ps_dual_lock_set(bool locked) {
     ps_dirty();
     return true;
 }
+static int contact_face(void) {
+    if (!calibrated) return 0;
+    int16_t x, y, z;
+    if (!ps_contact_cached(&x, &y, &z)) return 0;
+    int64_t dot = (int64_t)x * base.x + (int64_t)y * base.y + (int64_t)z * base.z;
+    int64_t nb = (int64_t)base.x * base.x + (int64_t)base.y * base.y + (int64_t)base.z * base.z;
+    int64_t nc = (int64_t)x * x + (int64_t)y * y + (int64_t)z * z;
+    // 与校准基准夹角小于约 60° 视为展开面，超过 120° 视为翻到另一面。
+    // Within ~60 degrees of the desk baseline is the open face; beyond ~120 degrees is the opposite face.
+    int64_t limit = nb * nc / 4;
+    if (dot > 0 && dot * dot > limit) return 1;
+    if (dot < 0 && dot * dot > limit) return -1;
+    return 0;
+}
+bool ps_dual_calibrated(void) {
+    load();
+    return calibrated;
+}
 bool ps_dual_guard_enabled(void) {
     load();
     return guard_enabled != 0;
@@ -236,11 +262,42 @@ bool ps_dual_left_ready(void) {
     return status.left_ready;
 }
 bool ps_dual_contact_likely(void) {
-    int local = ps_contact_face();
+    if (!calibrated) return false;
+    int local = contact_face();
     int peer = ps_dual_peer_face();
-    // 两端都必须有明确朝向且相反，才判为贴合；不假设 z 轴正负对应哪一面。
-    // Require both known and opposite faces; never assume which z sign means screen-up.
     return local != 0 && peer != 0 && local != peer;
+}
+bool ps_dual_calibrate(void) {
+    load();
+    if (!settings.role) return false;
+    if (!dual_session && !start()) return false;
+    if (settings.role == 2) {
+        if (!dl_calibration_request(dual_session)) return false;
+        ps_toast("已请求主机校准，请保持两台展开平放桌面");
+        return true;
+    }
+    if (!status.connected) {
+        ps_toast("请先连接两台设备再校准");
+        return false;
+    }
+    int16_t x, y, z;
+    if (!ps_contact_vector(&x, &y, &z) || abs(z) < 500 ||
+        (int32_t)abs(x) + abs(y) + abs(z) < 700) {
+        ps_toast("请将两台展开平放桌面后再校准");
+        return false;
+    }
+    base = (dual_base_t){.magic = 0x31425344u, .x = x, .y = y, .z = z};
+    calibrated = true;
+    base_applied = status.base_seq;
+    if (!ps_store("dualbase1", &base, sizeof(base))) {
+        calibrated = false;
+        ps_toast("校准保存失败");
+        return false;
+    }
+    (void)dl_baseline(dual_session, x, y, z);
+    ps_dirty();
+    ps_toast("校准完成：展开正常滑动，折叠时屏蔽触摸");
+    return true;
 }
 bool ps_dual_guard_set(bool enabled) {
     load();
@@ -375,7 +432,7 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     if (!ble.connected) applied = 0;
     dl_control_connected(dual_session, ble.connected);
     dl_tick(dual_session, ctx->now_ms, online);
-    (void)dl_face(dual_session, ps_contact_face());
+    (void)dl_face(dual_session, contact_face());
     last_work = ctx->now_ms;
     uint8_t packet[DL_CONTROL_MAX];
     for (unsigned i = 0; i < 4; ++i) {
@@ -388,6 +445,17 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         if (n) (void)pico_dual_ble_send(packet, n);
     }
     dl_status(dual_session, &status);
+    if (settings.role == 1 && status.calibration_request) {
+        dl_calibration_clear(dual_session);
+        (void)ps_dual_calibrate();
+    }
+    if (settings.role == 2 && status.base_valid && status.base_seq != base_applied) {
+        base = (dual_base_t){.magic = 0x31425344u, .x = status.base_x, .y = status.base_y, .z = status.base_z};
+        calibrated = true;
+        base_applied = status.base_seq;
+        (void)ps_store("dualbase1", &base, sizeof(base));
+        ps_dirty();
+    }
     if (memcmp(&orientation, &status.orientation, sizeof(orientation))) {
         orientation = status.orientation;
         ps_dirty();
@@ -500,13 +568,16 @@ void ps_dual_render(uint8_t* fb) {
     int half = (w - 8) / 2;
     ps_button(fb, x, 450, half, 34, guard ? "贴合防误触：开" : "贴合防误触：关", guard);
     ps_button(fb, x + half + 8, 450, w - half - 8, 34, locked ? "方向锁定：开" : "方向锁定：关", locked);
+    bool calibrated = ps_dual_calibrated();
+    ps_button(fb, x, 492, w, 34, calibrated ? "重新校准开合姿态" : "校准开合姿态（展开平放）", !calibrated);
+    ps_text(fb, x, 532, 11, calibrated ? "已校准：折叠时屏蔽触摸，展开时正常滑动" : "未校准：防误触暂不启用", calibrated ? 4 : 5);
     if (!v.landscape) {
-        ps_text(fb, x, 498, 13, "主机显示单页，从机显示下一页", 1);
-        ps_text(fb, x, 530, 12, "主机电源短按：上一组双页", 3);
-        ps_text(fb, x, 558, 12, "从机电源短按：下一组双页", 3);
-        ps_text(fb, x, 586, 12, "长按电源：锁屏、关机或重启", 3);
-        ps_text(fb, x, 630, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
-        ps_text(fb, x, 652, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
+        ps_text(fb, x, 560, 13, "主机显示单页，从机显示下一页", 1);
+        ps_text(fb, x, 588, 12, "主机电源短按：上一组双页", 3);
+        ps_text(fb, x, 614, 12, "从机电源短按：下一组双页", 3);
+        ps_text(fb, x, 640, 12, "长按电源：锁屏、关机或重启", 3);
+        ps_text(fb, x, 684, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
+        ps_text(fb, x, 706, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
     }
 }
 // 只读当前网络，不扫描网段或保存未完成配置。/ Read the current network without scanning hosts or persisting an unfinished setup.
@@ -630,6 +701,10 @@ bool ps_dual_event(const ps_event_t* e) {
             }
         }
     }
+    if (settings.role && e->y >= 492 && e->y < 526) {
+        (void)ps_dual_calibrate();
+        return true;
+    }
     if (settings.role && e->y >= 450 && e->y < 484) {
         int half = (w - 8) / 2;
         if (e->x < x + half) {
@@ -677,8 +752,9 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     bool rotate = !strcmp(line, "RPICO DUAL ROTATE");
     bool lock = !strncmp(line, "RPICO DUAL LOCK ", 16);
     bool guard = !strncmp(line, "RPICO DUAL GUARD ", 17);
+    bool calibrate = !strcmp(line, "RPICO DUAL CALIBRATE");
     bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
-    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !guard && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
+    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !guard && !calibrate && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
     load();
     bool accepted = true;
     if (item || open) {
@@ -718,7 +794,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         accepted = strlen(px) == 2 && px[0] >= '0' && px[0] <= '9' && px[1] >= '0' && px[1] <= '9' &&
             app_book_global_is_open() && ps_background_io_allowed() && !app_book_global_has_selection() &&
             ps_dual_resize((uint8_t)((px[0] - '0') * 10 + px[1] - '0'));
-    } else if (rescan || rotate || lock || guard) {
+    } else if (rescan || rotate || lock || guard || calibrate) {
         accepted = dual_session && ps_background_io_allowed() && !ps_power_pending() &&
             !ps_storage_busy() && !ps_usb_busy() && !ps_usb_held() && !ps_content_held() &&
             !ps_transfer_prepared() && ps_route()!=PS_EDITOR && !app_book_global_has_selection() && ps_dual_enabled();
@@ -732,6 +808,8 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
                 const char* value = line + 17;
                 accepted = !strcmp(value, "ON") || !strcmp(value, "OFF");
                 if (accepted) accepted = ps_dual_guard_set(!strcmp(value, "ON"));
+            } else if (calibrate) {
+                accepted = ps_dual_calibrate();
             } else dl_rescan(dual_session);
             ps_dirty();
         }
@@ -763,7 +841,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
         "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
         "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
-        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"orientation\":%u,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"orientation\":%u,"
         "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
         accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
         state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
@@ -776,7 +854,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         state.listed?"true":"false",state.peer_listed?"true":"false",
         state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
         (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
-        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
+        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
         book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
     return true;

@@ -48,6 +48,10 @@ typedef struct {
     dl_orientation_t orientation;
     bool guard; ///< 两端同步的贴合防误触开关。/ Face-to-face guard flag synchronized across both devices.
     int8_t face, peer_face; ///< 屏幕朝向：+1 朝上，-1 朝下，0 未知。/ Screen face: +1 up, -1 down, 0 unknown.
+    bool base_valid; ///< 是否收到校准基准。/ Whether a calibration baseline is available.
+    int16_t base_x, base_y, base_z; ///< 桌面展开参考重力向量。/ Desk-unfolded reference gravity vector.
+    uint32_t base_seq; ///< 基准版本，用于只应用一次。/ Baseline revision, applied once.
+    bool calibration_request; ///< 从机请求主机重新校准。/ Secondary asks the primary to calibrate.
 } dl_status_t;
 /// 所有接口只从UI线程使用，tick每次至多一个文件块。/ UI-thread only; tick processes at most one file block.
 dual_link_t* dl_create(const dl_config_t* config);
@@ -92,6 +96,11 @@ bool dl_guard(dual_link_t* link, bool enabled);
 /// 交换低频率屏幕朝向，用于区分折叠贴合与展开使用。
 /// Exchange the low-rate screen face to distinguish folded contact from unfolded use.
 bool dl_face(dual_link_t* link, int face);
+/// 主机广播桌面展开基准；从机请求重新校准。
+/// Primary broadcasts the desk-unfolded baseline; secondary requests recalibration.
+bool dl_baseline(dual_link_t* link, int16_t x, int16_t y, int16_t z);
+bool dl_calibration_request(dual_link_t* link);
+void dl_calibration_clear(dual_link_t* link);
 
 /// BLE 已加密且认证后才交付控制帧；这些接口只从 UI 线程调用。
 /// Deliver control frames only after BLE encryption/authentication; UI-thread only.

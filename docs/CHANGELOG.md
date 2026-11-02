@@ -1,3 +1,9 @@
+## 0.40.0-dual20（独立双机实验版）
+
+- 防误触加入桌面展开校准：两台展开平放后点一次「校准开合姿态」，主机采样重力向量并广播，从机保存同一基准；校准前防误触不启用。
+- 开合判断改用当前重力向量与校准基准的夹角，贴合时仍屏蔽全部屏幕触摸；展开时完全不触发，正常滑动不受影响。
+- Add desk-unfolded calibration for the guard: one tap samples the gravity vector on the primary and broadcasts it to the secondary. Contact uses the angle to the calibrated baseline; the guard stays off until calibration.
+
 ## 0.40.0-dual19（独立双机实验版）
 
 - 贴合判定改为只认两端都有明确朝向且相反；不再假设加速度计 z 轴正负对应哪一面，避免展开使用时被误判为贴合。

@@ -44,6 +44,12 @@ void ps_dual_rotation_changed(void);
 /// 最近一次加速度采样的屏幕朝向：+1 屏幕朝上，-1 朝下，0 未知/竖直。
 /// Last accelerometer screen face: +1 up, -1 down, 0 unknown/upright.
 int ps_contact_face(void);
+/// 最近一次缓存的重力向量；用于校准后的开合判断，不阻塞。
+/// Cached gravity vector for calibrated open/closed detection; non-blocking.
+bool ps_contact_cached(int16_t* x, int16_t* y, int16_t* z);
+/// 多次采样平均的重力向量；用于桌面展开校准，短暂阻塞 UI。
+/// Averaged gravity vector for desk calibration; briefly blocks the UI.
+bool ps_contact_vector(int16_t* x, int16_t* y, int16_t* z);
 void ps_rotation_lock(bool locked);
 bool ps_rotation_locked(void);
 /// 双机屏幕贴合防误触：识别电容鬼触并短暂屏蔽。/ Paired face-to-face ghost-touch guard.

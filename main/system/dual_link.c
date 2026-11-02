@@ -149,6 +149,10 @@ struct dual_link {
     bool guard, guard_dirty;
     int8_t face, peer_face;
     bool face_dirty, face_sent;
+    bool base_dirty, base_valid;
+    int16_t base_x, base_y, base_z;
+    uint32_t base_seq;
+    bool calibration_request;
     uint32_t orientation_revision, orientation_sequence;
     bool orientation_dirty, orientation_seen, control_compatible, orientation_last;
     uint8_t orientation_request;
@@ -167,6 +171,8 @@ static void put32(uint8_t* p, uint32_t n) {
     p[2] = n >> 8;
     p[3] = n;
 }
+static int16_t get16(const uint8_t* p) { return (int16_t)(((uint16_t)p[0] << 8) | p[1]); }
+static void put16(uint8_t* p, int16_t n) { p[0] = (uint8_t)((uint16_t)n >> 8); p[1] = (uint8_t)n; }
 static bool nonzero(const uint8_t id[32]) {
     uint8_t n = 0;
     for (int i = 0; i < 32; i++) n |= id[i];
@@ -865,6 +871,10 @@ dual_link_t* dl_create(const dl_config_t* cfg) {
     d->peer_face = 0;
     d->face_dirty = false;
     d->face_sent = false;
+    d->base_dirty = false;
+    d->base_valid = false;
+    d->base_seq = 0;
+    d->calibration_request = false;
     d->orientation_revision = 1;
     return d;
 }
@@ -986,6 +996,17 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         d->face_sent = true;
         return 2;
     }
+    if (d->base_dirty && d->control_compatible) {
+        p[0] = 12; put32(p + 1, d->base_seq);
+        put16(p + 5, d->base_x); put16(p + 7, d->base_y); put16(p + 9, d->base_z);
+        d->base_dirty = false;
+        return 11;
+    }
+    if (d->calibration_request && d->control_compatible) {
+        p[0] = 13; put32(p + 1, ++d->base_seq);
+        d->calibration_request = false;
+        return 5;
+    }
     if (d->cfg.role == 2 && d->request_pending &&
         (!d->request_at || d->now - d->request_at >= 500)) {
         p[0] = nonzero(d->request_book) ? 3 : d->request_page ? 5 : d->request_px ? 6 : 4;
@@ -1004,6 +1025,19 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         if (n != 35 || p[1] > 1 || p[34] != CONTROL_VERSION) return false;
         d->control_compatible = true;
         d->peer_catalog_valid = p[1]; memcpy(d->peer_catalog, p + 2, 32);
+        return true;
+    }
+    if (p[0] == 12) {
+        if (n != 11 || d->cfg.role != 2) return false;
+        uint32_t seq = get32(p + 1);
+        if (!seq || (d->base_valid && (int32_t)(seq - d->base_seq) < 0)) return true;
+        d->base_seq = seq; d->base_valid = true;
+        d->base_x = get16(p + 5); d->base_y = get16(p + 7); d->base_z = get16(p + 9);
+        return true;
+    }
+    if (p[0] == 13) {
+        if (n != 5 || d->cfg.role != 1 || !get32(p + 1)) return false;
+        d->calibration_request = true;
         return true;
     }
     if (p[0] == 11) {
@@ -1115,6 +1149,10 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->guard = d->guard;
     out->face = d->face;
     out->peer_face = d->peer_face;
+    out->base_valid = d->base_valid;
+    out->base_x = d->base_x; out->base_y = d->base_y; out->base_z = d->base_z;
+    out->base_seq = d->base_seq;
+    out->calibration_request = d->calibration_request;
 }
 static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool reopen) {
     if (!d || !path || !page || page == UINT32_MAX || strlen(path) >= DL_PATH) return false;
@@ -1300,6 +1338,21 @@ bool dl_face(dual_link_t* d, int face) {
         d->face_dirty = true;
     }
     return true;
+}
+bool dl_baseline(dual_link_t* d, int16_t x, int16_t y, int16_t z) {
+    if (!d || d->cfg.role != 1) return false;
+    d->base_x = x; d->base_y = y; d->base_z = z;
+    d->base_seq = d->base_seq == UINT32_MAX ? 1 : d->base_seq + 1;
+    d->base_valid = true; d->base_dirty = true;
+    return true;
+}
+bool dl_calibration_request(dual_link_t* d) {
+    if (!d || d->cfg.role != 2) return false;
+    d->calibration_request = true;
+    return true;
+}
+void dl_calibration_clear(dual_link_t* d) {
+    if (d) d->calibration_request = false;
 }
 bool dl_guard(dual_link_t* d, bool enabled) {
     if (!d) return false;

@@ -22,6 +22,10 @@ bool ps_dual_guard_set(bool enabled);
 /// 当前两机是否处于屏幕相对（折叠贴合）姿态。
 /// Whether both screens currently face each other (folded contact pose).
 bool ps_dual_contact_likely(void);
+/// 桌面展开校准；主机采样并广播，从机请求主机执行。
+/// Desk-unfolded calibration; the primary samples and broadcasts, a secondary requests it.
+bool ps_dual_calibrate(void);
+bool ps_dual_calibrated(void);
 int ps_dual_peer_face(void);
 /// 主机是否已确认当前版本推屏成功；从机据此才允许真正显示。
 /// Whether the primary confirmed this revision's presentation; the secondary may then paint.

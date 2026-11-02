@@ -1,8 +1,8 @@
 # 双机阅读实验分支 / Dual-reader experiment
 
-本功能只属于 `experiment/dual-pico-reader`，以 `0.40.0-dev71` 的本地实现为基线。它不并入主系统、不替换常规版本；两台设备均使用 `0.40.0-dual19`，以使用差异同步、左页优先显示、共享字号、目录与原文定位、主机自动方向与各端独立180度翻转。
+本功能只属于 `experiment/dual-pico-reader`，以 `0.40.0-dev71` 的本地实现为基线。它不并入主系统、不替换常规版本；两台设备均使用 `0.40.0-dual20`，以使用差异同步、左页优先显示、共享字号、目录与原文定位、主机自动方向与各端独立180度翻转。
 
-This feature belongs only to `experiment/dual-pico-reader`, based on the local dev71 implementation. It is not merged into the main system. Use dual19 on both readers for incremental sync, left-page-first presentation, shared typography, contents and source navigation, and primary-following orientation with independent 180-degree offsets.
+This feature belongs only to `experiment/dual-pico-reader`, based on the local dev71 implementation. It is not merged into the main system. Use dual20 on both readers for incremental sync, left-page-first presentation, shared typography, contents and source navigation, and primary-following orientation with independent 180-degree offsets.
 
 本私有分支提供完整源码；私有仓库 `main` 原有的切片目录不受此分支上传影响。
 
@@ -10,14 +10,14 @@ This private branch contains the complete firmware tree; the repository’s exis
 
 ## 本版界面与输入修订 / UI and input revision
 
-- **屏幕贴合防误触**：用两端加速度计交换屏幕朝向；两屏相对（折叠贴合）时屏蔽所有屏幕触摸，从源头消除耦合鬼触。展开后两屏同向朝上，防误触完全不启用，因此正常滑动不会被误判。开关通过蓝牙控制通道两端同步。底部三键是独立物理触摸区（y≥1300），始终不被过滤，按中键返回主页会顺带解除屏蔽；屏幕侧单指在中央/中键带静止长按约 0.9 秒也可恢复，恢复手势等待抬手并给出 2.5 秒放行窗口。
+- **屏幕贴合防误触**：首次使用先在桌面把两台展开平放，点击「校准开合姿态」；主机会采样重力向量并广播给从机，两台保存同一基准。校准前防误触不启用。之后每次读取当前重力与基准的夹角：同向为展开，翻转约 180° 为另一面；两端朝向明确且相反时判为贴合，屏蔽所有屏幕触摸。展开状态下完全不启用鬼触判断，正常滑动不会被误判。开关通过蓝牙控制通道两端同步。底部三键是独立物理触摸区（y≥1300），始终不被过滤，按中键返回主页会顺带解除屏蔽；屏幕侧单指在中央/中键带静止长按约 0.9 秒也可恢复，恢复手势等待抬手并给出 2.5 秒放行窗口。
 - **翻页动画**：正文翻页保留旧页，用 4 帧斜向软阴影页边推进，再以正常波形定稿；白色页边替代原来的硬黑缝，不新增整屏帧缓存，双机确认仍在最终画面成功后发生。
 - **阅读返回**：从阅读返回时先保存进度，再用一次根页切换清空阅读子页/历史并回到书库主页，不再落到记录页或旧设置页，也避免连续两次整屏刷新。
 - **方向与陀螺仪**：双机 180° 翻转现在同时补偿传感器候选方向，翻转端自动旋转不再反向；双机会话内的方向锁定独立于系统锁定偏好，开启后主机停止采信加速度计、从机停止跟随主机基准，手动翻转仍可用，退出双机后恢复系统方向与锁定。
 - **滑动快捷菜单**：恢复旧版样式：白色实心圆、黑色描边、图标与两字短名；当前选中项用圆外光圈表示。滑动只以 MODE_DU 分别更新新旧光圈和固定提示条，不重绘整圆或合并成大矩形，既保留旧观感又避免频繁闪屏。
 - **Home Link 设备卡片**：家庭控制页按灯光、开关、空调、风扇、温湿度分别绘制卡片；顶部「全部/灯光/空调/风扇/开关/传感」筛选卡片类型；长按卡片拖动到目标卡片后松手保存排序，顺序按实体 id 哈希持久化，后台同步换序不会打乱。需要 TF 工具包 `home-link.pga` 版本 10106。
 
-- **Face-to-face ghost-touch guard**: both readers exchange screen face via the accelerometer. In the folded, face-to-face pose every screen touch is suppressed at the source; when unfolded both screens face up, detection is disabled entirely, so normal slides never trip it. The switch is synchronized over BLE. The three bottom keys are a separate physical touch area (y>=1300) and are never filtered; the center key also clears the guard when returning home. On-screen recovery is a ~0.9 s central hold, followed by a lift and a 2.5 s pass-through window.
+- **Face-to-face ghost-touch guard**: first unfold both readers on a desk and tap Calibrate Open/Closed. The primary samples the gravity vector and broadcasts it; both store the same baseline. The guard stays off until calibration. Afterwards the angle between current gravity and the baseline defines the open face versus the flipped face; only two known, opposite faces count as contact, which suppresses all screen touches. Unfolded use bypasses detection entirely, so normal slides never trip it. The switch is synchronized over BLE. The three bottom keys are a separate physical touch area (y>=1300) and are never filtered; the center key also clears the guard when returning home. On-screen recovery is a ~0.9 s central hold, followed by a lift and a 2.5 s pass-through window.
 - **Page-turn animation**: the old page is retained while four slanted, soft-shadowed page-edge frames advance, then the normal settle waveform finishes. A white page edge replaces the old hard black seam. No extra full-screen buffer; paired confirmation still happens only after the final frame is presented.
 - **Returning home**: leaving reading saves progress, then a single root switch clears reading child pages/history and returns to the library home, instead of a stale records/settings page and a second full refresh.
 - **Orientation / gyro**: the 180-degree role flip now also compensates the accelerometer candidate, so a flipped device no longer auto-rotates in the opposite direction. The paired-session lock is independent of the system lock: it stops primary sensor turns and secondary base-following, while manual flip remains available; disabling pairing restores normal system orientation and lock.
@@ -49,7 +49,7 @@ Both toolbars adjust one shared font size (36–72px, step 4). Reflow preserves 
 - **蓝牙 BLE**：主机为 GATT 服务端，从机为客户端；传递书库一致性摘要、当前书籍标识、页码和上一组/下一组指令。使用六位配对码、LE Secure Connections、MITM 认证和 16 字节密钥。加密认证、MTU 和通知订阅全部就绪后才能开始控制。
 - 每条从机请求带序号和基础页码版本；主机确认最终状态，重复或过期请求不重复翻页。丢失通知通过重发最终状态恢复。
 - 双机模式临时独占 BLE 控制器；暂停外部蓝牙翻页器，保留其已配对设备和开关，关闭双机后恢复。暂不同时连接外部翻页器。
-- 两端均须使用 `0.40.0-dual19` 。数据协议仍为 3；BLE 控制同步独立方向状态，控制协议为 4，不能与 dual13 及更早版本混用。无需电脑维持连接。
+- 两端均须使用 `0.40.0-dual20` 。数据协议仍为 3；BLE 控制同步独立方向状态，控制协议为 4，不能与 dual13 及更早版本混用。无需电脑维持连接。
 
 Wi-Fi carries library/file data only. Authenticated BLE carries book identity, page state and sequenced turn requests. Matching verified libraries can continue over BLE with Wi-Fi offline. The dual-reader session temporarily leases the radio and restores HID pager preferences after complete teardown.
 

@@ -95,7 +95,7 @@
 #include "ui_kit.h"
 #include "settings.h"
 
-#define PS_VERSION "0.40.0-dual19"
+#define PS_VERSION "0.40.0-dual20"
 #define PS_OS_NAME "XH View OS For Pico"
 #define PS_RELEASE_LABEL "双机阅读实验版"
 const char *ps_version(void){return PS_VERSION;}
@@ -1081,24 +1081,43 @@ static void apply_rotation(enum EpdRotation rotation) {
     }
     s_dirty = true;
 }
-int ps_contact_face(void) {
-    // 低频直读，折叠/展开切换不必等 500ms 的常规采样；只在 UI 线程调用。
-    // Low-rate direct read so folding/unfolding is not delayed by the 500 ms background sample.
-    static int64_t face_at;
-    static int face_z;
+static int16_t s_face_x, s_face_y, s_face_z;
+static int64_t s_face_at;
+static bool contact_read(bool force) {
     int64_t now = s_ctx ? s_ctx->now_ms : 0;
-    if (s_ctx && s_ctx->acc && now - face_at >= 200) {
+    if (!force && s_face_at && now - s_face_at < 200) return true;
+    if (!s_ctx || !s_ctx->acc) return false;
+    sc7a20h_sample_t sample;
+    if (read_pico_accel_read(s_ctx->acc, &sample) != ESP_OK) return false;
+    s_face_x = sample.x_mg; s_face_y = sample.y_mg; s_face_z = sample.z_mg; s_face_at = now;
+    return true;
+}
+int ps_contact_face(void) {
+    int16_t x, y, z;
+    if (!ps_contact_cached(&x, &y, &z)) return 0;
+    return z > 650 ? 1 : z < -650 ? -1 : 0;
+}
+bool ps_contact_cached(int16_t* x, int16_t* y, int16_t* z) {
+    if (!x || !y || !z || !contact_read(false)) return false;
+    *x = s_face_x; *y = s_face_y; *z = s_face_z;
+    return true;
+}
+bool ps_contact_vector(int16_t* x, int16_t* y, int16_t* z) {
+    if (!x || !y || !z || !s_ctx || !s_ctx->acc) return false;
+    int32_t sx = 0, sy = 0, sz = 0;
+    int n = 0;
+    for (int i = 0; i < 8; ++i) {
         sc7a20h_sample_t sample;
         if (read_pico_accel_read(s_ctx->acc, &sample) == ESP_OK) {
-            face_z = sample.z_mg;
-            face_at = now;
+            sx += sample.x_mg; sy += sample.y_mg; sz += sample.z_mg; ++n;
         }
+        vTaskDelay(pdMS_TO_TICKS(12));
     }
-    int z = face_at ? face_z : (s_sample_valid ? s_last_sample.z_mg : 0);
-    if (z > 650) return 1;
-    if (z < -650) return -1;
-    return 0;
+    if (n < 4) return false;
+    *x = (int16_t)(sx / n); *y = (int16_t)(sy / n); *z = (int16_t)(sz / n);
+    return true;
 }
+
 void ps_dual_rotation_changed(void) {
     bool manual = ps_dual_take_manual_rotation();
     // 从机锁定后不再跟随主机基准；本机手动翻转仍通过一次性标记放行。
