@@ -1,6 +1,6 @@
 # Home Link TF 工具包 / TF package
 
-当前集成固件 `0.39.1-dev69` 默认 `PICO_HOME_LINK_FULL=OFF`。工具包位置 `/sdcard/apps/tools/home-link.pga`，kind **130**、ABI **1**、当前版本 **10104**。完整字段、鉴权与兼容边界见 [HOME-LINK-CONTRACT.md](HOME-LINK-CONTRACT.md)。
+当前集成固件 `0.39.1-dev69` 默认 `PICO_HOME_LINK_FULL=OFF`。工具包位置 `/sdcard/apps/tools/home-link.pga`，kind **130**、ABI **1**、当前版本 **10106**。完整字段、鉴权与兼容边界见 [HOME-LINK-CONTRACT.md](HOME-LINK-CONTRACT.md)。
 
 The default thin host uses the optional TF package above. See the shared contract for authentication, field definitions and compatibility.
 

@@ -35,6 +35,7 @@ idf_component_register(
         "settings.c"
         "app/app_loop.c"
         "app/app_touch_buffer.c"
+        "app/app_touch_guard.c"
         "app/app_registry.c"
         "system/pico_system.c"
         "system/dual_link.c"

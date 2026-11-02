@@ -35,6 +35,8 @@ static dl_status_t status;
 static bool loaded;
 static dl_orientation_t orientation = { .inverted = true };
 static uint8_t stored_orientation = 0xff;
+static uint8_t rotation_locked;
+static bool manual_rotation;
 static int64_t orientation_store_at;
 static uint8_t orientation_bits(void) {
     return orientation.inverted | (orientation.primary_flip << 1) | (orientation.secondary_flip << 2);
@@ -71,6 +73,8 @@ static void load(void) {
         orientation = (dl_orientation_t){ !!(bits & 1), !!(bits & 2), !!(bits & 4) };
         stored_orientation = bits;
     }
+    uint8_t locked = 0;
+    if (ps_load("duallock1", &locked, sizeof(locked))) rotation_locked = locked ? 1 : 0;
 }
 bool ps_dual_enabled(void) {
     load();
@@ -188,11 +192,34 @@ bool ps_dual_flip(int role, bool enabled) {
     if (!dual_session && !start()) return false;
     if (!dl_flip(dual_session, role, enabled)) return false;
     orientation_update();
+    manual_rotation = true;
     return true;
 }
 bool ps_dual_rotate(void) {
     load();
     return ps_dual_flip(settings.role, !(settings.role == 1 ? orientation.primary_flip : orientation.secondary_flip));
+}
+bool ps_dual_rotation_locked(void) {
+    load();
+    return rotation_locked != 0;
+}
+bool ps_dual_take_manual_rotation(void) {
+    bool pending = manual_rotation;
+    manual_rotation = false;
+    return pending;
+}
+bool ps_dual_lock_set(bool locked) {
+    load();
+    if (!settings.role) return false;
+    uint8_t next = locked ? 1 : 0;
+    if (next == rotation_locked) return true;
+    if (!ps_store("duallock1", &next, sizeof(next))) {
+        ps_toast("方向锁定保存失败");
+        return false;
+    }
+    rotation_locked = next;
+    ps_dirty();
+    return true;
 }
 bool ps_dual_orient(int rotation) {
     if (settings.role != 1 || !dual_session) return false;
@@ -429,13 +456,18 @@ void ps_dual_render(uint8_t* fb) {
     int bottom = 404;
     ps_button(fb, x, bottom, (w - 8) / 2, 38, "重新连接与同步", false);
     ps_button(fb, x + (w + 8) / 2, bottom, (w - 8) / 2, 38, "打开书架", false);
+    bool guard = ps_touch_guard_enabled();
+    bool locked = ps_dual_rotation_locked();
+    int half = (w - 8) / 2;
+    ps_button(fb, x, 450, half, 34, guard ? "贴合防误触：开" : "贴合防误触：关", guard);
+    ps_button(fb, x + half + 8, 450, w - half - 8, 34, locked ? "方向锁定：开" : "方向锁定：关", locked);
     if (!v.landscape) {
-        ps_text(fb, x, 452, 13, "主机显示单页，从机显示下一页", 1);
-        ps_text(fb, x, 484, 12, "主机电源短按：上一组双页", 3);
-        ps_text(fb, x, 512, 12, "从机电源短按：下一组双页", 3);
-        ps_text(fb, x, 540, 12, "长按电源：锁屏、关机或重启", 3);
-        ps_text(fb, x, 584, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
-        ps_text(fb, x, 606, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
+        ps_text(fb, x, 498, 13, "主机显示单页，从机显示下一页", 1);
+        ps_text(fb, x, 530, 12, "主机电源短按：上一组双页", 3);
+        ps_text(fb, x, 558, 12, "从机电源短按：下一组双页", 3);
+        ps_text(fb, x, 586, 12, "长按电源：锁屏、关机或重启", 3);
+        ps_text(fb, x, 630, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
+        ps_text(fb, x, 652, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
     }
 }
 // 只读当前网络，不扫描网段或保存未完成配置。/ Read the current network without scanning hosts or persisting an unfinished setup.
@@ -559,6 +591,17 @@ bool ps_dual_event(const ps_event_t* e) {
             }
         }
     }
+    if (settings.role && e->y >= 450 && e->y < 484) {
+        int half = (w - 8) / 2;
+        if (e->x < x + half) {
+            bool on = ps_touch_guard_enabled();
+            if (ps_touch_guard_set(!on)) ps_toast(on ? "已关闭贴合防误触" : "已开启贴合防误触");
+        } else {
+            bool on = ps_dual_rotation_locked();
+            if (ps_dual_lock_set(!on)) ps_toast(on ? "已解除方向锁定" : "已锁定当前方向");
+        }
+        return true;
+    }
     int bottom = 404;
     if (settings.role && e->y >= bottom && e->y < bottom + 38) {
         if (e->x < v.w / 2) {
@@ -593,8 +636,9 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     bool shelf = !strcmp(line, "RPICO DUAL SHELF");
     bool rescan = !strcmp(line, "RPICO DUAL RESCAN");
     bool rotate = !strcmp(line, "RPICO DUAL ROTATE");
+    bool lock = !strncmp(line, "RPICO DUAL LOCK ", 16);
     bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
-    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
+    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
     load();
     bool accepted = true;
     if (item || open) {
@@ -634,11 +678,19 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         accepted = strlen(px) == 2 && px[0] >= '0' && px[0] <= '9' && px[1] >= '0' && px[1] <= '9' &&
             app_book_global_is_open() && ps_background_io_allowed() && !app_book_global_has_selection() &&
             ps_dual_resize((uint8_t)((px[0] - '0') * 10 + px[1] - '0'));
-    } else if (rescan || rotate) {
+    } else if (rescan || rotate || lock) {
         accepted = dual_session && ps_background_io_allowed() && !ps_power_pending() &&
             !ps_storage_busy() && !ps_usb_busy() && !ps_usb_held() && !ps_content_held() &&
             !ps_transfer_prepared() && ps_route()!=PS_EDITOR && !app_book_global_has_selection() && ps_dual_enabled();
-        if (accepted) { if (rotate) accepted = ps_dual_rotate(); else dl_rescan(dual_session); ps_dirty(); }
+        if (accepted) {
+            if (rotate) accepted = ps_dual_rotate();
+            else if (lock) {
+                const char* value = line + 16;
+                accepted = !strcmp(value, "ON") || !strcmp(value, "OFF");
+                if (accepted) accepted = ps_dual_lock_set(!strcmp(value, "ON"));
+            } else dl_rescan(dual_session);
+            ps_dirty();
+        }
     } else if (shelf) {
         accepted = ps_background_io_allowed() && !ps_power_pending() && ps_route()!=PS_EDITOR &&
             !app_book_global_has_selection();
@@ -667,7 +719,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
         "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
         "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
-        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"orientation\":%u,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"orientation\":%u,"
         "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
         accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
         state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
@@ -680,7 +732,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         state.listed?"true":"false",state.peer_listed?"true":"false",
         state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
         (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
-        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
+        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
         book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
     return true;

@@ -234,6 +234,8 @@ static SemaphoreHandle_t s_draw_lock, s_prep_done;
 static TaskHandle_t s_prep_task;
 static uint8_t* s_next_fb;
 static int s_next_page = -1, s_prep_page = -1;
+static bool s_turn_anim_pending;
+static int s_turn_anim_dir;
 
 static void render(app_ctx_t* ctx, uint8_t* fb);
 static void scan_shelf(app_ctx_t* ctx);
@@ -1206,11 +1208,65 @@ static bool present(app_ctx_t* ctx, app_redraw_t redraw) {
     s_mode = MODE_GL16;
     return true;
 }
+// 墨水屏翻页过渡：旧页与新页之间只推一帧斜向滑动+接缝阴影，随后用正常波形定稿。
+// 这样既保留翻页方向感，也不会为动画额外占用一整块帧缓存或拖慢双机确认。
+// E-ink page-turn transition: one slanted wipe with a seam shadow between the old and
+// pre-rendered new page, then the normal settle waveform. One extra refresh, no extra fb.
+static void turn_anim_compose(uint8_t *dst, const uint8_t *src, int dir) {
+    EpdRect body = reader_area();
+    EpdRect pr = ui_rotate_rect_to_fb(body);
+    int pw = epd_width(), ph = epd_height();
+    enum EpdRotation rotation = epd_get_rotation();
+    bool axis_x = rotation == EPD_ROT_LANDSCAPE || rotation == EPD_ROT_INVERTED_LANDSCAPE;
+    bool axis_inverted = rotation == EPD_ROT_INVERTED_LANDSCAPE;
+    int logical_w = reader_width();
+    int seam = logical_w * (dir > 0 ? 58 : 42) / 100;
+    int shadow = 30;
+    int x0 = pr.x < 0 ? 0 : pr.x;
+    int y0 = pr.y < 0 ? 0 : pr.y;
+    int x1 = pr.x + pr.width > pw ? pw : pr.x + pr.width;
+    int y1 = pr.y + pr.height > ph ? ph : pr.y + pr.height;
+    int row_bytes = pw / 2;
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            int at = axis_x ? x : y;
+            int base = axis_x ? pr.x : pr.y;
+            int span = axis_x ? pr.width : pr.height;
+            int logical_x = axis_inverted && axis_x ? span - 1 - (at - base) : at - base;
+            bool take_new = dir > 0 ? logical_x >= seam : logical_x < seam;
+            int dist = logical_x > seam ? logical_x - seam : seam - logical_x;
+            size_t idx = (size_t)y * row_bytes + x / 2;
+            int shift = (x & 1) * 4;
+            uint8_t old_byte = dst[idx];
+            uint8_t new_byte = src[idx];
+            int old_gray = (old_byte >> shift) & 15;
+            int new_gray = (new_byte >> shift) & 15;
+            int gray = take_new ? new_gray : old_gray;
+            if (dist <= 1) gray = 0;
+            else if (dist < shadow) {
+                if (take_new) gray = gray * (dist + 8) / (shadow + 8);
+                else gray = gray * (dist + 4) / (shadow + 4);
+            }
+            dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
+        }
+    }
+}
 static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     prepare_page_images();
     int64_t started = esp_timer_get_time();
     lock_draw();
     bool cached = !s_toolbar && !s_selection && !s_scrubbing && !s_clear_confirm && s_next_fb && s_next_page == (int)s_page;
+    bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
+    s_turn_anim_pending = false;
+    if (animate) {
+        turn_anim_compose(ctx->fb, s_next_fb, s_turn_anim_dir);
+        s_area = reader_area();
+        s_mode = MODE_DU;
+        s_reader_split = false;
+        unlock_draw();
+        guard_draw_result(ctx->hl, update_display_area_with(ctx->hl, &E0470_WAVEFORM, MODE_DU, s_area));
+        lock_draw();
+    }
     if (cached)
         memcpy(ctx->fb, s_next_fb, fb_bytes());
     else draw_reader(ctx->fb, s_page);
@@ -2062,11 +2118,13 @@ static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
     if (!changed) { s_view = s_text ? TOC : SHELF; ctx->leaf = s_text ? s_chapter / toc_rows() : 0; return APP_REDRAW_PAGE; }
     s_toolbar = false;
     s_last_turn_ms = ctx->now_ms;
+    s_turn_anim_dir = dir;
 #if APP_GC16_EVERY > 0
     s_full = (++s_turns % APP_GC16_EVERY) == 0;
 #else
     s_full = false;
 #endif
+    s_turn_anim_pending = !s_full;
     if (s_unsaved < 8) ++s_unsaved;
     if (s_unsaved >= 8 && !s_save_failed) save_progress();
     ESP_LOGI(TAG, "turn chapter=%u page=%u/%u pct=%u", (unsigned)s_chapter, (unsigned)s_page + 1, (unsigned)book_layout_page_count(), percent(s_page));
@@ -3001,7 +3059,10 @@ static app_redraw_t dual_page_ready(app_ctx_t* ctx) {
         dual_anchor_start(chapter,offset,false,s_dual_reflow);
         return APP_REDRAW_NONE;
     }
+    uint32_t previous_page = s_dual_displayed;
     s_dual_displayed=s_dual_target; s_dual_present_pending=s_dual_target;
+    s_turn_anim_pending = previous_page && s_dual_displayed != previous_page;
+    s_turn_anim_dir = s_dual_displayed > previous_page ? 1 : -1;
     s_dual_target=0; s_dual_blank=s_dual_wait=false; s_view=READING;
     prepare_page_images(); save_progress(); return paint_reading(ctx,MODE_GL16);
 }

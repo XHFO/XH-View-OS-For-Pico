@@ -29,7 +29,7 @@ static int64_t time_us(void) { return 0; }
 static uint32_t random_u32(void) { return 1; }
 static void fill(uint8_t *fb, int x, int y, int w, int h, int gray) { (void)fb;
     assert(x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= viewport.w && y + h <= viewport.h && gray >= 0 && gray <= 15);
-    if (h == 48) { assert(y + h <= viewport.h - 68); rendered_entities++; }
+    if (h >= 60) { assert(y + h <= viewport.h); rendered_entities++; }
 }
 static void line(uint8_t *fb, int x0, int y0, int x1, int y1, int gray) { (void)fb; (void)x0; (void)y0; (void)x1; (void)y1; (void)gray; }
 static void box(uint8_t *fb, int x, int y, int w, int h, int radius, int gray, bool filled) {
@@ -100,9 +100,15 @@ static bool home_config(uint32_t command, pico_app_home_config_t *cfg) {
 static bool home_entity(uint32_t index, pico_app_home_entity_t *out) {
     if (index >= entity_count) return false;
     memset(out, 0, sizeof(*out)); out->bytes = sizeof(*out);
-    snprintf(out->name, sizeof(out->name), "Light %u", index);
-    snprintf(out->id, sizeof(out->id), "light.room_%u", index);
+    snprintf(out->name, sizeof(out->name), "Device %u", index);
+    snprintf(out->id, sizeof(out->id), "demo.room_%u", index);
+    out->kind = (uint8_t)(index % 6u);
+    out->on = (uint8_t)(index & 1u);
     out->available = 1;
+    out->number = (float)(22 + (int)(index % 8u));
+    snprintf(out->state, sizeof(out->state), "%s", out->on ? "on" : "off");
+    snprintf(out->unit, sizeof(out->unit), "%s", out->kind == 4 ? "°C" : out->kind == 5 ? "%" : "");
+    snprintf(out->room, sizeof(out->room), "Room %u", index % 4u);
     return true;
 }
 static bool home_printer(uint32_t slot, pico_app_home_printer_t *out) {
@@ -218,6 +224,30 @@ static void network_contract(const pico_app_exports_t *app) {
     puts("PASS: unchanged HA revision still repaints WiFi/busy transitions, syncs once on reconnect, and shows the actual portal failure");
 }
 
+
+static bool raw_event(const pico_app_exports_t *app, int type, int x, int y) {
+    return app->event(&(pico_app_event_t){.type = type, .x0 = x, .y0 = y, .x = x, .y = y});
+}
+
+static void drag_contract(const pico_app_exports_t *app) {
+    configured = true; entity_count = 6; entry_page = -1; legacy_status = false;
+    viewport = (pico_app_view_t){360, 640, false};
+    assert(app->start(&host));
+    app->render(NULL);
+    last_toast[0] = 0;
+    // 2 columns x 3 rows: first card center 94,226; second 265,226.
+    assert(raw_event(app, PGA_LONG, 94, 226));
+    assert(raw_event(app, PGA_MOVE, 265, 226));
+    assert(raw_event(app, PGA_RELEASE, 265, 226));
+    assert(!strcmp(last_toast, "卡片顺序已保存"));
+    int old_controls = controls;
+    assert(raw_event(app, PGA_TAP, 94, 226));
+    assert(controls == old_controls);
+    (void)raw_event(app, PGA_PRESS, 94, 226);
+    app->stop();
+    puts("PASS: HA card long-press drag, order commit and suppressed synthetic tap");
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     void *library = dlopen(argv[1], RTLD_NOW);
@@ -225,7 +255,7 @@ int main(int argc, char **argv) {
     pico_app_query_t query = (pico_app_query_t)dlsym(library, "pico_app_query");
     assert(query);
     const pico_app_exports_t *app = query();
-    assert(app && app->version == 10105 && app->kind == 130 && !strcmp(app->id, "home-link"));
+    assert(app && app->version == 10106 && app->kind == 130 && !strcmp(app->id, "home-link"));
     expect(app, -1, false, "家庭连接");
     expect(app, 1, false, "连接设置");
     expect(app, 2, false, "打印机");
@@ -233,5 +263,6 @@ int main(int argc, char **argv) {
     puts("PASS: home-link entry opens setup/printers once and ignores a host without ENTRY_OK");
     navigation_contract(app);
     network_contract(app);
+    drag_contract(app);
     return 0;
 }

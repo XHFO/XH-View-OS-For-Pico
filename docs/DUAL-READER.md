@@ -8,6 +8,20 @@ This feature belongs only to `experiment/dual-pico-reader`, based on the local d
 
 This private branch contains the complete firmware tree; the repository’s existing slice-based main branch is maintained separately.
 
+## 本版界面与输入修订 / UI and input revision
+
+- **屏幕贴合防误触**：双机模式下识别电容耦合鬼触的典型序列（双指对置、坐标大跳、按下/抬起高频翻转、边缘反复触发），命中后暂时屏蔽触摸，全部触点离开并安静 500ms 后恢复。可在「设置 → 双机阅读」或快捷扇形菜单中开关，默认开启；不会屏蔽正常单指翻页、点按和滑动。
+- **翻页动画**：正文翻页在旧页与新页之间增加一帧斜向滑动和接缝阴影，再用正常波形定稿；不新增整屏帧缓存，双机确认仍在最终画面成功后发生。
+- **方向与陀螺仪**：双机 180° 翻转现在同时补偿传感器候选方向，翻转端自动旋转不再反向；双机会话内的方向锁定独立于系统锁定偏好，开启后主机停止采信加速度计、从机停止跟随主机基准，手动翻转仍可用，退出双机后恢复系统方向与锁定。
+- **滑动快捷菜单**：每个动作改为灰色层次实心圆（阴影、深外圈、中灰主体、浅灰内环、白色核心）；选中或开启时圆面整体转深色，Wi‑Fi、方向锁定、贴合防误触等状态在圆内直接可见。
+- **Home Link 设备卡片**：家庭控制页按灯光、开关、空调、风扇、温湿度分别绘制卡片；顶部「全部/灯光/空调/风扇/开关/传感」筛选卡片类型；长按卡片拖动到目标卡片后松手保存排序，顺序按实体 id 哈希持久化，后台同步换序不会打乱。需要 TF 工具包 `home-link.pga` 版本 10106。
+
+- **Face-to-face ghost-touch guard**: in paired mode, detects opposed two-point contacts, large coordinate jumps, down/up chatter and repeated edge hits, then suppresses touch until all contacts leave and stay quiet for 500 ms. Toggle it in Dual Reading settings or the quick fan menu; enabled by default. Deliberate single-finger taps, swipes and page turns pass.
+- **Page-turn animation**: one slanted wipe with a seam shadow between the old and new text page, followed by the normal settle waveform. No extra full-screen buffer; paired confirmation still happens only after the final frame is presented.
+- **Orientation / gyro**: the 180-degree role flip now also compensates the accelerometer candidate, so a flipped device no longer auto-rotates in the opposite direction. The paired-session lock is independent of the system lock: it stops primary sensor turns and secondary base-following, while manual flip remains available; disabling pairing restores normal system orientation and lock.
+- **Quick fan menu**: actions are layered gray solid discs (shadow, dark rim, mid-gray body, light ring, white core). Selected or enabled actions turn dark, so Wi-Fi, rotation lock and touch guard states are visible inside the disc.
+- **Home Link cards**: the Home control page renders separate light, switch, climate, fan and sensor cards; type chips filter the visible cards; long-press a card and drop it on another to save the order. Order persists by entity-id hash, so background sync reindexing does not scramble it. Requires `home-link.pga` version 10106.
+
 ## 配对与阅读 / Pair and read
 
 1. 两台小纸 Pico 插入可读写的 TF 卡，连接同一个 Wi-Fi。无需电脑保持在线。

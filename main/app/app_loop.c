@@ -38,9 +38,11 @@
 
 #include "app_loop.h"
 #include "../system/pico_system.h"
+#include "../system/pico_dual.h"
 #include "../system/pico_power.h"
 #include "../system/pico_sound.h"
 #include "app_touch_buffer.h"
+#include "app_touch_guard.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -411,6 +413,29 @@ void app_loop_run(const app_loop_config_t* config) {
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "CST836U read failed: %s", esp_err_to_name(err));
             memset(&touch, 0, sizeof(touch));
+        }
+        // 双机贴合时的电容鬼触先于所有页面处理；命中时本帧触点为空白，
+        // 并取消进行中的滑动/长按，避免误触打开菜单或翻页。
+        // Suppress paired face-to-face ghost touches before any page sees them;
+        // a hit empties this sample and cancels in-flight swipe/long-press state.
+        bool guard_blocked = false;
+        if (err == ESP_OK) {
+            guard_blocked = app_touch_guard_filter(&touch, ctx.now_ms, ps_dual_enabled(), ps_touch_guard_enabled());
+            int guard_event = app_touch_guard_take_event();
+            if (guard_event == 1) {
+                ps_toast("检测到屏幕贴合误触，已暂时屏蔽触摸");
+            } else if (guard_event == 2) {
+                ps_toast("触摸已恢复");
+            }
+            if (guard_blocked) {
+                held_key = -1;
+                ps_global_cancel_input();
+                cancel_gesture(&ctx, current, &gesture);
+                menu_pressed = UI_MENU_HIT_NONE;
+                ctx.consumed = true;
+            }
+        } else {
+            app_touch_guard_reset();
         }
 
         const bool pressed = touch.touched && !was_touched;

@@ -43,6 +43,9 @@ void ps_rotate(void);
 void ps_dual_rotation_changed(void);
 void ps_rotation_lock(bool locked);
 bool ps_rotation_locked(void);
+/// 双机屏幕贴合防误触：识别电容鬼触并短暂屏蔽。/ Paired face-to-face ghost-touch guard.
+bool ps_touch_guard_enabled(void);
+bool ps_touch_guard_set(bool enabled);
 /// 双机正文继承本机竖屏方向并在空闲时采样180度翻转。/ Paired text retains local portrait orientation and samples 180-degree flips while idle.
 void ps_book_rotation_enter(app_ctx_t* ctx);
 bool ps_book_rotation_tick(app_ctx_t* ctx, bool idle);

@@ -4,6 +4,7 @@
  */
 #include "native_preview_hal.h"
 #include "pico_system.h"
+#include "pico_dual.h"
 #include "native_preview_book.h"
 #include "ui_gesture.h"
 #include "ui_menu.h"
@@ -347,7 +348,7 @@ static bool runtime_seed_tools(void){
     return true;
 #endif
 }
-static void state(bool ok,const char *error){bool changed=save_state();ps_view_t v=ps_view();printf("{\"ok\":%s,\"version\":\"%s\",\"width\":%d,\"height\":%d,\"logical_width\":%d,\"logical_height\":%d,\"route\":%d,\"route_name\":\"%s\",\"frame\":\"%s\",\"revision\":%llu,\"changed\":%s,\"now_ms\":%lld,\"panel\":%d,\"fan\":%s,\"fan_selected\":%d,\"fan_side\":%d,\"framebuffer\":\"packed4\",\"presents\":%u,\"active_app\":\"%s\",\"font_weight\":%d,\"rotation_locked\":%s",ok?"true":"false",PS_VERSION,epd_rotated_display_width(),epd_rotated_display_height(),v.w,v.h,(int)ps_route(),runtime_app==&app_font_pick?"字体选择":runtime_app==&app_transfer?"传书":route_names[ps_route()],runtime_frame,(unsigned long long)runtime_revision,changed?"true":"false",(long long)runtime_now,s_panel,s_fan?"true":"false",s_fan_selected,s_fan_side,native_preview_present_count(),runtime_app==&app_book?"book":runtime_app==&app_font_pick?"font":runtime_app==&app_transfer?"transfer":"system",ttf_get_weight(),ps_rotation_locked()?"true":"false");
+static void state(bool ok,const char *error){bool changed=save_state();ps_view_t v=ps_view();printf("{\"ok\":%s,\"version\":\"%s\",\"width\":%d,\"height\":%d,\"logical_width\":%d,\"logical_height\":%d,\"route\":%d,\"route_name\":\"%s\",\"frame\":\"%s\",\"revision\":%llu,\"changed\":%s,\"now_ms\":%lld,\"panel\":%d,\"fan\":%s,\"fan_selected\":%d,\"fan_side\":%d,\"framebuffer\":\"packed4\",\"presents\":%u,\"active_app\":\"%s\",\"font_weight\":%d,\"rotation_locked\":%s,\"dual_locked\":%s",ok?"true":"false",PS_VERSION,epd_rotated_display_width(),epd_rotated_display_height(),v.w,v.h,(int)ps_route(),runtime_app==&app_font_pick?"字体选择":runtime_app==&app_transfer?"传书":route_names[ps_route()],runtime_frame,(unsigned long long)runtime_revision,changed?"true":"false",(long long)runtime_now,s_panel,s_fan?"true":"false",s_fan_selected,s_fan_side,native_preview_present_count(),runtime_app==&app_book?"book":runtime_app==&app_font_pick?"font":runtime_app==&app_transfer?"transfer":"system",ttf_get_weight(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false");
     printf(",\"rotation\":%d,\"physical_hash\":\"%llx\"",epd_get_rotation(),(unsigned long long)runtime_digest);
     dl_status_t dual_status;ps_dual_status(&dual_status);printf(",\"dual_role\":%d,\"dual_connected\":%s,\"dual_synced\":%s,\"dual_scanning\":%s,\"dual_books\":%u,\"dual_spread\":%u,\"dual_revision\":%u",ps_dual_role(),dual_status.connected?"true":"false",dual_status.synced?"true":"false",dual_status.scanning?"true":"false",dual_status.books,dual_status.reading.spread,dual_status.reading.revision);
     printf(",\"dual_left_ready\":%s",dual_status.left_ready?"true":"false");

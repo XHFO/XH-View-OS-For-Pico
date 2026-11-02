@@ -13,12 +13,16 @@ UBSAN_OPTIONS="${UBSAN_OPTIONS:+$UBSAN_OPTIONS:}halt_on_error=1:print_stacktrace
 export UBSAN_OPTIONS
 cc -std=c11 -Wall -Wextra -Werror $sanitize -g \
   -Itools/app_loop_stubs -Imain/app -Imain/ui -Itools/ui_gesture_stubs \
-  tools/app_loop_host_test.c main/app/app_loop.c main/ui/ui_gesture.c -o "$out/test"
+  tools/app_loop_host_test.c main/app/app_loop.c main/app/app_touch_guard.c main/ui/ui_gesture.c -o "$out/test"
 "$out/test"
 cc -std=c11 -Wall -Wextra -Werror $sanitize -g \
   -Itools/app_loop_stubs -Imain/app -Imain/ui -Itools/ui_gesture_stubs \
   tools/app_touch_queue_host_test.c -o "$out/touch-queue"
 "$out/touch-queue"
+cc -std=c11 -Wall -Wextra -Werror $sanitize -g \
+  -Itools/app_loop_stubs -Imain/app \
+  tools/app_touch_guard_host_test.c main/app/app_touch_guard.c -o "$out/touch-guard"
+"$out/touch-guard"
 cc -std=c11 -Wall -Wextra -Werror $sanitize -g \
   -Itools/app_loop_stubs -Imain/app -Imain/ui -Itools/ui_gesture_stubs \
   tools/ui_menu_host_test.c main/ui/ui_menu.c -o "$out/menu"

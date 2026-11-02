@@ -145,7 +145,36 @@ try:
     assert a.state['width']==b.state['width']==684 and a.state['height']==b.state['height']==1216
     pose(b,980);pose(b,-980)
     assert orientation_is(1,False,False) and (a.state['rotation'],b.state['rotation'])==(1,1)
+    # 双机会话锁定停止自动换向；系统锁定偏好不被改写，手动翻转仍可用。
+    # Paired-session lock stops auto turns without rewriting the system lock preference; manual flips stay available.
+    a.cmd('dual-usb RPICO DUAL LOCK ON');assert a.state['dual_locked']
+    b.cmd('dual-usb RPICO DUAL LOCK ON');assert b.state['dual_locked']
+    pose(a,980)
+    assert orientation_is(1,False,False) and (a.state['rotation'],b.state['rotation'])==(1,1)
+    a.cmd('dual-usb RPICO DUAL LOCK OFF')
+    b.cmd('dual-usb RPICO DUAL LOCK OFF')
+    pose(a,980)
+    assert orientation_is(3,False,False) and (a.state['rotation'],b.state['rotation'])==(3,3)
+    pose(a,-980)
+    assert orientation_is(1,False,False) and (a.state['rotation'],b.state['rotation'])==(1,1)
+    # 从机锁定只冻结自己的显示，不阻止主机继续自动换向；解锁后重新跟随。
+    # Locking the secondary freezes only its display; the primary keeps auto-turning, and unlock follows again.
+    b.cmd('dual-usb RPICO DUAL LOCK ON')
+    a.cmd('dual-usb RPICO DUAL LOCK OFF')
+    pose(a,980)
+    assert a.state['rotation']==3 and b.state['rotation']==1
+    b.cmd('dual-usb RPICO DUAL LOCK OFF')
+    pump(30)
+    assert b.state['rotation']==3
+    pose(a,-980)
+    assert orientation_is(1,False,False) and (a.state['rotation'],b.state['rotation'])==(1,1)
     rotation_switch(a,1,True);assert (a.state['rotation'],b.state['rotation'])==(3,1)
+    # 主机翻转后传感器候选方向也必须补偿：旋转设备仍能换到相反显示方向。
+    # A flipped primary compensates the sensor candidate, so turning the device still flips the display.
+    pose(a,980)
+    assert (a.state['rotation'],b.state['rotation'])==(1,3)
+    pose(a,-980)
+    assert (a.state['rotation'],b.state['rotation'])==(3,1)
     rotation_switch(b,2,True);assert (a.state['rotation'],b.state['rotation'])==(3,3)
     rotation_switch(b,1,False);assert (a.state['rotation'],b.state['rotation'])==(1,3)
     rotation_switch(a,2,False);assert (a.state['rotation'],b.state['rotation'])==(1,1)

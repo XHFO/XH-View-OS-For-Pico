@@ -90,6 +90,9 @@ int cst836u_get_info(void* h,cst836u_info_t* i) {(void)h;(void)i;return 0;}
 bool app_touch_buffer_enable(cst836u_handle_t tp,bool enabled,int rotation){(void)tp;(void)enabled;(void)rotation;return false;}
 esp_err_t app_touch_buffer_read(cst836u_touch_t *touch,int64_t *ms,bool *pending){(void)touch;(void)ms;(void)pending;assert(false);return ESP_ERR_INVALID_STATE;}
 bool ps_keyboard_capture_active(void){return false;}
+bool ps_dual_enabled(void){return false;}
+bool ps_touch_guard_enabled(void){return true;}
+void ps_toast(const char *text){(void)text;}
 void ps_sound_contact(bool valid,bool down,unsigned count,int64_t now){(void)valid;(void)down;(void)count;(void)now;}
 const char* esp_err_to_name(int e) {(void)e;return "test";}
 int64_t esp_timer_get_time(void) {return time_offset+(int64_t)(step+1)*time_step;}

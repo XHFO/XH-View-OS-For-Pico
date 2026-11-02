@@ -79,7 +79,10 @@ names[names.index("ps_storage_prepare"):names.index("ps_storage_prepare")] = ["s
 names[names.index("ps_switch"):names.index("ps_switch")] = ["launcher_switch", "launcher_root"]
 names.insert(names.index("ps_background_io_allowed"), "ps_background_io_blockers")
 names.insert(names.index("ps_rotation_lock"), "rotation_consider")
+names.insert(names.index("rotation_consider"), "rotation_flip180")
 names.insert(names.index("ps_rotation_lock") + 1, "ps_rotation_locked")
+names.insert(names.index("ps_rotation_locked") + 1, "ps_touch_guard_enabled")
+names.insert(names.index("ps_touch_guard_enabled") + 1, "ps_touch_guard_set")
 functions = function("ps_usb_local_route", (ROOT / "main/system/pico_usb.c").read_text()) + "\n" + "\n\n".join(function(n) for n in names)
 # 同源BSP转换搭配独立四姿态fixture，避免只向壳注入假定设备轴。/ Couple the actual BSP transform with independent four-pose fixtures rather than presumed device axes.
 functions += "\n" + function("read_pico_accel_to_device", (ROOT / "components/read_pico/read_pico_init.c").read_text()).replace("sc7a20h_sample_t", "test_bsp_sample_t")
@@ -136,6 +139,16 @@ static int test_mkdir(const char *p,mode_t m){if(test_mkdir_race&&strstr(p,".pic
 '''
 
 stubs = r'''
+static bool ps_rotation_locked(void);
+static int ps_dual_rotation(void){return EPD_ROT_INVERTED_PORTRAIT;}
+static int ps_dual_base_rotation(void){return EPD_ROT_INVERTED_PORTRAIT;}
+static int ps_dual_role(void){return 1;}
+static bool ps_dual_orient(int rotation){(void)rotation;return false;}
+static bool ps_dual_rotate(void){return true;}
+static bool ps_dual_rotation_locked(void){return false;}
+static bool ps_dual_lock_set(bool locked){(void)locked;return true;}
+static bool ps_dual_take_manual_rotation(void){return false;}
+static void ps_dual_rotation_changed(void){}
 static bool ps_dual_enabled(void){return false;}
 static void ps_dual_suspend(void){}
 static void ps_dual_enter(void){}

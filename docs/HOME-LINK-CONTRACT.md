@@ -1,8 +1,8 @@
 # Home Link 宿主、门户与桌面回读契约 / Host, portal and desktop contract
 
-本契约对应当前 `0.39.1-dev69` 集成源码，默认 `PICO_HOME_LINK_FULL=OFF`，TF 工具包 `apps/tools/home-link.pga` 为 kind **130**、ABI **1**、版本 **10104**。旧版 **10200** 文档和包不能据此当作当前本机构建产物；安装时须重新构建并核对包头。
+本契约对应当前 `0.39.1-dev69` 集成源码，默认 `PICO_HOME_LINK_FULL=OFF`，TF 工具包 `apps/tools/home-link.pga` 为 kind **130**、ABI **1**、版本 **10106**。旧版 **10200** 文档和包不能据此当作当前本机构建产物；安装时须重新构建并核对包头。
 
-This contract describes the current dev69 integration, the default thin host and Home Link package **10104**. Rebuild and inspect package headers rather than reusing an earlier **10200** artifact.
+This contract describes the current dev69 integration, the default thin host and Home Link package **10106**. Rebuild and inspect package headers rather than reusing an earlier **10200** artifact.
 
 ## 契约变更 / Contract change
 

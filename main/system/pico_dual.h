@@ -12,6 +12,13 @@ int ps_dual_rotation(void);
 bool ps_dual_orient(int rotation);
 bool ps_dual_flip(int role, bool enabled);
 bool ps_dual_rotate(void);
+/// 双机会话内的方向锁定；独立于系统方向锁定，停止自动换向但保留手动翻转。
+/// Paired-session direction lock; independent of the system lock, stops auto turns and keeps manual flips.
+bool ps_dual_rotation_locked(void);
+bool ps_dual_lock_set(bool locked);
+/// 取一次“手动翻转待应用”标记，避免从机锁定阻止手动翻转。
+/// Take the one-shot manual-flip marker so a locked secondary still applies its own flip.
+bool ps_dual_take_manual_rotation(void);
 /// 同步或双机连接期间暂缓自动休眠，显式电源操作仍有效。/ Defer idle sleep during sync or pairing; explicit power actions remain available.
 bool ps_dual_holds_awake(void);
 bool ps_dual_configure(int role, const char* host, const char* code);

@@ -100,8 +100,8 @@ const char *ps_version(void){return PS_VERSION;}
 #else
 #define PICO_STORE_COLD
 #endif
-#define QUICK_COUNT 40
-#define QUICK_MAX 40
+#define QUICK_COUNT 41
+#define QUICK_MAX 41
 #define FAN_GROUPS 5
 #define FAN_SLOTS 14
 #define QUICK_EMPTY 255
@@ -121,8 +121,12 @@ typedef struct {
     uint32_t version;
     uint8_t slots[FAN_SLOTS],count,ids[QUICK_MAX];
 } quick_saved_t;
+typedef struct {
+    uint32_t version;
+    uint8_t slots[FAN_SLOTS],count,ids[40];
+} quick_saved_v5_40_t;
 static uint8_t s_quick_slots[FAN_SLOTS];
-static const uint8_t s_quick_defaults[FAN_SLOTS]={0,4,11,15,31,3,17,30,9,7,8,33,22,14};
+static const uint8_t s_quick_defaults[FAN_SLOTS]={0,4,11,15,31,3,17,30,9,7,8,40,22,14};
 static struct {
     uint8_t slots[FAN_SLOTS],undo[FAN_SLOTS];
     int selected,source,target,side;
@@ -164,6 +168,7 @@ static sc7a20h_sample_t s_last_sample;
 static bool s_sample_valid;
 static int s_orientation_candidate = -1;
 static int s_display_rotation = -1;
+static uint8_t s_touch_guard = 1;
 static uint8_t s_orientation_matches;
 static int64_t s_motion_ms, s_sleep_ms;
 static int64_t s_editor_render_due;
@@ -229,14 +234,15 @@ static const struct {
     {"电量信息",PI_BATTERY,4},
     {"连接状态",PI_LINK,1},
     {"本书划线",PI_HIGHLIGHT,0},
-    {"本书批注",PI_NOTE,0}
+    {"本书批注",PI_NOTE,0},
+    {"贴合防误触",PI_LINK,4}
 };
 
 static const char *s_quick_short[QUICK_COUNT]={
     "书架","续读","记录","排版","家庭","房间","筛选","休眠","网络","方向",
     "编排","游戏","打印","工具","设置","目录","加签","划线","笔记","选划",
     "批注","收藏","传书","样式","家设","合成","贪蛇","暂停","重开","规则",
-    "输入","进度","书签","存储","U盘","强刷","电量","连接","划线","批注"
+    "输入","进度","书签","存储","U盘","强刷","电量","连接","划线","批注","防触"
 };
 
 static void fan_present_reset(void) {
@@ -498,6 +504,16 @@ static PICO_STORE_COLD void quick_adopt(const quick_saved_t *saved) {
 static PICO_STORE_COLD void quick_load(void) {
     quick_saved_t v5;
     if(ps_load("quick_v5",&v5,sizeof(v5))&&v5.version==5&&v5.count<=QUICK_MAX){quick_adopt(&v5);return;}
+    // 旧布局只有40个启用槽；新增“贴合防误触”后按原顺序迁移，不丢用户编排。
+    // The previous layout held 40 enabled slots; migrate the new guard action without losing layout.
+    quick_saved_v5_40_t old5;
+    if(ps_load("quick_v5",&old5,sizeof(old5))&&old5.version==5&&old5.count<=40){
+        quick_saved_t converted={.version=5};
+        memcpy(converted.slots,old5.slots,sizeof(converted.slots));
+        converted.count=old5.count;
+        memcpy(converted.ids,old5.ids,old5.count);
+        quick_adopt(&converted);return;
+    }
     if(ps_load("quick_v4",&s_shortcuts,sizeof(s_shortcuts))&&s_shortcuts.version==4&&s_shortcuts.count<=QUICK_MAX) {
         uint8_t old[QUICK_MAX];int count=s_shortcuts.count;memcpy(old,s_shortcuts.ids,count);quick_import(old,count);return;
     }
@@ -1061,6 +1077,12 @@ static void apply_rotation(enum EpdRotation rotation) {
     s_dirty = true;
 }
 void ps_dual_rotation_changed(void) {
+    bool manual = ps_dual_take_manual_rotation();
+    // 从机锁定后不再跟随主机基准；本机手动翻转仍通过一次性标记放行。
+    // A locked secondary stops following the primary base; its own manual flip passes once.
+    if (ps_dual_enabled() && ps_dual_role() == 2 && ps_dual_rotation_locked() && !manual &&
+        (epd_get_rotation() == EPD_ROT_PORTRAIT || epd_get_rotation() == EPD_ROT_INVERTED_PORTRAIT))
+        return;
     int rotation = ps_dual_enabled() ? ps_dual_rotation() : s_display_rotation;
     if (rotation < 0) rotation = s_config.landscape ? EPD_ROT_INVERTED_LANDSCAPE : EPD_ROT_INVERTED_PORTRAIT;
     if ((int)epd_get_rotation() != rotation) apply_rotation((enum EpdRotation)rotation);
@@ -1083,22 +1105,37 @@ static int sample_rotation(const sc7a20h_sample_t* sample) {
         return sample->y_mg < 0 ? EPD_ROT_LANDSCAPE : EPD_ROT_INVERTED_LANDSCAPE;
     return -1;
 }
-// 连续两次500ms样本确认；双机只采主机方向，不改变共享分页。/ Confirm two 500ms samples; paired orientation samples only the primary without changing pagination.
+// 方向锁定时不采传感器；双机翻转是显示层180度，候选方向也必须同步翻转，
+// 否则翻转端看到的自动旋转会与手持方向相反。
+// Locked rotation ignores the sensor. The dual 180-degree flip is display-level, so the
+// sensor candidate must be flipped too; otherwise the flipped device turns the wrong way.
+static int rotation_flip180(int rotation) {
+    // EpdRotation order is landscape, portrait, inverted landscape, inverted portrait;
+    // +2 is always the 180-degree counterpart.
+    return (rotation + 2) & 3;
+}
 static bool rotation_consider(int orientation) {
     bool dual = ps_dual_enabled();
-    if (dual && (ps_dual_role() != 1 || (orientation != EPD_ROT_PORTRAIT && orientation != EPD_ROT_INVERTED_PORTRAIT)))
+    if (dual) {
+        if (ps_dual_role() != 1 || ps_dual_rotation_locked() ||
+            (orientation != EPD_ROT_PORTRAIT && orientation != EPD_ROT_INVERTED_PORTRAIT))
+            orientation = -1;
+    } else if (ps_rotation_locked()) {
         orientation = -1;
-    int current = dual ? ps_dual_base_rotation() : (int)epd_get_rotation();
-    if (orientation < 0 || orientation == current) {
+    }
+    bool role_flip = dual && ps_dual_rotation() != ps_dual_base_rotation();
+    int candidate = orientation >= 0 && role_flip ? rotation_flip180(orientation) : orientation;
+    int current = dual ? ps_dual_rotation() : (int)epd_get_rotation();
+    if (candidate < 0 || candidate == current) {
         s_orientation_candidate = -1; s_orientation_matches = 0;
-    } else if (orientation != s_orientation_candidate) {
-        s_orientation_candidate = orientation; s_orientation_matches = 1;
+    } else if (candidate != s_orientation_candidate) {
+        s_orientation_candidate = candidate; s_orientation_matches = 1;
     } else if (++s_orientation_matches >= 2) {
         if (dual) {
             s_orientation_candidate = -1; s_orientation_matches = 0;
             if (!ps_dual_orient(orientation)) return false;
             ps_dual_rotation_changed();
-        } else apply_rotation((enum EpdRotation)orientation);
+        } else apply_rotation((enum EpdRotation)candidate);
         return true;
     }
     return false;
@@ -1118,7 +1155,7 @@ bool ps_book_rotation_tick(app_ctx_t* ctx, bool idle) {
     int before = epd_get_rotation();
     ps_dual_rotation_changed();
     if ((int)epd_get_rotation() != before) return true;
-    if (ps_dual_role() != 1 || !ctx->sensor_ready || ctx->now_ms - s_acc_ms < 500) return false;
+    if (ps_dual_role() != 1 || ps_dual_rotation_locked() || !ctx->sensor_ready || ctx->now_ms - s_acc_ms < 500) return false;
     s_acc_ms = ctx->now_ms;
     read_pico_sensor_wake(ctx->acc);
     sc7a20h_sample_t sample;
@@ -1132,6 +1169,18 @@ void ps_rotation_lock(bool on) {
 }
 bool ps_rotation_locked(void) {
     return s_config.locked;
+}
+bool ps_touch_guard_enabled(void) { return s_touch_guard != 0; }
+bool ps_touch_guard_set(bool enabled) {
+    uint8_t next = enabled ? 1 : 0;
+    if (next == s_touch_guard) return true;
+    if (!ps_store("touchguard1", &next, sizeof(next))) {
+        ps_toast("防误触设置保存失败");
+        return false;
+    }
+    s_touch_guard = next;
+    s_dirty = true;
+    return true;
 }
 bool ps_demo_home_online(void) {
     return ps_wifi_connected_index() >= 0 && s_config.demo_ha;
@@ -1239,7 +1288,15 @@ static void quick_action(int id) {
     case 6:ps_navigate(PS_HA_SETTINGS);ps_home_action(2);break;
     case 7:ps_sleep();break;
     case 8:ps_navigate(PS_WIFI);break;
-    case 9:ps_rotation_lock(!s_config.locked);ps_toast(s_config.locked?"已锁定当前方向":"已解除方向锁定");break;
+    case 9:
+        if (ps_dual_enabled()) {
+            bool on = ps_dual_rotation_locked();
+            if (ps_dual_lock_set(!on)) ps_toast(on ? "已解除方向锁定" : "已锁定当前方向");
+        } else {
+            ps_rotation_lock(!s_config.locked);
+            ps_toast(s_config.locked ? "已锁定当前方向" : "已解除方向锁定");
+        }
+        break;
     case 10:s_quick_scroll=0;s_quick_mode=0;ps_navigate(PS_QUICK_SETTINGS);break;
     case 11:ps_switch(2);break;
     case 12:ps_navigate(PS_PRINTERS);break;
@@ -1282,6 +1339,11 @@ static void quick_action(int id) {
         ps_toast(text);break;
     }
     case 37:ps_toast(ps_home_connection_label());break;
+    case 40: {
+        bool on = ps_touch_guard_enabled();
+        if (ps_touch_guard_set(!on)) ps_toast(on ? "已关闭贴合防误触" : "已开启贴合防误触");
+        break;
+    }
     default:break;
     }
     s_dirty=true;
@@ -1351,9 +1413,47 @@ static void fan_release(int x,int y) {
 static int fan_prompt_x(void) {
     ps_view_t v=ps_view();return v.landscape?(fan_frame_side()?16:340):16;
 }
+// 快捷动作的运行态：开机、方向锁定、贴合防误触等开关在圆面内部换色。
+// Runtime quick-action states: toggles such as Wi-Fi, rotation lock and touch guard recolor the disc.
+static int fan_state_bits(int id) {
+    int bits = 0;
+    if (id == 8 && ps_wifi_connected_index() >= 0) bits |= 1;
+    if (id == 9 && (ps_dual_enabled() ? ps_dual_rotation_locked() : ps_rotation_locked())) bits |= 1;
+    if (id == 40 && ps_touch_guard_enabled()) bits |= 1;
+    if (id >= 0 && quick_unavailable(id)) bits |= 2;
+    return bits;
+}
+// 灰色层次实心圆：外阴影、深外圈、中灰主体、浅灰内环、白色核心；选中或开启时整体转深色。
+// Layered solid disc: shadow, dark rim, mid-gray body, light ring and white core; selected/on turns dark.
+static void fan_draw_item(uint8_t *fb, const fan_item_t *item, bool edit, bool selected) {
+    int id = item->id, r = item->r, x = item->x, y = item->y;
+    bool empty = id < 0;
+    int state = empty ? 0 : fan_state_bits(id);
+    bool disabled = !edit && !empty && (state & 2);
+    bool active = !empty && !disabled && (state & 1);
+    if (selected) {
+        // 白色间隙加外圈，避免选中只靠一根细线；圆面本身仍会转深。
+        // White gap plus an outer ring; the disc itself still turns dark.
+        ps_box(fb, x - r - 7, y - r - 7, 2 * (r + 7), 2 * (r + 7), r + 7, 15, true);
+        ps_box(fb, x - r - 7, y - r - 7, 2 * (r + 7), 2 * (r + 7), r + 7, 2, false);
+    }
+    ps_box(fb, x - r - 2, y - r + 3, 2 * (r + 2), 2 * (r + 2), r + 2, 13, true);
+    ps_box(fb, x - r, y - r, 2 * r, 2 * r, r, disabled ? 12 : active ? 2 : 10, true);
+    ps_box(fb, x - r + 4, y - r + 4, 2 * r - 8, 2 * r - 8, r - 4,
+           disabled ? 13 : active ? 1 : 12, true);
+    ps_box(fb, x - r + 8, y - r + 8, 2 * r - 16, 2 * r - 16, r - 8,
+           disabled ? 14 : active ? 3 : 14, true);
+    ps_box(fb, x - r + 12, y - r + 12, 2 * r - 24, 2 * r - 24, r - 12,
+           disabled ? 15 : active ? 0 : 15, true);
+    ps_icon_t icon = empty ? PI_PLUS : s_quick[id].icon;
+    int size = (int)lroundf(21.f * fan_scale());
+    int ink = disabled ? 6 : active ? 15 : empty ? 6 : 2;
+    ps_icon(fb, x - size / 2, y - r + (int)lroundf(3.f * fan_scale()), size, icon, ink);
+    ps_text_fixed(fb, x - 15, y + 4, 11, empty ? "添加" : s_quick_short[id], ink);
+}
 static void render_fan_base(uint8_t* fb) {
     ps_view_t v=ps_view();ps_fill(fb,0,0,v.w,v.h,15);bool edit=fan_editor_active();
-    fan_item_t a[QUICK_COUNT];int n=fan_layout(a);float scale=fan_scale();int ix=fan_prompt_x();char detail[100];
+    fan_item_t a[QUICK_COUNT];int n=fan_layout(a);int ix=fan_prompt_x();char detail[100];
     ps_text_fixed(fb,ix,80,12,edit?"编排快捷菜单":"快捷操作",5);
     if(edit) {
         ps_text_fixed(fb,ix,32,18,"长按拖动交换位置",2);
@@ -1369,15 +1469,7 @@ static void render_fan_base(uint8_t* fb) {
     }
     for(int i=0;i<n;i++) {
         if(a[i].id<0&&!edit)continue;
-        int r=a[i].r;
-        ps_box(fb,a[i].x-r,a[i].y-r,r*2,r*2,r,15,true);
-        ps_box(fb,a[i].x-r,a[i].y-r,r*2,r*2,r,a[i].id<0?6:0,false);
-        ps_icon_t icon=a[i].id<0?PI_PLUS:s_quick[a[i].id].icon;
-        int sz=(int)lroundf(21.f*scale);bool unavailable=!edit&&a[i].id>=0&&quick_unavailable(a[i].id);
-        ps_icon(fb,a[i].x-sz/2,a[i].y-r+(int)lroundf(3.f*scale),sz,icon,a[i].id<0||unavailable?6:2);
-        // 两字短名是静态按钮的一部分；滑动只更新圈外光圈和固定标题。
-        // Short names belong to the fixed base; motion changes only the outside halo and fixed title.
-        ps_text_fixed(fb,a[i].x-15,a[i].y+4,11,a[i].id<0?"添加":s_quick_short[a[i].id],a[i].id<0||unavailable?6:2);
+        fan_draw_item(fb,&a[i],edit,false);
     }
     int side=fan_frame_side();ps_center(fb,side?v.w-62:62,v.h-42,10,"安全区",5);
     ps_center(fb,side?v.w-62:62,v.h-25,10,edit?"拖回取消":"松手取消",5);
@@ -1385,10 +1477,7 @@ static void render_fan_base(uint8_t* fb) {
 static void render_fan_cursor(uint8_t *fb) {
     fan_item_t a[QUICK_COUNT];int n=fan_layout(a),selected=fan_frame_selected();bool edit=fan_editor_active();
     if(selected>=0&&selected<n&&(edit||a[selected].id>=0)) {
-        EpdRect buttons[QUICK_COUNT];int count=0;
-        for(int i=0;i<n;i++)if(edit||a[i].id>=0)buttons[count++]=(EpdRect){a[i].x-a[i].r,a[i].y-a[i].r,a[i].r*2,a[i].r*2};
-        int halo=(int)lroundf(22.f*fan_scale()+360.f*5.f/58.5f);
-        ps_cursor_ring(fb,a[selected].x,a[selected].y,halo,buttons,count);
+        fan_draw_item(fb,&a[selected],edit,true);
     }
     const char *label=selected>=0&&selected<n?(a[selected].id<0?"空位置":s_quick[a[selected].id].label):edit?"轻点选择功能位置":"滑向图标，松手打开";
     ps_text_fixed(fb,fan_prompt_x(),106,25,label,2);
@@ -1415,7 +1504,7 @@ static void fan_add_area(EpdRect areas[3],int *count,EpdRect next) {
 static EpdRect fan_cursor_area(int selected) {
     fan_item_t a[QUICK_COUNT];int n=fan_layout(a);
     if(selected<0||selected>=n)return (EpdRect){0};
-    int r=(int)lroundf(22.f*fan_scale()+360.f*5.f/58.5f)+3;
+    int r=a[selected].r+12;
     return (EpdRect){a[selected].x-r,a[selected].y-r,r*2+1,r*2+1};
 }
 static void fan_area_pixels(uint8_t *fb,const uint8_t *source,EpdRect area,bool threshold) {
@@ -1447,7 +1536,8 @@ static uint64_t fan_paint_key(void) {
     int state[]={fan_frame_side(),fan_editor_active(),s_quick_edit.save_failed,ps_route(),ps_view().w,ps_view().h};
     for(size_t i=0;i<sizeof(state)/sizeof(state[0]);i++)hash=(hash^(unsigned)state[i])*UINT64_C(1099511628211);
     for(int i=0;i<n;i++) {
-        int fields[]={a[i].id,a[i].x,a[i].y,a[i].r,a[i].ring,a[i].group};
+        int fields[]={a[i].id,a[i].x,a[i].y,a[i].r,a[i].ring,a[i].group,
+                      a[i].id>=0?fan_state_bits(a[i].id):0};
         for(size_t j=0;j<sizeof(fields)/sizeof(fields[0]);j++)hash=(hash^(unsigned)fields[j])*UINT64_C(1099511628211);
     }
     return hash;
@@ -2237,6 +2327,8 @@ static void on_enter(app_ctx_t* ctx) {
         quick_load();
         s_config.locked = !!s_config.locked;
         s_config.landscape = !!s_config.landscape;
+        uint8_t guard = 1;
+        if (ps_load("touchguard1", &guard, sizeof(guard))) s_touch_guard = guard ? 1 : 0;
         if(s_config.sleep_style>5)s_config.sleep_style=0;
         const int valid[] = { 5, 15, 30, 60, 360, 720 };
         bool interval_ok = false;
@@ -2370,8 +2462,9 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
             if (movement > 160) s_motion_ms = ctx->now_ms;
             // BSP 已换成设备轴，不再交换；自动目标保留四向符号。/ BSP already returns device axes; do not swap again, and retain all four pose signs.
             int orientation = -1;
-            if (!asleep && (ps_dual_enabled() ? ps_dual_role() == 1 : !ps_rotation_locked()) && !s_tracking && !s_panel && !ctx->consumed &&
-                !(ctx->touch && ctx->touch->touched))
+            if (!asleep && (ps_dual_enabled() ? (!ps_dual_rotation_locked() && ps_dual_role() == 1)
+                                              : !ps_rotation_locked()) &&
+                !s_tracking && !s_panel && !ctx->consumed && !(ctx->touch && ctx->touch->touched))
                 orientation = sample_rotation(&sample);
             rotation_consider(orientation);
         } else {
