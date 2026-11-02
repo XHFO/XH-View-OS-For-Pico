@@ -1,3 +1,8 @@
+## 0.40.0-dual18（独立双机实验版）
+
+- 姿态检测改为 200ms 低频直读加速度计，折叠/展开切换不再等待后台 500ms 采样，贴合屏蔽和展开放行更及时。
+- Low-rate 200 ms direct accelerometer read for pose, so folding/unfolding takes effect without waiting for the 500 ms background sample.
+
 ## 0.40.0-dual17（独立双机实验版）
 
 - 防误触改为姿态门控：两台屏幕相对（折叠贴合）时屏蔽所有屏幕触摸，展开同向朝上时完全不启用鬼触判断，正常滑动不再误判。

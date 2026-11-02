@@ -95,7 +95,7 @@
 #include "ui_kit.h"
 #include "settings.h"
 
-#define PS_VERSION "0.40.0-dual17"
+#define PS_VERSION "0.40.0-dual18"
 #define PS_OS_NAME "XH View OS For Pico"
 #define PS_RELEASE_LABEL "双机阅读实验版"
 const char *ps_version(void){return PS_VERSION;}
@@ -1082,9 +1082,21 @@ static void apply_rotation(enum EpdRotation rotation) {
     s_dirty = true;
 }
 int ps_contact_face(void) {
-    if (!s_sample_valid) return 0;
-    if (s_last_sample.z_mg > 650) return 1;
-    if (s_last_sample.z_mg < -650) return -1;
+    // 低频直读，折叠/展开切换不必等 500ms 的常规采样；只在 UI 线程调用。
+    // Low-rate direct read so folding/unfolding is not delayed by the 500 ms background sample.
+    static int64_t face_at;
+    static int face_z;
+    int64_t now = s_ctx ? s_ctx->now_ms : 0;
+    if (s_ctx && s_ctx->acc && now - face_at >= 200) {
+        sc7a20h_sample_t sample;
+        if (read_pico_accel_read(s_ctx->acc, &sample) == ESP_OK) {
+            face_z = sample.z_mg;
+            face_at = now;
+        }
+    }
+    int z = face_at ? face_z : (s_sample_valid ? s_last_sample.z_mg : 0);
+    if (z > 650) return 1;
+    if (z < -650) return -1;
     return 0;
 }
 void ps_dual_rotation_changed(void) {
