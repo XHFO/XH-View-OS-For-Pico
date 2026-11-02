@@ -233,6 +233,7 @@ static EpdRect s_du_area;
 static SemaphoreHandle_t s_draw_lock, s_prep_done;
 static TaskHandle_t s_prep_task;
 static uint8_t* s_next_fb;
+static uint8_t* s_turn_old;
 static int s_next_page = -1, s_prep_page = -1;
 static bool s_turn_anim_pending;
 static int s_turn_anim_dir;
@@ -1208,11 +1209,16 @@ static bool present(app_ctx_t* ctx, app_redraw_t redraw) {
     s_mode = MODE_GL16;
     return true;
 }
-// 墨水屏翻页过渡：旧页与新页之间只推一帧斜向滑动+接缝阴影，随后用正常波形定稿。
-// 这样既保留翻页方向感，也不会为动画额外占用一整块帧缓存或拖慢双机确认。
-// E-ink page-turn transition: one slanted wipe with a seam shadow between the old and
-// pre-rendered new page, then the normal settle waveform. One extra refresh, no extra fb.
-static void turn_anim_compose(uint8_t *dst, const uint8_t *src, int dir) {
+// 墨水屏翻页过渡：保留旧页，按斜向页边推进 4 帧，再用正常波形定稿。
+// 页边不是硬黑线：用 30px 软阴影和 1px 灰边，避免滑动时出现一条突兀的黑缝。
+// E-ink page turn: retain the old page, advance a slanted page edge across four
+// frames, then settle. The edge is a soft 30 px shadow plus a 1 px gray line,
+// not the previous harsh black seam.
+static void turn_anim_free(void) {
+    free(s_turn_old);
+    s_turn_old = NULL;
+}
+static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *fresh, int dir, int progress) {
     EpdRect body = reader_area();
     EpdRect pr = ui_rotate_rect_to_fb(body);
     int pw = epd_width(), ph = epd_height();
@@ -1220,8 +1226,8 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *src, int dir) {
     bool axis_x = rotation == EPD_ROT_LANDSCAPE || rotation == EPD_ROT_INVERTED_LANDSCAPE;
     bool axis_inverted = rotation == EPD_ROT_INVERTED_LANDSCAPE;
     int logical_w = reader_width();
-    int seam = logical_w * (dir > 0 ? 58 : 42) / 100;
-    int shadow = 30;
+    int seam = dir > 0 ? logical_w * (100 - progress) / 100 : logical_w * progress / 100;
+    int shadow = 24;
     int x0 = pr.x < 0 ? 0 : pr.x;
     int y0 = pr.y < 0 ? 0 : pr.y;
     int x1 = pr.x + pr.width > pw ? pw : pr.x + pr.width;
@@ -1232,20 +1238,25 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *src, int dir) {
             int at = axis_x ? x : y;
             int base = axis_x ? pr.x : pr.y;
             int span = axis_x ? pr.width : pr.height;
+            if (span < 1) span = 1;
             int logical_x = axis_inverted && axis_x ? span - 1 - (at - base) : at - base;
-            bool take_new = dir > 0 ? logical_x >= seam : logical_x < seam;
-            int dist = logical_x > seam ? logical_x - seam : seam - logical_x;
+            // 斜向页边：两端各偏 15px，像纸张从一角掀起。
+            // Slanted edge: +/-15 px at the ends, like a sheet lifting from a corner.
+            int edge = seam + (at - base - span / 2) * 30 / span;
+            bool take_new = dir > 0 ? logical_x >= edge : logical_x <= edge;
+            int dist = logical_x > edge ? logical_x - edge : edge - logical_x;
             size_t idx = (size_t)y * row_bytes + x / 2;
             int shift = (x & 1) * 4;
             uint8_t old_byte = dst[idx];
-            uint8_t new_byte = src[idx];
-            int old_gray = (old_byte >> shift) & 15;
-            int new_gray = (new_byte >> shift) & 15;
+            int old_gray = (old[idx] >> shift) & 15;
+            int new_gray = (fresh[idx] >> shift) & 15;
             int gray = take_new ? new_gray : old_gray;
-            if (dist <= 1) gray = 0;
-            else if (dist < shadow) {
-                if (take_new) gray = gray * (dist + 8) / (shadow + 8);
-                else gray = gray * (dist + 4) / (shadow + 4);
+            // 白色页边 + 旧页一侧的柔和阴影；不再同时压暗两侧形成黑缝。
+            // White page edge plus a soft shadow on the old side only; no dark line on both sides.
+            if (dist <= 1) gray = 15;
+            else if (dist < shadow && !take_new) {
+                int amount = (shadow - dist) * 48 / shadow;
+                gray = gray * (100 - amount) / 100 + 12 * 17 * amount / 100;
             }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
@@ -1259,13 +1270,22 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
     s_turn_anim_pending = false;
     if (animate) {
-        turn_anim_compose(ctx->fb, s_next_fb, s_turn_anim_dir);
-        s_area = reader_area();
-        s_mode = MODE_DU;
-        s_reader_split = false;
-        unlock_draw();
-        guard_draw_result(ctx->hl, update_display_area_with(ctx->hl, &E0470_WAVEFORM, MODE_DU, s_area));
-        lock_draw();
+        if (!s_turn_old)
+            s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_turn_old) {
+            static const int steps[] = {28, 52, 74, 90};
+            memcpy(s_turn_old, ctx->fb, fb_bytes());
+            s_area = reader_area();
+            s_mode = MODE_DU;
+            s_reader_split = false;
+            for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+                turn_anim_compose(ctx->fb, s_turn_old, s_next_fb, s_turn_anim_dir, steps[i]);
+                unlock_draw();
+                guard_draw_result(ctx->hl, update_display_area_with(ctx->hl, &E0470_WAVEFORM, MODE_DU, s_area));
+                vTaskDelay(pdMS_TO_TICKS(12));
+                lock_draw();
+            }
+        }
     }
     if (cached)
         memcpy(ctx->fb, s_next_fb, fb_bytes());
@@ -1304,6 +1324,7 @@ static bool open_cover(void) {
     lock_draw();
     invalidate_prep(); free_image();
     free(s_next_fb); s_next_fb = NULL;
+    turn_anim_free();
     esp_err_t err = book_epub_load_cover(s_path, &s_image_pixels, &s_image_width, &s_image_height);
     if (err == ESP_OK && s_image_pixels) s_cover_open = s_image_open = true;
     else { free_image(); s_cover_missing = err != ESP_ERR_NO_MEM; }
@@ -1319,6 +1340,7 @@ static app_redraw_t open_image(app_ctx_t* ctx, size_t block_index) {
         loading_detail(ctx, "正在加载图片…", "加载后可返回原阅读位置");
         lock_draw();
         free(s_next_fb); s_next_fb = NULL;
+        turn_anim_free();
         esp_err_t err = book_chapter_load_image(s_chapter, block->image_src, &s_image_pixels, &s_image_width, &s_image_height);
         unlock_draw();
         ensure_prep();
@@ -1826,7 +1848,7 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
     }
     loading_detail(ctx, "正在解析图书…", "大书需要更多时间，请稍候");
     // 持绘制锁释放下一页缓存，降低解析峰值。/ Release the next-page buffer under the drawing lock to reduce parsing peaks.
-    lock_draw(); free(s_next_fb); s_next_fb = NULL; unlock_draw();
+    lock_draw(); free(s_next_fb); s_next_fb = NULL; turn_anim_free(); unlock_draw();
     int64_t open_started = esp_timer_get_time();
     esp_err_t err = book_open(path);
     int64_t source_ms = (esp_timer_get_time() - open_started) / 1000;
@@ -2545,6 +2567,7 @@ static void book_on_exit(app_ctx_t* ctx) {
     if (s_prep_task) { vTaskDelete(s_prep_task); s_prep_task = NULL; }
     free(s_next_fb);
     s_next_fb = NULL;
+    turn_anim_free();
     if (s_prep_done) { vSemaphoreDelete(s_prep_done); s_prep_done = NULL; }
     if (s_draw_lock) { vSemaphoreDelete(s_draw_lock); s_draw_lock = NULL; }
 }

@@ -1423,20 +1423,25 @@ static int fan_state_bits(int id) {
     if (id >= 0 && quick_unavailable(id)) bits |= 2;
     return bits;
 }
-// 灰色层次实心圆：外阴影、深外圈、中灰主体、浅灰内环、白色核心；选中或开启时整体转深色。
-// Layered solid disc: shadow, dark rim, mid-gray body, light ring and white core; selected/on turns dark.
+// 灰色层次实心圆：外阴影、深外圈、中灰主体、浅灰内环、白色核心。
+// 选中只在圆内画一个带白底的高对比小标记，不重绘整个圆面，滑动时不会整片闪烁。
+// Layered gray solid disc. Selection adds a small high-contrast white-backed marker
+// instead of repainting the whole disc, so sliding does not flash a large area.
+static void fan_marker_rect(const fan_item_t *item, int *mx, int *my, int *mw, int *mh) {
+    (void)item->r;
+    // 标签下方的小下划线，而不是盖住文字的黑色药丸。
+    // A small underline below the label instead of a black pill over the text.
+    *mw = 28;
+    *mh = 3;
+    *mx = item->x - *mw / 2;
+    *my = item->y + 22;
+}
 static void fan_draw_item(uint8_t *fb, const fan_item_t *item, bool edit, bool selected) {
     int id = item->id, r = item->r, x = item->x, y = item->y;
     bool empty = id < 0;
     int state = empty ? 0 : fan_state_bits(id);
     bool disabled = !edit && !empty && (state & 2);
     bool active = !empty && !disabled && (state & 1);
-    if (selected) {
-        // 白色间隙加外圈，避免选中只靠一根细线；圆面本身仍会转深。
-        // White gap plus an outer ring; the disc itself still turns dark.
-        ps_box(fb, x - r - 7, y - r - 7, 2 * (r + 7), 2 * (r + 7), r + 7, 15, true);
-        ps_box(fb, x - r - 7, y - r - 7, 2 * (r + 7), 2 * (r + 7), r + 7, 2, false);
-    }
     ps_box(fb, x - r - 2, y - r + 3, 2 * (r + 2), 2 * (r + 2), r + 2, 13, true);
     ps_box(fb, x - r, y - r, 2 * r, 2 * r, r, disabled ? 12 : active ? 2 : 10, true);
     ps_box(fb, x - r + 4, y - r + 4, 2 * r - 8, 2 * r - 8, r - 4,
@@ -1450,6 +1455,15 @@ static void fan_draw_item(uint8_t *fb, const fan_item_t *item, bool edit, bool s
     int ink = disabled ? 6 : active ? 15 : empty ? 6 : 2;
     ps_icon(fb, x - size / 2, y - r + (int)lroundf(3.f * fan_scale()), size, icon, ink);
     ps_text_fixed(fb, x - 15, y + 4, 11, empty ? "添加" : s_quick_short[id], ink);
+    if (selected) {
+        int mx, my, mw, mh;
+        fan_marker_rect(item, &mx, &my, &mw, &mh);
+        // 白底隔离灰色圆面，MODE_DU 局部更新时只处理黑白像素。
+        // White backing isolates the marker from the gray disc for clean MODE_DU updates.
+        ps_box(fb, mx - 3, my - 2, mw + 6, mh + 4, 4, 15, true);
+        ps_box(fb, mx - 3, my - 2, mw + 6, mh + 4, 4, 2, false);
+        ps_box(fb, mx, my, mw, mh, 1, 0, true);
+    }
 }
 static void render_fan_base(uint8_t* fb) {
     ps_view_t v=ps_view();ps_fill(fb,0,0,v.w,v.h,15);bool edit=fan_editor_active();
@@ -1504,8 +1518,9 @@ static void fan_add_area(EpdRect areas[3],int *count,EpdRect next) {
 static EpdRect fan_cursor_area(int selected) {
     fan_item_t a[QUICK_COUNT];int n=fan_layout(a);
     if(selected<0||selected>=n)return (EpdRect){0};
-    int r=a[selected].r+12;
-    return (EpdRect){a[selected].x-r,a[selected].y-r,r*2+1,r*2+1};
+    int mx, my, mw, mh;
+    fan_marker_rect(&a[selected], &mx, &my, &mw, &mh);
+    return (EpdRect){mx-5,my-4,mw+10,mh+8};
 }
 static void fan_area_pixels(uint8_t *fb,const uint8_t *source,EpdRect area,bool threshold) {
     EpdRect r=ui_rotate_rect_to_fb(ps_rect(area.x,area.y,area.width,area.height));
@@ -1553,7 +1568,9 @@ static bool fan_present(app_ctx_t *ctx) {
         fan_add_area(areas,&count,fan_cursor_area(s_fan_paint.selected));
         fan_add_area(areas,&count,fan_cursor_area(selected));
         ps_view_t v=ps_view();int ix=fan_prompt_x();
-        fan_add_area(areas,&count,(EpdRect){ix-2,100,v.w-ix,42});
+        int prompt_width=v.w-ix;
+        if(prompt_width>340)prompt_width=340;
+        fan_add_area(areas,&count,(EpdRect){ix-2,100,prompt_width+4,42});
         for(int i=0;i<count;i++)fan_area_pixels(ctx->fb,s_fan_paint.base,areas[i],false);
     }else {
         // 基底只在打开或明确改变布局时生成；暂不把后台提示覆盖到滑动菜单上。
@@ -1568,7 +1585,14 @@ static bool fan_present(app_ctx_t *ctx) {
     render_fan_cursor(ctx->fb);
     enum EpdDrawError error=EPD_DRAW_SUCCESS;
     if(partial) {
-        error=update_display_area_with(ctx->hl,&E0470_WAVEFORM,MODE_GL16,fast_damage_pixels(areas,count));
+        // 每个小区域单独推一相 DU；不能把新旧两个圆合并成一个大矩形，
+        // 否则滑动时会触发大面积刷新并闪烁。
+        // Push each small area separately with DU; never union old/new markers into
+        // one large rectangle, which caused the sliding flicker.
+        for(int i=0;i<count;i++) {
+            enum EpdDrawError e=update_display_area_with(ctx->hl,&E0470_WAVEFORM,MODE_DU,areas[i]);
+            if(e!=EPD_DRAW_SUCCESS)error=e;
+        }
     }else error=update_display_with(ctx->hl,&E0470_WAVEFORM,MODE_GL16);
     int fallback=-1;if(error!=EPD_DRAW_SUCCESS)fallback=update_display_full(ctx->hl);
     s_fan_paint.owner=ctx->hl;s_fan_paint.key=key;s_fan_paint.rotation=rotation;s_fan_paint.selected=selected;
