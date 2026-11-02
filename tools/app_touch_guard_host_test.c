@@ -55,6 +55,19 @@ int main(void) {
     assert(!app_touch_guard_filter(&empty, now, true, true));
     assert(!app_touch_guard_blocked());
     assert(app_touch_guard_take_event() == 2);
+    // The three bottom keys are physical, always work, and clear the guard.
+    app_touch_guard_reset();
+    now += 1000;
+    for (int i = 0; i < 8 && !app_touch_guard_blocked(); i++) {
+        cst836u_touch_t ghost = sample(true, 40, 100, 640, 1100);
+        (void)app_touch_guard_filter(&ghost, now, true, true);
+        now += 30;
+    }
+    assert(app_touch_guard_blocked());
+    cst836u_touch_t key = sample(true, 240, 1300, -1, -1);
+    assert(!app_touch_guard_filter(&key, now, true, true));
+    assert(!app_touch_guard_blocked());
+    now += 40;
     // A deliberate central hold recovers and then waits for lift; the recovery touch must not tap.
     app_touch_guard_reset();
     now += 1000;

@@ -94,6 +94,17 @@ static int point_distance(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by) {
 bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, bool enabled) {
     if (!g.initialized) app_touch_guard_reset();
     if (!touch) return false;
+    // 底部三键是独立物理触摸区（y>=1300），不属于屏幕鬼触范围；
+    // 按键必须始终可用，并顺带解除屏蔽，避免只能按电源键。
+    // The three bottom keys are a separate physical touch area (y>=1300),
+    // never ghost contacts. They must always work and also clear the guard.
+    if (touch->y >= 1300) {
+        if (g.blocked) {
+            end_block();
+            g.suspended_until = now_ms + 2000;
+        }
+        return false;
+    }
     if (!dual || !enabled) {
         if (g.blocked) end_block();
         else clear_stats();
@@ -135,9 +146,12 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
             // 单指停在屏幕中央 0.9s 作为恢复手势；鬼触通常是对置双点/边缘抖动。
             // A single stationary finger in the central safe zone for 0.9 s recovers;
             // ghost contact is typically opposed points or edge chatter.
+            // 覆盖中央区域和下方中键带，用户可以用平时返回主页的中键长按恢复。
+            // Cover the center and the lower center-key band, so the usual home/back
+            // touch key can also be held to recover.
             const bool center = touch->count == 1 &&
-                touch->x >= 684 / 4 && touch->x < 684 * 3 / 4 &&
-                touch->y >= 1216 / 4 && touch->y < 1216 * 3 / 4;
+                touch->x >= 684 / 5 && touch->x < 684 * 4 / 5 &&
+                touch->y >= 1216 / 5 && touch->y < 1216 * 9 / 10;
             if (center) {
                 int dx = (int)touch->x - (int)g.calm_x;
                 int dy = (int)touch->y - (int)g.calm_y;
