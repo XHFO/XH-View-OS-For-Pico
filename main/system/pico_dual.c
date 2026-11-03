@@ -737,18 +737,38 @@ static void pair_scan_start(void) {
 static void pair_scan_update(void) {
     load();
     int64_t now = ps_now();
-    if (settings.role == 1 && primary_ip[0] && settings.code[0] && now - pair_last_tx >= 1500) {
-        pair_last_tx = now;
-        int s = socket(AF_INET, SOCK_DGRAM, 0);
-        if (s >= 0) {
-            int yes = 1;
-            setsockopt(s, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
-            struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(18772) };
-            inet_pton(AF_INET, "255.255.255.255", &to.sin_addr);
-            char msg[80];
-            int n = snprintf(msg, sizeof(msg), "PICOPAIR1 %s %s", settings.code, primary_ip);
-            (void)sendto(s, msg, (size_t)n, 0, (struct sockaddr*)&to, sizeof(to));
-            close(s);
+    if (settings.role == 1) {
+        // 不依赖双机页或校验完成；只要 Wi-Fi 有地址就持续广播。
+        // Never wait for sync/verification or the dual page; broadcast whenever Wi-Fi has an address.
+        if (!primary_ip[0] || now - last_ip >= 1000) {
+            char ip[48];
+            if (local_address(ip)) snprintf(primary_ip, sizeof(primary_ip), "%s", ip);
+            else primary_ip[0] = 0;
+            last_ip = now;
+        }
+        if (primary_ip[0] && settings.code[0] && now - pair_last_tx >= 500) {
+            pair_last_tx = now;
+            int s = socket(AF_INET, SOCK_DGRAM, 0);
+            if (s >= 0) {
+                int yes = 1;
+                setsockopt(s, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+                char msg[80];
+                int n = snprintf(msg, sizeof(msg), "PICOPAIR1 %s %s", settings.code, primary_ip);
+                struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(18772) };
+                inet_pton(AF_INET, "255.255.255.255", &to.sin_addr);
+                (void)sendto(s, msg, (size_t)n, 0, (struct sockaddr*)&to, sizeof(to));
+                // 部分 AP 丢弃受限广播，补发同网段定向广播。
+                // Some APs drop limited broadcast; also send the subnet-directed address.
+                char directed[48];
+                snprintf(directed, sizeof(directed), "%s", primary_ip);
+                char* dot = strrchr(directed, '.');
+                if (dot) {
+                    snprintf(dot + 1, sizeof(directed) - (size_t)(dot + 1 - directed), "255");
+                    inet_pton(AF_INET, directed, &to.sin_addr);
+                    (void)sendto(s, msg, (size_t)n, 0, (struct sockaddr*)&to, sizeof(to));
+                }
+                close(s);
+            }
         }
     }
     if (!pair_scanning) return;
@@ -775,7 +795,7 @@ static void pair_scan_update(void) {
             }
         }
     }
-    if (pair_scanning && now - pair_started > 15000) {
+    if (pair_scanning && now - pair_started > 30000) {
         pair_stop();
         ps_toast("未找到主机，请确认两台在同一 Wi-Fi");
         ps_dirty();

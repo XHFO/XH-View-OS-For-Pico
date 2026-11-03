@@ -1,3 +1,8 @@
+## 0.40.0-dual28（独立双机实验版）
+
+- 自动配对广播不再依赖进入双机页或书库校验完成：主机只要有 Wi-Fi 地址就每 500ms 广播，并同时发受限广播和同网段定向广播；地址每秒刷新。
+- Pairing broadcast no longer waits for the dual page or library verification: the primary advertises every 500 ms with both limited and subnet-directed broadcast while its Wi-Fi address refreshes each second.
+
 ## 0.40.0-dual27（独立双机实验版）
 
 - 单侧离开阅读后不再被对端状态拉回阅读页：本机离开阅读时锁存 away，远端阅读状态不再自动 apply，直到本机重新进入阅读。
