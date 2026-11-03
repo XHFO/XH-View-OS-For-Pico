@@ -1273,6 +1273,16 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     int64_t started = esp_timer_get_time();
     lock_draw();
     bool cached = !s_toolbar && !s_selection && !s_scrubbing && !s_clear_confirm && s_next_fb && s_next_page == (int)s_page;
+    // 双机翻页经常没有预取帧；为了保留翻页动画，在动画路径上同步准备新页。
+    // Dual turns often miss the prefetched frame; prepare it synchronously for the animation path.
+    if (s_turn_anim_pending && !cached) {
+        ensure_prep();
+        if (s_next_fb) {
+            draw_reader(s_next_fb, s_page);
+            s_next_page = (int)s_page;
+            cached = true;
+        }
+    }
     bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
     s_turn_anim_pending = false;
     if (animate) {

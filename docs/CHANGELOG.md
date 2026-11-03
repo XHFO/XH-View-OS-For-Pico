@@ -1,3 +1,9 @@
+## 0.40.0-dual36（独立双机实验版）
+
+- 恢复左侧主机优先刷新：从机再次等待左页 ready 后再应用目标页，避免从机先跳、主机落后。
+- 恢复双机翻页动画：预取帧未命中时在动画路径同步准备新页，保留 3 帧白色纸边/黑色折线动画。
+- Restore left-page-first refresh gating and the dual-page animation path when the prefetched frame is missing.
+
 ## 0.40.0-dual35（独立双机实验版）
 
 - 补齐单台退出后恢复双屏：离开时清除本机 solo/rejoin 状态，返回后由仍在阅读的一台决定合流页，避免返回设备拿旧页覆盖对端当前页。
