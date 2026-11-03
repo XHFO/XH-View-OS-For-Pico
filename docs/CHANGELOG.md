@@ -1,3 +1,8 @@
+## 0.40.0-dual43（独立双机实验版）
+
+- 翻页动画改为 2 帧极简纸缝，去掉白色渐变和白闪；每 6 页做一次整屏 GC16 清理残影，减少每页闪烁。
+- Two-frame minimal gutter animation with no white flash or gradient; a full GC16 every six pages clears accumulated ghosting. Bump to dual43.
+
 ## 0.40.0-dual42（独立双机实验版）
 
 - 移除翻页动画结尾的整屏 GL16 白闪：最后一帧正文已经是新页，改为正文 DU + 顶部栏 DU，不再整屏闪一下。

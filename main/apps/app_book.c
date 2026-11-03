@@ -126,6 +126,8 @@ static uint32_t s_dual_present_pending;
 static enum EpdRotation s_book_rotation;
 static uint32_t s_dual_target,s_dual_displayed;
 static bool s_dual_solo,s_dual_rejoin;
+static unsigned s_dual_cleanup_turns;
+static bool s_dual_cleanup_pending;
 static int64_t s_dual_peer_away_since;
 static bool s_remote_annotation;
 static bool s_dual_blank,s_dual_applying;
@@ -1257,18 +1259,11 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             else if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
             else {
-                // 白色渐变页边：旧页朝纸缝逐渐推白，快速闪过后露出新页。
-                // 只用 4 级灰阶，避免墨水屏出现连续色带。
-                // White gradient edge: the old page washes out toward the gutter, flashes
-                // white briefly, then the new page appears. Quantized to four levels.
-                if (rel >= -1 && rel <= 1) gray = 15;
-                else if (!take_new) {
-                    int d = rel < 0 ? -rel : rel;
-                    int q = d * 3 / 170;
-                    if (q > 3) q = 3;
-                    int old_gray = (old[idx] >> shift) & 15;
-                    gray = old_gray + (15 - old_gray) * (3 - q) / 3;
-                }
+                // 极简纸缝：只保留一条黑色折线，不再做白闪或整屏渐变。
+                // 残影交给每 N 页一次的整屏 GC16 清理。
+                // Minimal gutter: one black seam, no white flash or full-screen gradient;
+                // ghosting is cleaned by a periodic full GC16.
+                if (rel >= -1 && rel <= 1) gray = 0;
             }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
@@ -1301,7 +1296,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {35, 70, 101, 100};
+            static const int steps[] = {50, 100};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;
@@ -1318,14 +1313,17 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             // One full-screen GC16 after the animation clears gutter and header ghosting.
             if (cached) memcpy(ctx->fb, s_next_fb, fb_bytes());
             else draw_reader(ctx->fb, s_page);
-            // 正文最后一帧已经是新页，不再做整屏 GL16，避免结尾白闪；
-            // 只补一次正文 DU，并单独用 DU 更新顶部栏。
-            // The last body frame already shows the new page; skip the full GL16
-            // flash and only refresh the body/header with DU.
             s_area = reader_area();
             s_mode = MODE_DU;
             s_reader_split = true;
             s_full = false;
+            if (s_dual_cleanup_pending) {
+                s_dual_cleanup_pending = false;
+                s_area = (EpdRect){0, 0, reader_width(), reader_height()};
+                s_mode = MODE_GC16;
+                s_reader_split = false;
+                s_full = true; // 每 6 页一次整屏清理
+            }
             unlock_draw();
             return APP_REDRAW_AREA;
         }
@@ -3168,6 +3166,7 @@ static app_redraw_t dual_page_ready(app_ctx_t* ctx) {
     // after left_ready; only the secondary animates to mask the network gap.
     s_turn_anim_pending = previous_page && s_dual_displayed != previous_page;
     s_turn_anim_dir = s_dual_displayed > previous_page ? 1 : -1;
+    if (s_turn_anim_pending && ++s_dual_cleanup_turns % 6 == 0) s_dual_cleanup_pending = true;
     s_dual_target=0; s_dual_blank=s_dual_wait=false; s_view=READING;
     prepare_page_images(); save_progress(); return paint_reading(ctx,MODE_GL16);
 }
