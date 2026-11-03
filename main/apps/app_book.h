@@ -44,4 +44,8 @@ typedef struct {
 } app_book_dual_status_t;
 /// 只读已显示分页，不加载书籍或读取文件。/ Inspect displayed pagination without loading books or reading files.
 void app_book_dual_status(app_book_dual_status_t* out);
+/// 双机阅读仍在正文/目录页时保持联动；离开到书架或其他应用即暂停对端翻页。
+/// Keep pairing active while on the reading page or contents; leaving for shelf/apps pauses the peer.
+bool app_book_dual_engaged(void);
+void app_book_dual_pause(void);
 extern const app_desc_t app_book;

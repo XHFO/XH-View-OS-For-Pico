@@ -41,6 +41,8 @@ typedef struct { uint32_t magic; int16_t x, y, z; } dual_base_t;
 static dual_base_t base;
 static bool calibrated;
 static uint32_t base_applied;
+static bool reading_active = true;
+static bool reading_known;
 static bool manual_rotation;
 static int64_t orientation_store_at;
 static uint8_t orientation_bits(void) {
@@ -433,6 +435,17 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     dl_control_connected(dual_session, ble.connected);
     dl_tick(dual_session, ctx->now_ms, online);
     (void)dl_face(dual_session, contact_face());
+    bool active = app == &app_book && app_book_dual_engaged();
+    if (active && (!reading_known || !reading_active)) {
+        reading_known = true;
+        reading_active = true;
+        (void)dl_reading_active(dual_session, true);
+        ps_dirty();
+    } else if (!active && reading_known && reading_active) {
+        reading_active = false;
+        (void)dl_reading_active(dual_session, false);
+        ps_dirty();
+    }
     last_work = ctx->now_ms;
     uint8_t packet[DL_CONTROL_MAX];
     for (unsigned i = 0; i < 4; ++i) {
@@ -450,12 +463,20 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         (void)ps_dual_calibrate();
     }
     if (settings.role == 2 && status.base_valid && status.base_seq != base_applied) {
-        base = (dual_base_t){.magic = 0x31425344u, .x = status.base_x, .y = status.base_y, .z = status.base_z};
+        // 从机也采自己的重力向量，避免两台传感器/物理旋转差异共用同一基准。
+        // The secondary samples its own gravity vector instead of assuming identical sensor mounting.
+        int16_t x, y, z;
+        if (ps_contact_vector(&x, &y, &z) && abs(z) >= 400)
+            base = (dual_base_t){.magic = 0x31425344u, .x = x, .y = y, .z = z};
+        else
+            base = (dual_base_t){.magic = 0x31425344u, .x = status.base_x, .y = status.base_y, .z = status.base_z};
         calibrated = true;
         base_applied = status.base_seq;
         (void)ps_store("dualbase1", &base, sizeof(base));
         ps_dirty();
+        ps_toast("开合校准已同步");
     }
+    if (before.peer_reading && !status.peer_reading) app_book_dual_pause();
     if (memcmp(&orientation, &status.orientation, sizeof(orientation))) {
         orientation = status.orientation;
         ps_dirty();
@@ -487,7 +508,10 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
             stored = status.reading.revision;
     }
     const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
-    if (ui_idle && status.connected && status.synced && (settings.role == 1 || status.left_ready) &&
+    bool engaged = app_book_dual_engaged();
+    if (ui_idle && status.connected && status.synced &&
+        (status.peer_reading || !engaged) &&
+        (settings.role == 1 || status.left_ready) &&
         path && font && status.reading.revision != applied &&
         (app == &app_book || (app->product_shell && idle_reading_route()))) {
         if (app_book_dual_apply(path, font, status.reading.spread + (settings.role == 2 ? 2 : 1),
@@ -841,7 +865,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
         "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
         "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
-        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"orientation\":%u,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"base_valid\":%s,\"cal_request\":%s,\"peer_reading\":%s,\"orientation\":%u,"
         "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
         accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
         state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
@@ -854,7 +878,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         state.listed?"true":"false",state.peer_listed?"true":"false",
         state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
         (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
-        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
+        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,status.base_valid?"true":"false",status.calibration_request?"true":"false",status.peer_reading?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
         book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
     return true;

@@ -1,3 +1,16 @@
+## 0.40.0-dual22（独立双机实验版）
+
+- 修复双机书库尚未完全一致时，姿态/校准/防误触控制帧被 `control_ready` 拦截的问题；这些控制帧现在只要求蓝牙控制通道兼容，不再等待书库同步。
+- 修复从机请求校准后主机不响应：校准请求、校准基准、朝向和防误触帧提升到书库就绪检查之前，避免被朝向帧长期插队。
+- Send pose, guard, calibration request and baseline before the library-ready gate; calibration no longer depends on both libraries matching and cannot be starved by face updates.
+- 双机阅读支持多任务：任一台离开正文/目录页去书架或其他应用时，对端保持当前页并冻结偶数页翻页；回到阅读页后恢复联动。
+- Allow one reader to leave for the shelf or another app: the peer keeps its current page and freezes even-page turns; returning to the reading page resumes the pair.
+
+## 0.40.0-dual21（独立双机实验版）
+
+- 校准改为两端各自采样自己的重力基准；主机只负责发出校准开始/触发，避免两台传感器安装或物理旋转不同却共用同一向量。
+- Each reader now samples its own gravity baseline; the primary only triggers calibration, avoiding a shared vector when sensor mounting or physical rotation differs.
+
 ## 0.40.0-dual20（独立双机实验版）
 
 - 防误触加入桌面展开校准：两台展开平放后点一次「校准开合姿态」，主机采样重力向量并广播，从机保存同一基准；校准前防误触不启用。

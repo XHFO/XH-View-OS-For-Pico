@@ -3022,6 +3022,16 @@ bool app_book_dual_apply(const char *path,const char *font,uint32_t target,uint8
     if((s_text&&!strcmp(s_path,path))||!strcmp(s_open_path,path)||!strcmp(s_requested_path,path))return true;
     s_dual_applying=true;bool ok=app_book_open_path(path);s_dual_applying=false;return ok;
 }
+bool app_book_dual_engaged(void) {
+    return s_product_session && s_text && !s_open_path[0] &&
+           (s_view == READING || s_view == TOC);
+}
+void app_book_dual_pause(void) {
+    s_dual_target = 0;
+    s_dual_present_pending = 0;
+    s_dual_anchor.pending = false;
+    s_dual_wait = false;
+}
 void app_book_dual_status(app_book_dual_status_t* out) {
     *out = (app_book_dual_status_t){.open=s_text && s_view==READING, .blank=s_dual_blank,
         .target=s_dual_target, .page=s_dual_displayed, .chapter=s_chapter, .font_px=s_px,

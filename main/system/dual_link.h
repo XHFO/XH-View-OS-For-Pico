@@ -52,6 +52,7 @@ typedef struct {
     int16_t base_x, base_y, base_z; ///< 桌面展开参考重力向量。/ Desk-unfolded reference gravity vector.
     uint32_t base_seq; ///< 基准版本，用于只应用一次。/ Baseline revision, applied once.
     bool calibration_request; ///< 从机请求主机重新校准。/ Secondary asks the primary to calibrate.
+    bool peer_reading; ///< 对端当前是否仍在阅读页。/ Whether the peer is still on the reading page.
 } dl_status_t;
 /// 所有接口只从UI线程使用，tick每次至多一个文件块。/ UI-thread only; tick processes at most one file block.
 dual_link_t* dl_create(const dl_config_t* config);
@@ -101,6 +102,9 @@ bool dl_face(dual_link_t* link, int face);
 bool dl_baseline(dual_link_t* link, int16_t x, int16_t y, int16_t z);
 bool dl_calibration_request(dual_link_t* link);
 void dl_calibration_clear(dual_link_t* link);
+/// 通知对端本机是否仍在阅读页；离开时对端冻结当前页，不做偶数翻页。
+/// Tell the peer whether this unit is still reading; the peer freezes its page when not.
+bool dl_reading_active(dual_link_t* link, bool active);
 
 /// BLE 已加密且认证后才交付控制帧；这些接口只从 UI 线程调用。
 /// Deliver control frames only after BLE encryption/authentication; UI-thread only.
