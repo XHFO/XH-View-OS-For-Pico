@@ -1253,7 +1253,8 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             int shift = (x & 1) * 4;
             uint8_t old_byte = dst[idx];
             int gray = take_new ? ((fresh[idx] >> shift) & 15) : ((old[idx] >> shift) & 15);
-            if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
+            if (progress == 101) gray = 15; // 纯白刷新块
+            else if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
             else {
                 // 黑色渐变页边：旧页朝纸缝逐渐压黑，新页从黑幕后露出。
@@ -1300,7 +1301,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {25, 50, 75, 100};
+            static const int steps[] = {20, 45, 70, 101, 100};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;

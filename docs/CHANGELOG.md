@@ -1,3 +1,8 @@
+## 0.40.0-dual40（独立双机实验版）
+
+- 黑色渐变结尾插入一帧纯白正文块，再做最终新页刷新；用于清掉渐变边缘和上一页残影。
+- Add one solid-white body frame at the end of the black-gradient transition before the final new page, reducing edge and previous-page ghosting. Bump to dual40.
+
 ## 0.40.0-dual39（独立双机实验版）
 
 - 翻页动画改为第 7 版黑色渐变：旧页朝纸缝压黑，新页从黑幕后露出；使用 4 级灰阶避免连续色带，帧数改为 4 帧。
