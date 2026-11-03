@@ -1,8 +1,8 @@
 # 双机阅读实验分支 / Dual-reader experiment
 
-本功能只属于 `experiment/dual-pico-reader`，以 `0.40.0-dev71` 的本地实现为基线。它不并入主系统、不替换常规版本；两台设备均使用 `0.40.0-dual36`，以使用差异同步、左页优先显示、共享字号、目录与原文定位、主机自动方向与各端独立180度翻转。
+本功能只属于 `experiment/dual-pico-reader`，以 `0.40.0-dev71` 的本地实现为基线。它不并入主系统、不替换常规版本；两台设备均使用 `0.40.0-dual37`，以使用差异同步、左页优先显示、共享字号、目录与原文定位、主机自动方向与各端独立180度翻转。
 
-This feature belongs only to `experiment/dual-pico-reader`, based on the local dev71 implementation. It is not merged into the main system. Use dual36 on both readers for incremental sync, left-page-first presentation, shared typography, contents and source navigation, and primary-following orientation with independent 180-degree offsets.
+This feature belongs only to `experiment/dual-pico-reader`, based on the local dev71 implementation. It is not merged into the main system. Use dual37 on both readers for incremental sync, left-page-first presentation, shared typography, contents and source navigation, and primary-following orientation with independent 180-degree offsets.
 
 本私有分支提供完整源码；私有仓库 `main` 原有的切片目录不受此分支上传影响。
 
@@ -51,7 +51,7 @@ Both toolbars adjust one shared font size (36–72px, step 4). Reflow preserves 
 - **蓝牙 BLE**：主机为 GATT 服务端，从机为客户端；传递书库一致性摘要、当前书籍标识、页码和上一组/下一组指令。使用六位配对码、LE Secure Connections、MITM 认证和 16 字节密钥。加密认证、MTU 和通知订阅全部就绪后才能开始控制。
 - 每条从机请求带序号和基础页码版本；主机确认最终状态，重复或过期请求不重复翻页。丢失通知通过重发最终状态恢复。
 - 双机模式临时独占 BLE 控制器；暂停外部蓝牙翻页器，保留其已配对设备和开关，关闭双机后恢复。暂不同时连接外部翻页器。
-- 两端均须使用 `0.40.0-dual36` 。数据协议仍为 3；BLE 控制同步独立方向状态，控制协议为 4，不能与 dual13 及更早版本混用。无需电脑维持连接。
+- 两端均须使用 `0.40.0-dual37` 。数据协议仍为 3；BLE 控制同步独立方向状态，控制协议为 4，不能与 dual13 及更早版本混用。无需电脑维持连接。
 
 Wi-Fi carries library/file data only. Authenticated BLE carries book identity, page state and sequenced turn requests. Matching verified libraries can continue over BLE with Wi-Fi offline. The dual-reader session temporarily leases the radio and restores HID pager preferences after complete teardown.
 

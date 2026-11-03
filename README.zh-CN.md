@@ -1,6 +1,6 @@
 # XH View OS For Pico · Duo
 
-> **双机阅读先行预览版 · 0.40.0-dual36** — `experiment/dual-pico-reader` 的完整固件源码。Wi-Fi 同步书库和共享字体，蓝牙同步开书、双页位置与翻页。使用方法见[双机阅读指南](docs/DUAL-READER.md)。本分支独立于主系统，以下保留上游硬件说明。
+> **双机阅读先行预览版 · 0.40.0-dual37** — `experiment/dual-pico-reader` 的完整固件源码。Wi-Fi 同步书库和共享字体，蓝牙同步开书、双页位置与翻页。使用方法见[双机阅读指南](docs/DUAL-READER.md)。本分支独立于主系统，以下保留上游硬件说明。
 
 > 独立实验分支：双机阅读（两台小纸 Pico、Wi-Fi 共享书库、蓝牙联动交错双页、电源短按翻组）。见 [双机阅读说明](docs/DUAL-READER.md)。不合并主系统；实机验收以交付报告为准。
 

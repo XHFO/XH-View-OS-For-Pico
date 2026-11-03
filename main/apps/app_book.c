@@ -3147,11 +3147,10 @@ static app_redraw_t dual_page_ready(app_ctx_t* ctx) {
     }
     uint32_t previous_page = s_dual_displayed;
     s_dual_displayed=s_dual_target; s_dual_present_pending=s_dual_target;
-    // 主机是同步基准，先推屏确认再让从机跟进；主机不做翻页动画，避免把
-    // left_ready 推迟四帧，让从机再等一轮。从机保留动画掩盖网络/刷新间隔。
-    // The primary is the sync reference: skip its animation so left_ready is not
-    // delayed by four frames; the secondary keeps the animation to mask the gap.
-    s_turn_anim_pending = previous_page && s_dual_displayed != previous_page;
+    // 主机是同步基准：不做动画，立即推屏并置 left_ready；从机用动画掩盖等待和网络间隔。
+    // The primary is the sync reference: present immediately so the secondary starts
+    // after left_ready; only the secondary animates to mask the network gap.
+    s_turn_anim_pending = ps_dual_role() != 1 && previous_page && s_dual_displayed != previous_page;
     s_turn_anim_dir = s_dual_displayed > previous_page ? 1 : -1;
     s_dual_target=0; s_dual_blank=s_dual_wait=false; s_view=READING;
     prepare_page_images(); save_progress(); return paint_reading(ctx,MODE_GL16);

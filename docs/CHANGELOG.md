@@ -1,3 +1,8 @@
+## 0.40.0-dual37（独立双机实验版）
+
+- 主设备不再等待自身 3 帧动画：先立即推屏并置 left_ready，从设备随后用动画跟进；修复主机反而比从机慢约 1 秒。
+- Skip the primary's own animation so it presents first and sets left_ready immediately; the secondary keeps the animation and follows. Fixes the primary appearing about one second late.
+
 ## 0.40.0-dual36（独立双机实验版）
 
 - 恢复左侧主机优先刷新：从机再次等待左页 ready 后再应用目标页，避免从机先跳、主机落后。
