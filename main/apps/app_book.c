@@ -1296,7 +1296,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {50, 100};
+            static const int steps[] = {33, 66};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;
@@ -1313,17 +1313,14 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             // One full-screen GC16 after the animation clears gutter and header ghosting.
             if (cached) memcpy(ctx->fb, s_next_fb, fb_bytes());
             else draw_reader(ctx->fb, s_page);
-            s_area = reader_area();
-            s_mode = MODE_DU;
-            s_reader_split = true;
-            s_full = false;
-            if (s_dual_cleanup_pending) {
-                s_dual_cleanup_pending = false;
-                s_area = (EpdRect){0, 0, reader_width(), reader_height()};
-                s_mode = MODE_GC16;
-                s_reader_split = false;
-                s_full = true; // 每 6 页一次整屏清理
-            }
+            // 动画结束后不再补 DU 或白色刷新；直接用这一次整屏 GC16 同时落新页和清残影，
+            // 因此每页只有一次刷新闪光，而不是“动画 + 额外刷新”两次。
+            // Finish with one full GC16 that both lands the new page and clears ghosting,
+            // so there is a single refresh flash per page instead of animation plus an extra refresh.
+            s_area = (EpdRect){0, 0, reader_width(), reader_height()};
+            s_mode = MODE_GC16;
+            s_reader_split = false;
+            s_full = true;
             unlock_draw();
             return APP_REDRAW_AREA;
         }

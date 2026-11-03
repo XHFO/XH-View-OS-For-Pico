@@ -1,7 +1,7 @@
 # The following lines of boilerplate have to be in your project's
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.22)
-set(PROJECT_VER "0.40.0-dual43")
+set(PROJECT_VER "0.40.0-dual44")
 # OFF：家庭 HA/打印机静态栈改为 TF tools/home-link.pga；固件仅薄宿主空状态。
 # OFF: Home HA/printer static stack moves to TF tools/home-link.pga; firmware keeps thin empty host.
 set(PICO_HOME_LINK_FULL OFF CACHE BOOL "Statically link full Home Assistant/printer stack")

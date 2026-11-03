@@ -1,3 +1,8 @@
+## 0.40.0-dual44（独立双机实验版）
+
+- 翻页动画和残影清理合并为一次刷新：2 帧纸缝动画后直接整屏 GC16 落新页，不再额外补 DU 或白色刷新，每页只有一次刷新闪光。
+- Merge the turn and cleanup into one refresh: two DU gutter frames followed by a single full GC16 that lands the new page and clears ghosting; no extra DU or white refresh. Bump to dual44.
+
 ## 0.40.0-dual43（独立双机实验版）
 
 - 翻页动画改为 2 帧极简纸缝，去掉白色渐变和白闪；每 6 页做一次整屏 GC16 清理残影，减少每页闪烁。
