@@ -1,3 +1,8 @@
+## 0.40.0-dual45（独立双机实验版）
+
+- 翻页动画改为正文局部 DU：16 级黑灰渐变，支持切换 8 级量化；新页正文保留 16 级。每 6 页整屏 GC16 清残影。
+- Local body DU animation with 16-level black gradient and an 8-level quantized mode; new-page text keeps 16 levels. A full GC16 every six turns clears ghosting. Bump to dual45.
+
 ## 0.40.0-dual44（独立双机实验版）
 
 - 翻页动画和残影清理合并为一次刷新：2 帧纸缝动画后直接整屏 GC16 落新页，不再额外补 DU 或白色刷新，每页只有一次刷新闪光。

@@ -1259,11 +1259,19 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             else if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
             else {
-                // 极简纸缝：只保留一条黑色折线，不再做白闪或整屏渐变。
-                // 残影交给每 N 页一次的整屏 GC16 清理。
-                // Minimal gutter: one black seam, no white flash or full-screen gradient;
-                // ghosting is cleaned by a periodic full GC16.
+                // 局部 DU 的 16 级黑灰渐变；8 灰模式把渐变量化成 8 级。
+                // 16-level black gradient in local DU; 8-gray mode quantizes the
+                // gradient to eight levels. New-page text keeps all 16 levels.
                 if (rel >= -1 && rel <= 1) gray = 0;
+                else if (!take_new) {
+                    int d = rel < 0 ? -rel : rel;
+                    int shade = (170 - d) * 15 / 170;
+                    if (shade < 0) shade = 0;
+                    if (shade > 15) shade = 15;
+                    int old_gray = (old[idx] >> shift) & 15;
+                    gray = old_gray * (15 - shade) / 15;
+                    if (ps_dual_anim_gray() == 8) gray = (gray / 2) * 2;
+                }
             }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
@@ -1296,7 +1304,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {33, 66};
+            static const int steps[] = {40, 80};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;
@@ -1313,14 +1321,20 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             // One full-screen GC16 after the animation clears gutter and header ghosting.
             if (cached) memcpy(ctx->fb, s_next_fb, fb_bytes());
             else draw_reader(ctx->fb, s_page);
-            // 动画结束后不再补 DU 或白色刷新；直接用这一次整屏 GC16 同时落新页和清残影，
-            // 因此每页只有一次刷新闪光，而不是“动画 + 额外刷新”两次。
-            // Finish with one full GC16 that both lands the new page and clears ghosting,
-            // so there is a single refresh flash per page instead of animation plus an extra refresh.
-            s_area = (EpdRect){0, 0, reader_width(), reader_height()};
-            s_mode = MODE_GC16;
-            s_reader_split = false;
-            s_full = true;
+            // 动画全部走正文局部 DU；每 6 页才做一次整屏 GC16 清残影。
+            // All animation frames stay in the body's local DU; a full GC16 runs
+            // only every six turns to clean accumulated ghosting.
+            s_area = reader_area();
+            s_mode = MODE_DU;
+            s_reader_split = true;
+            s_full = false;
+            if (s_dual_cleanup_pending) {
+                s_dual_cleanup_pending = false;
+                s_area = (EpdRect){0, 0, reader_width(), reader_height()};
+                s_mode = MODE_GC16;
+                s_reader_split = false;
+                s_full = true;
+            }
             unlock_draw();
             return APP_REDRAW_AREA;
         }

@@ -26,6 +26,8 @@ bool ps_dual_contact_likely(void);
 /// Desk-unfolded calibration; the primary samples and broadcasts, a secondary requests it.
 bool ps_dual_calibrate(void);
 bool ps_dual_calibrated(void);
+int ps_dual_anim_gray(void);
+void ps_dual_toggle_anim_gray(void);
 void ps_dual_sync_annotation(uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text);
 int ps_dual_peer_face(void);
 /// 主机是否已确认当前版本推屏成功；从机据此才允许真正显示。
