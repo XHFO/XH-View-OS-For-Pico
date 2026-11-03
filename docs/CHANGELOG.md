@@ -1,3 +1,8 @@
+## 0.40.0-dual32（独立双机实验版）
+
+- 修复 BLE 配对信息晚到后不生效：主机的 IP/配对码在广播启动后才就绪时，会重启一次广播并更新扫描响应，不再一直广播空信息。
+- Fix late BLE pairing info: if the primary IP/code becomes ready after advertising starts, restart advertising once so the scan response carries the data.
+
 ## 0.40.0-dual31（独立双机实验版）
 
 - 暂时停用不安全的 SoftAP 自动启动：上一版在 WiFi 所有权未就绪时调用 `esp_netif_create_default_wifi_ap` 会触发 ESP_ERR_INVALID_STATE 并无限重启。恢复 BLE 发现 + 现有局域网配对；热点握手待安全 AP 生命周期完成后再启用。

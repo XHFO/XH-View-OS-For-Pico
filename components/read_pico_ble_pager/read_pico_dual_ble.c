@@ -43,6 +43,7 @@ static uint32_t epoch;
 static int64_t retry_at, setup_deadline;
 static bool scan_only;
 static char adv_ip[48], adv_code[7];
+static bool adv_info_dirty;
 static pico_dual_ble_peer_info_t peer_info;
 static struct ble_npl_callout ticker;
 static ble_addr_t attempted, rejected[4];
@@ -243,6 +244,12 @@ static void host_tick(struct ble_npl_event* ev) {
     int64_t now=esp_timer_get_time();
     if(connecting && now>setup_deadline)reject(BLE_HS_ETIMEOUT);
     if(synced && connection==NONE && !connecting && now>=retry_at){
+        if(current.role==1 && adv_info_dirty && ble_gap_adv_active()) {
+            // 扫描响应只能在重新广播时更新；IP 到达后重启一次广播，带出配对信息。
+            // Scan response can only change on restart; restart advertising once the IP is ready.
+            adv_info_dirty = false;
+            ble_gap_adv_stop();
+        }
         if(current.role==1 && !ble_gap_adv_active()){
             struct ble_hs_adv_fields fields={.flags=BLE_HS_ADV_F_DISC_GEN|BLE_HS_ADV_F_BREDR_UNSUP,
                 .uuids128=(ble_uuid128_t*)&service_uuid,.num_uuids128=1,.uuids128_is_complete=1};
@@ -263,6 +270,7 @@ static void host_tick(struct ble_npl_event* ev) {
                 .itvl_min=160,.itvl_max=240};
             if(!rc)rc=ble_gap_adv_start(address_type,NULL,BLE_HS_FOREVER,&params,gap_event,NULL);
             if(rc){error_set(rc);retry_at=now+2000000;}
+            else adv_info_dirty = false;
         }else if(current.role==2 && !ble_gap_disc_active()){
             struct ble_gap_disc_params params={.itvl=0x50,.window=0x40,.passive=0,.filter_duplicates=0};
             int rc=ble_gap_disc(address_type,5000,&params,gap_event,NULL);
@@ -329,9 +337,15 @@ static void supervisor(void* unused) {
     vTaskDelete(NULL);
 }
 void pico_dual_ble_set_pairing_info(const char* ip, const char* code) {
+    char next_ip[48], next_code[7];
+    snprintf(next_ip, sizeof(next_ip), "%s", ip ? ip : "");
+    snprintf(next_code, sizeof(next_code), "%s", code ? code : "");
     portENTER_CRITICAL(&guard);
-    snprintf(adv_ip, sizeof(adv_ip), "%s", ip ? ip : "");
-    snprintf(adv_code, sizeof(adv_code), "%s", code ? code : "");
+    if (strcmp(adv_ip, next_ip) || strcmp(adv_code, next_code)) {
+        memcpy(adv_ip, next_ip, sizeof(adv_ip));
+        memcpy(adv_code, next_code, sizeof(adv_code));
+        adv_info_dirty = true;
+    }
     portEXIT_CRITICAL(&guard);
 }
 esp_err_t pico_dual_ble_scan_start(void) {
