@@ -27,7 +27,7 @@
   h1{font-size:18px;letter-spacing:.04em;margin:0;font-weight:650}
   .sub{color:var(--muted);font-size:12px;margin:6px 0 22px}
   .section-label{font-size:11px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin:22px 0 9px}
-  .variants{display:grid;gap:8px}
+  .variants{display:grid;gap:8px;max-height:56vh;overflow:auto;padding-right:4px;scrollbar-width:thin}
   .variant{
     display:grid;grid-template-columns:38px 1fr;gap:11px;align-items:start;
     width:100%;text-align:left;color:var(--ink);background:var(--panel);
@@ -44,6 +44,9 @@
   .glyph.g5:before{background:radial-gradient(circle at 70% 65%,#fff 0 16%,#1c1e1b 17% 20%,#f7f5ec 21%)}
   .glyph.g6:before{background:repeating-linear-gradient(0deg,#f7f5ec 0 5px,#1c1e1b 6px 7px)}
   .glyph.g7:before{background:linear-gradient(90deg,#f7f5ec 0 20%,#b9b5a8 38%,#2c2d29 70%,#0d0e0c 100%)}
+  .glyph.g8:before{background:linear-gradient(135deg,#f7f5ec 0 35%,#b9b5a8 45%,#242522 70%,#0b0c0a 100%)}
+  .glyph.g9:before{background:radial-gradient(circle at 52% 50%,#0b0c0a 0 18%,#33342f 36%,#f7f5ec 68%)}
+  .glyph.g10:before{background:linear-gradient(180deg,#0b0c0a 0 34%,#9e9b90 48%,#f7f5ec 70%)}
   .vname{display:block;font-weight:600;font-size:13.5px;letter-spacing:.01em;line-height:1.35}
   .vdesc{display:block;color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.45}
   .controls{margin-top:24px;border-top:1px solid var(--line);padding-top:17px;display:grid;gap:13px}
@@ -89,7 +92,7 @@
   @media (max-width:900px){
     .app{grid-template-columns:1fr}
     aside{border-right:0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:0 22px;align-items:start}
-    .brand,.sub{grid-column:1/-1}.variants{grid-column:1}.controls{grid-column:2;margin-top:0;border-top:0;padding-top:0}
+    .brand,.sub{grid-column:1/-1}.variants{grid-column:1;max-height:none}.controls{grid-column:2;margin-top:0;border-top:0;padding-top:0}
     .actions{grid-column:1/-1}
     main{padding-top:22px}.note{grid-template-columns:1fr}
   }
@@ -225,6 +228,21 @@
       id: 'gradient', name: '黑色渐变', en: 'Black Gradient', cls: 'g7',
       desc: '黑色渐变阴影从页边扫过，新页从阴影后透出；没有白色纸边，层次更沉。',
       preset: '建议 4 帧 · 约 560 ms', frames: 4, draw: drawGradient
+    },
+    {
+      id: 'gradient-diagonal', name: '斜向黑幕', en: 'Diagonal Black', cls: 'g8',
+      desc: '斜向黑幕从一角扫到另一角，阴影带宽、过渡更明显。',
+      preset: '建议 5 帧 · 约 650 ms', frames: 5, draw: drawGradientDiagonal
+    },
+    {
+      id: 'gradient-fade', name: '黑场淡入', en: 'Black Fade', cls: 'g9',
+      desc: '整页先压到黑场，再从黑场里浮出新页；层次最深，但整屏闪动。',
+      preset: '建议 5 帧 · 约 700 ms', frames: 5, draw: drawGradientFade
+    },
+    {
+      id: 'gradient-curtain', name: '上下黑幕', en: 'Black Curtain', cls: 'g10',
+      desc: '黑色渐变从上向下拉幕，新页从幕布后露出；方向和左右翻不同。',
+      preset: '建议 4 帧 · 约 600 ms', frames: 4, draw: drawGradientCurtain
     }
   ];
 
@@ -392,6 +410,59 @@
     ctx.restore();
     // 折线压住渐变边缘，避免完全糊成一片。
     line(edge, 0, edge, H, 2, 'rgba(12,13,10,.95)');
+  }
+
+  function drawGradientDiagonal(p) {
+    const edge = dir > 0 ? W * (1 - p) : W * p;
+    const slope = 120;
+    const xAt = y => edge + (dir > 0 ? 1 : -1) * ((y / H) - 0.5) * slope;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(xAt(0), 0); ctx.lineTo(xAt(H), H);
+    if (dir > 0) { ctx.lineTo(W, H); ctx.lineTo(W, 0); }
+    else { ctx.lineTo(0, H); ctx.lineTo(0, 0); }
+    ctx.closePath(); ctx.clip(); ctx.drawImage(newPage, 0, 0); ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(xAt(0) - (dir > 0 ? 100 : 0), 0);
+    ctx.lineTo(xAt(H) - (dir > 0 ? 100 : 0), H);
+    ctx.lineTo(xAt(H) + (dir > 0 ? 36 : 100), H);
+    ctx.lineTo(xAt(0) + (dir > 0 ? 36 : 100), 0);
+    ctx.closePath(); ctx.clip();
+    const g = ctx.createLinearGradient(edge - (dir > 0 ? 110 : -30), 0, edge + (dir > 0 ? 30 : 110), 0);
+    g.addColorStop(0, 'rgba(7,8,6,.02)');
+    g.addColorStop(.35, 'rgba(7,8,6,.42)');
+    g.addColorStop(.7, 'rgba(7,8,6,.82)');
+    g.addColorStop(1, 'rgba(7,8,6,.97)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+    line(xAt(0), 0, xAt(H), H, 3, 'rgba(10,11,9,.9)');
+  }
+
+  function drawGradientFade(p) {
+    ctx.drawImage(p < .5 ? oldPage : newPage, 0, 0);
+    const black = p < .5 ? p * 2 : (1 - p) * 2;
+    ctx.save(); ctx.fillStyle = `rgba(4,5,3,${Math.min(1, Math.max(0, black))})`; ctx.fillRect(0, 0, W, H); ctx.restore();
+    if (p > .42 && p < .58) {
+      ctx.save(); ctx.globalAlpha = .05; ctx.drawImage(p < .5 ? newPage : oldPage, 0, 0); ctx.restore();
+    }
+  }
+
+  function drawGradientCurtain(p) {
+    const edge = dir > 0 ? H * (1 - p) : H * p;
+    ctx.save();
+    ctx.beginPath();
+    if (dir > 0) ctx.rect(0, 0, W, edge); else ctx.rect(0, edge, W, H - edge);
+    ctx.clip(); ctx.drawImage(newPage, 0, 0); ctx.restore();
+    ctx.save();
+    const g = ctx.createLinearGradient(0, edge - (dir > 0 ? 170 : 0), 0, edge + (dir > 0 ? 0 : 170));
+    g.addColorStop(0, 'rgba(7,8,6,0)');
+    g.addColorStop(.58, 'rgba(7,8,6,.46)');
+    g.addColorStop(.86, 'rgba(7,8,6,.85)');
+    g.addColorStop(1, 'rgba(7,8,6,.97)');
+    ctx.fillStyle = g;
+    if (dir > 0) ctx.fillRect(0, edge - 170, W, 170); else ctx.fillRect(0, edge, W, 170);
+    ctx.restore();
+    line(0, edge, W, edge, 2, 'rgba(10,11,9,.95)');
   }
 
   function drawGhost() {
