@@ -1,3 +1,9 @@
+## 0.40.0-dual35（独立双机实验版）
+
+- 补齐单台退出后恢复双屏：离开时清除本机 solo/rejoin 状态，返回后由仍在阅读的一台决定合流页，避免返回设备拿旧页覆盖对端当前页。
+- 翻页动画加入白色纸边和黑色折线层，仍保持 3 帧与 GL16 定稿，兼顾物理翻页观感和速度。
+- Clear local solo/rejoin state when leaving reading so the staying reader owns the rejoin page; add a white paper edge and black fold line to the three-frame transition.
+
 ## 0.40.0-dual34（独立双机实验版）
 
 - 翻页动画减到 3 帧，缓存未命中时不再强制同步绘制新页，直接正常推屏；动画后改用全屏 GL16，取消整屏 GC16 等待，优先降低翻页延迟。

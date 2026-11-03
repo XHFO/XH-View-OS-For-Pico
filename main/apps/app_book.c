@@ -1248,14 +1248,21 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             if (edge < 0) edge = 0;
             if (edge > span) edge = span;
             bool take_new = dir > 0 ? logical_x >= edge : logical_x < edge;
-            int dist = logical_x > edge ? logical_x - edge : edge - logical_x;
+            int rel = logical_x - edge;
             size_t idx = (size_t)y * row_bytes + x / 2;
             int shift = (x & 1) * 4;
             uint8_t old_byte = dst[idx];
             int gray = take_new ? ((fresh[idx] >> shift) & 15) : ((old[idx] >> shift) & 15);
             if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
-            else if (dist <= 1) gray = 15;
+            else {
+                // 白色纸边 + 黑色折线：先露出空白纸层，再进入新页。
+                // White paper edge plus a black fold line: show the blank paper layer before the new page.
+                int paper = 14;
+                if (rel >= -paper && rel <= paper) gray = 15;
+                else if (rel > paper && rel <= paper + 2) gray = 0;
+                else if (rel < -paper && rel >= -paper - 2) gray = 0;
+            }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
     }
@@ -2225,6 +2232,7 @@ static app_redraw_t product_exit(app_ctx_t* ctx) {
     // Return to the library root in one step: clear child history first, so Back/home
     // cannot land on a stale records/settings page and the screen refreshes once.
     ps_dual_set_local_away(true);
+    app_book_dual_pause();
     ps_switch(0);
     ctx->request_app = app_home_page();
     ps_global_book_return(false);
@@ -3057,6 +3065,11 @@ void app_book_dual_pause(void) {
     s_dual_present_pending = 0;
     s_dual_anchor.pending = false;
     s_dual_wait = false;
+    // 本机离开阅读后不再保留“我要把当前页推回对端”的 solo 状态；
+    // 返回时由仍在阅读的一台决定合流页。
+    s_dual_solo = false;
+    s_dual_rejoin = false;
+    s_dual_peer_away_since = 0;
 }
 void app_book_dual_status(app_book_dual_status_t* out) {
     *out = (app_book_dual_status_t){.open=s_text && s_view==READING, .blank=s_dual_blank,

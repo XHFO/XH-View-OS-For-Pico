@@ -553,6 +553,7 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     } else if (!active && reading_known && reading_active) {
         reading_active = false;
         local_away = true;
+        app_book_dual_pause();
         (void)dl_reading_active(dual_session, false);
         ps_dirty();
     }
