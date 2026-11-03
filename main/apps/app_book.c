@@ -1256,12 +1256,14 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
             else {
-                // 白色纸边 + 黑色折线：先露出空白纸层，再进入新页。
-                // White paper edge plus a black fold line: show the blank paper layer before the new page.
-                int paper = 14;
-                if (rel >= -paper && rel <= paper) gray = 15;
-                else if (rel > paper && rel <= paper + 2) gray = 0;
-                else if (rel < -paper && rel >= -paper - 2) gray = 0;
+                // 斜向纸楔：上方窄、下方宽，外缘黑线，内缘浅灰阴影。
+                // Slanted paper wedge: narrower at the top, wider at the bottom, black outer
+                // edge and a soft gray inner shadow, so the blank sheet reads as a layer.
+                int depth = at - base;
+                int paper = 10 + (span > 0 ? (span - depth) * 22 / span : 22);
+                if (rel >= -paper && rel <= 1) gray = 15;
+                else if (rel > 1 && rel <= 3) gray = 0;
+                else if (rel < -paper && rel >= -paper - 2) gray = 12;
             }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
@@ -1286,6 +1288,11 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
     s_turn_anim_pending = false;
     if (animate) {
+        // 主机在动画开始时先确认左页，让从机同步开始动画，而不是等主机动画结束。
+        // The primary confirms the left page when its animation starts, so the secondary
+        // starts its own animation concurrently instead of waiting for the primary to finish.
+        if (ps_dual_role() == 1 && s_dual_present_pending)
+            ps_dual_presented(s_dual_present_pending);
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
@@ -3150,7 +3157,7 @@ static app_redraw_t dual_page_ready(app_ctx_t* ctx) {
     // 主机是同步基准：不做动画，立即推屏并置 left_ready；从机用动画掩盖等待和网络间隔。
     // The primary is the sync reference: present immediately so the secondary starts
     // after left_ready; only the secondary animates to mask the network gap.
-    s_turn_anim_pending = ps_dual_role() != 1 && previous_page && s_dual_displayed != previous_page;
+    s_turn_anim_pending = previous_page && s_dual_displayed != previous_page;
     s_turn_anim_dir = s_dual_displayed > previous_page ? 1 : -1;
     s_dual_target=0; s_dual_blank=s_dual_wait=false; s_view=READING;
     prepare_page_images(); save_progress(); return paint_reading(ctx,MODE_GL16);

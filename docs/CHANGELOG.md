@@ -1,3 +1,9 @@
+## 0.40.0-dual38（独立双机实验版）
+
+- 两台都播放翻页动画；主机在动画开始时先发出 left_ready，从机随即开始自己的动画，不再等主机动画结束，也不会因此慢一秒。
+- 纸边改成上窄下宽的斜向纸楔，带黑色外缘和浅灰内阴影，强化空白纸层和物理翻页层次。
+- Both devices animate; the primary releases left_ready at animation start so the secondary starts concurrently. Replace the flat band with a slanted paper wedge, black edge, and soft shadow.
+
 ## 0.40.0-dual37（独立双机实验版）
 
 - 主设备不再等待自身 3 帧动画：先立即推屏并置 left_ready，从设备随后用动画跟进；修复主机反而比从机慢约 1 秒。
