@@ -6,6 +6,7 @@
  */
 #include "read_pico_dual_ble.h"
 #include "read_pico_ble_pager.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_timer.h"
@@ -40,6 +41,9 @@ static uint8_t address_type;
 static bool synced, subscribed, connecting, discovering, writing;
 static uint32_t epoch;
 static int64_t retry_at, setup_deadline;
+static bool scan_only;
+static char adv_ip[48], adv_code[7];
+static pico_dual_ble_peer_info_t peer_info;
 static struct ble_npl_callout ticker;
 static ble_addr_t attempted, rejected[4];
 static unsigned rejected_at, rejected_count;
@@ -168,6 +172,17 @@ static void discover_peer(const struct ble_gap_disc_desc* disc) {
     bool found=false;
     for(unsigned i=0;i<fields.num_uuids128;i++)if(!ble_uuid_cmp(&fields.uuids128[i].u,&service_uuid.u))found=true;
     if(!found)return;
+    if(fields.mfg_data && fields.mfg_data_len >= 9 && fields.mfg_data[0] == 0xff && fields.mfg_data[1] == 0xff) {
+        unsigned a=fields.mfg_data[2],b=fields.mfg_data[3],c=fields.mfg_data[4],d=fields.mfg_data[5];
+        unsigned code=((unsigned)fields.mfg_data[6]<<16)|((unsigned)fields.mfg_data[7]<<8)|fields.mfg_data[8];
+        if (code > 999999) return;
+        portENTER_CRITICAL(&guard);
+        snprintf(peer_info.ip,sizeof(peer_info.ip),"%u.%u.%u.%u",a,b,c,d);
+        snprintf(peer_info.code,sizeof(peer_info.code),"%06u",code);
+        peer_info.found=true;
+        portEXIT_CRITICAL(&guard);
+    }
+    if(scan_only)return;
     if(esp_timer_get_time()<reject_until)
         for(unsigned i=0;i<rejected_count;i++)if(!memcmp(&rejected[i],&disc->addr,sizeof(ble_addr_t)))return;
     attempted=disc->addr;connecting=true;setup_deadline=esp_timer_get_time()+25000000;
@@ -232,12 +247,24 @@ static void host_tick(struct ble_npl_event* ev) {
             struct ble_hs_adv_fields fields={.flags=BLE_HS_ADV_F_DISC_GEN|BLE_HS_ADV_F_BREDR_UNSUP,
                 .uuids128=(ble_uuid128_t*)&service_uuid,.num_uuids128=1,.uuids128_is_complete=1};
             int rc=ble_gap_adv_set_fields(&fields);
+            static uint8_t mfr[9];
+            struct ble_hs_adv_fields rsp={0};
+            if(adv_ip[0] && strlen(adv_code)==6) {
+                unsigned a=0,b=0,c=0,d=0; char tail[4]={0};
+                if(sscanf(adv_ip,"%u.%u.%u.%u%1s",&a,&b,&c,&d,tail)==4 && !tail[0]) {
+                    mfr[0]=0xff;mfr[1]=0xff;mfr[2]=(uint8_t)a;mfr[3]=(uint8_t)b;mfr[4]=(uint8_t)c;mfr[5]=(uint8_t)d;
+                    unsigned code=(unsigned)strtoul(adv_code,NULL,10);
+                    mfr[6]=(uint8_t)(code>>16);mfr[7]=(uint8_t)(code>>8);mfr[8]=(uint8_t)code;
+                    rsp.mfg_data=mfr;rsp.mfg_data_len=9;
+                    (void)ble_gap_adv_rsp_set_fields(&rsp);
+                }
+            }
             struct ble_gap_adv_params params={.conn_mode=BLE_GAP_CONN_MODE_UND,.disc_mode=BLE_GAP_DISC_MODE_GEN,
                 .itvl_min=160,.itvl_max=240};
             if(!rc)rc=ble_gap_adv_start(address_type,NULL,BLE_HS_FOREVER,&params,gap_event,NULL);
             if(rc){error_set(rc);retry_at=now+2000000;}
         }else if(current.role==2 && !ble_gap_disc_active()){
-            struct ble_gap_disc_params params={.itvl=0x50,.window=0x40,.passive=1,.filter_duplicates=0};
+            struct ble_gap_disc_params params={.itvl=0x50,.window=0x40,.passive=0,.filter_duplicates=0};
             int rc=ble_gap_disc(address_type,5000,&params,gap_event,NULL);
             retry_at=now+6000000;if(rc)error_set(rc);
         }
@@ -300,6 +327,26 @@ static void supervisor(void* unused) {
     read_pico_ble_pager_reserve(false);
     portENTER_CRITICAL(&guard);snapshot.active=false;snapshot.connected=false;worker=false;portEXIT_CRITICAL(&guard);
     vTaskDelete(NULL);
+}
+void pico_dual_ble_set_pairing_info(const char* ip, const char* code) {
+    portENTER_CRITICAL(&guard);
+    snprintf(adv_ip, sizeof(adv_ip), "%s", ip ? ip : "");
+    snprintf(adv_code, sizeof(adv_code), "%s", code ? code : "");
+    portEXIT_CRITICAL(&guard);
+}
+esp_err_t pico_dual_ble_scan_start(void) {
+    portENTER_CRITICAL(&guard); scan_only = true; peer_info.found = false; portEXIT_CRITICAL(&guard);
+    esp_err_t err = pico_dual_ble_configure(2, "000000");
+    if (err != ESP_OK) portENTER_CRITICAL(&guard), scan_only = false, portEXIT_CRITICAL(&guard);
+    return err;
+}
+void pico_dual_ble_scan_stop(void) {
+    portENTER_CRITICAL(&guard); scan_only = false; portEXIT_CRITICAL(&guard);
+    pico_dual_ble_stop();
+}
+void pico_dual_ble_peer_info(pico_dual_ble_peer_info_t* out) {
+    if (!out) return;
+    portENTER_CRITICAL(&guard); *out = peer_info; portEXIT_CRITICAL(&guard);
 }
 esp_err_t pico_dual_ble_configure(int role,const char* code) {
     if(role!=1 && role!=2)return ESP_ERR_INVALID_ARG;

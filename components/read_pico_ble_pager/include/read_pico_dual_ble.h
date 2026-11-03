@@ -14,7 +14,18 @@ typedef struct {
     uint32_t generation;
     int error;
 } pico_dual_ble_status_t;
+typedef struct {
+    bool found;
+    char ip[48];
+    char code[7];
+} pico_dual_ble_peer_info_t;
 esp_err_t pico_dual_ble_configure(int role, const char* code);
+/// 主机广播配对页的 IP/六位码；从机只扫描并读取，不连接。
+/// Primary advertises the pairing-page IP/six-digit code; the secondary scans without connecting.
+void pico_dual_ble_set_pairing_info(const char* ip, const char* code);
+esp_err_t pico_dual_ble_scan_start(void);
+void pico_dual_ble_scan_stop(void);
+void pico_dual_ble_peer_info(pico_dual_ble_peer_info_t* out);
 void pico_dual_ble_stop(void);
 void pico_dual_ble_status(pico_dual_ble_status_t* out);
 bool pico_dual_ble_can_send(void);

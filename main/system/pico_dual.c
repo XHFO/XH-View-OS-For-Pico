@@ -622,7 +622,8 @@ void ps_dual_render(uint8_t* fb) {
         ps_text(fb, x, 170, 14, "先将两台设备连接到同一个 Wi-Fi", 1);
         ps_text(fb, x, 200, 12, "一台选择主机，另一台选择从机", 4);
         ps_button(fb, x, 250, w, 42, "自动搜索主机", true);
-        ps_button(fb, x, 300, w, 38, "打开 Wi-Fi 设置", false);
+        ps_button(fb, x, 300, w, 38, "手动输入主机 IP 和配对码", false);
+        ps_button(fb, x, 348, w, 36, "打开 Wi-Fi 设置", false);
         return;
     }
     for (int role = 1; role <= 2; ++role) {
@@ -708,6 +709,7 @@ static bool parse_ipv4(const char* text, unsigned parts[4]) {
 static void pair_stop(void) {
     if (pair_sock >= 0) close(pair_sock);
     pair_sock = -1;
+    if (pair_scanning) pico_dual_ble_scan_stop();
     pair_scanning = false;
 }
 static void pair_scan_start(void) {
@@ -731,7 +733,8 @@ static void pair_scan_start(void) {
     fcntl(pair_sock, F_SETFL, flags | O_NONBLOCK);
     pair_scanning = true;
     pair_started = ps_now();
-    ps_toast("正在搜索同一 Wi-Fi 的主机");
+    (void)pico_dual_ble_scan_start();
+    ps_toast("正在通过蓝牙搜索主机");
     ps_dirty();
 }
 static void pair_scan_update(void) {
@@ -746,6 +749,7 @@ static void pair_scan_update(void) {
             else primary_ip[0] = 0;
             last_ip = now;
         }
+        if (primary_ip[0] && settings.code[0]) pico_dual_ble_set_pairing_info(primary_ip, settings.code);
         if (primary_ip[0] && settings.code[0] && now - pair_last_tx >= 500) {
             pair_last_tx = now;
             int s = socket(AF_INET, SOCK_DGRAM, 0);
@@ -772,6 +776,17 @@ static void pair_scan_update(void) {
         }
     }
     if (!pair_scanning) return;
+    pico_dual_ble_peer_info_t ble;
+    pico_dual_ble_peer_info(&ble);
+    if (ble.found && ble.ip[0] && strlen(ble.code) == 6) {
+        snprintf(pair_ip, sizeof(pair_ip), "%s", ble.ip);
+        snprintf(pair_code, sizeof(pair_code), "%s", ble.code);
+        pair_found = true; pair_scanning = false;
+        pico_dual_ble_scan_stop();
+        if (pair_sock >= 0) { close(pair_sock); pair_sock = -1; }
+        ps_dirty();
+        return;
+    }
     char buf[96];
     for (int i = 0; i < 4; i++) {
         struct sockaddr_in from;
@@ -901,6 +916,10 @@ bool ps_dual_event(const ps_event_t* e) {
         return true;
     }
     if (!settings.role && e->y >= 300 && e->y < 338) {
+        secondary_begin();
+        return true;
+    }
+    if (!settings.role && e->y >= 348 && e->y < 384) {
         ps_navigate(PS_WIFI);
         return true;
     }

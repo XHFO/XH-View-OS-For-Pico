@@ -1,3 +1,9 @@
+## 0.40.0-dual29（独立双机实验版）
+
+- 配对发现改用 BLE 广播/扫描：主机在广播扫描响应中携带配对页 IP 和六位码，从机主动扫描读取，不再依赖局域网 UDP 广播；UDP 保留为兼容回退。
+- 恢复手动输入主机 IP/配对码的入口，自动搜索失败时仍可手动配对。
+- Pairing discovery now uses BLE advertising/scan response for the pairing IP and six-digit code; UDP remains a fallback. Restore manual IP/code entry when discovery fails.
+
 ## 0.40.0-dual28（独立双机实验版）
 
 - 自动配对广播不再依赖进入双机页或书库校验完成：主机只要有 Wi-Fi 地址就每 500ms 广播，并同时发受限广播和同网段定向广播；地址每秒刷新。
