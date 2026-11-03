@@ -1259,18 +1259,18 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             else if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
             else {
-                // 局部 DU 的 16 级黑灰渐变；8 灰模式把渐变量化成 8 级。
-                // 16-level black gradient in local DU; 8-gray mode quantizes the
-                // gradient to eight levels. New-page text keeps all 16 levels.
-                if (rel >= -1 && rel <= 1) gray = 0;
-                else if (!take_new) {
+                // 局部 DU 的 16 级白色渐变；8 灰模式把渐变量化成 8 级。
+                // 不引入黑色像素，纸缝处直接推到纸白。
+                // 16-level white gradient in local DU; 8-gray mode quantizes the
+                // gradient. No black pixels; the gutter washes out to paper white.
+                if (!take_new) {
                     int d = rel < 0 ? -rel : rel;
                     int shade = (170 - d) * 15 / 170;
                     if (shade < 0) shade = 0;
                     if (shade > 15) shade = 15;
                     int old_gray = (old[idx] >> shift) & 15;
-                    gray = old_gray * (15 - shade) / 15;
-                    if (ps_dual_anim_gray() == 8) gray = (gray / 2) * 2;
+                    gray = old_gray + (15 - old_gray) * shade / 15;
+                    if (ps_dual_anim_gray() == 8) gray = gray >= 14 ? 15 : (gray / 2) * 2;
                 }
             }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));

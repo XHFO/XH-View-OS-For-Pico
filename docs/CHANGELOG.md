@@ -1,3 +1,8 @@
+## 0.40.0-dual46（独立双机实验版）
+
+- 动画不再使用黑色像素：黑色渐变改为白色渐变，旧页朝纸缝推白；16/8 级灰阶切换保留。
+- Remove black from the transition: replace the black gradient with a white wash toward the gutter, keeping the 16/8-level switch. Bump to dual46.
+
 ## 0.40.0-dual45（独立双机实验版）
 
 - 翻页动画改为正文局部 DU：16 级黑灰渐变，支持切换 8 级量化；新页正文保留 16 级。每 6 页整屏 GC16 清残影。
