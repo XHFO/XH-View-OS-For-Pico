@@ -1242,15 +1242,20 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             int span = axis_x ? pr.width : pr.height;
             if (span < 1) span = 1;
             int logical_x = axis_inverted && axis_x ? span - 1 - (at - base) : at - base;
-            bool take_new = dir > 0 ? logical_x >= seam : logical_x < seam;
-            int dist = logical_x > seam ? logical_x - seam : seam - logical_x;
+            // 斜向纸边，比垂直擦除更像翻页；只用黑白，不叠灰阶阴影。
+            // A slanted paper edge reads as a page turn; black/white only, no low-gray shadow.
+            int edge = seam + (at - base - span / 2) * 60 / span;
+            if (edge < 0) edge = 0;
+            if (edge > span) edge = span;
+            bool take_new = dir > 0 ? logical_x >= edge : logical_x < edge;
+            int dist = logical_x > edge ? logical_x - edge : edge - logical_x;
             size_t idx = (size_t)y * row_bytes + x / 2;
             int shift = (x & 1) * 4;
             uint8_t old_byte = dst[idx];
             int gray = take_new ? ((fresh[idx] >> shift) & 15) : ((old[idx] >> shift) & 15);
-            // 干净的白色页缝，不叠灰阶阴影；低灰阶最容易在墨水屏上留残影。
-            // A clean white gutter without gray shadows; low grays are the main e-ink ghosting source.
-            if (dist <= 1) gray = 15;
+            if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
+            else if (progress <= 0) gray = (old[idx] >> shift) & 15;
+            else if (dist <= 1) gray = 15;
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
     }
@@ -1261,6 +1266,14 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     int64_t started = esp_timer_get_time();
     lock_draw();
     bool cached = !s_toolbar && !s_selection && !s_scrubbing && !s_clear_confirm && s_next_fb && s_next_page == (int)s_page;
+    if (s_turn_anim_pending && !cached) {
+        ensure_prep();
+        if (s_next_fb) {
+            draw_reader(s_next_fb, s_page);
+            s_next_page = (int)s_page;
+            cached = true;
+        }
+    }
     bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
     s_turn_anim_pending = false;
     if (animate) {
@@ -2217,6 +2230,7 @@ static app_redraw_t product_exit(app_ctx_t* ctx) {
     // 又因旧 history 回到记录页或设置页，也避免连续两次整屏刷新。
     // Return to the library root in one step: clear child history first, so Back/home
     // cannot land on a stale records/settings page and the screen refreshes once.
+    ps_dual_set_local_away(true);
     ps_switch(0);
     ctx->request_app = app_home_page();
     ps_global_book_return(false);
@@ -3120,7 +3134,7 @@ static app_redraw_t dual_page_ready(app_ctx_t* ctx) {
     // left_ready 推迟四帧，让从机再等一轮。从机保留动画掩盖网络/刷新间隔。
     // The primary is the sync reference: skip its animation so left_ready is not
     // delayed by four frames; the secondary keeps the animation to mask the gap.
-    s_turn_anim_pending = previous_page && s_dual_displayed != previous_page && ps_dual_role() != 1;
+    s_turn_anim_pending = previous_page && s_dual_displayed != previous_page;
     s_turn_anim_dir = s_dual_displayed > previous_page ? 1 : -1;
     s_dual_target=0; s_dual_blank=s_dual_wait=false; s_view=READING;
     prepare_page_images(); save_progress(); return paint_reading(ctx,MODE_GL16);

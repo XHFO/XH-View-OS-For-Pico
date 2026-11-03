@@ -43,6 +43,7 @@ static bool calibrated;
 static uint32_t base_applied;
 static bool reading_active = true;
 static bool reading_known;
+static bool local_away;
 static bool contact_latched;
 static uint32_t annotation_applied;
 static int64_t contact_same_since;
@@ -275,6 +276,9 @@ bool ps_dual_left_ready(void) {
 bool ps_dual_peer_reading(void) {
     return status.peer_reading;
 }
+void ps_dual_set_local_away(bool away) {
+    local_away = away;
+}
 bool ps_dual_contact_likely(void) {
     if (!calibrated) {
         contact_latched = false;
@@ -473,10 +477,12 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     if (active && (!reading_known || !reading_active)) {
         reading_known = true;
         reading_active = true;
+        local_away = false;
         (void)dl_reading_active(dual_session, true);
         ps_dirty();
     } else if (!active && reading_known && reading_active) {
         reading_active = false;
+        local_away = true;
         (void)dl_reading_active(dual_session, false);
         ps_dirty();
     }
@@ -547,7 +553,7 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
             stored = status.reading.revision;
     }
     const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
-    if (ui_idle && status.connected && status.synced &&
+    if (ui_idle && status.connected && status.synced && !local_away &&
         path && font && status.reading.revision != applied &&
         (app == &app_book || (app->product_shell && idle_reading_route()))) {
         if (app_book_dual_apply(path, font, status.reading.spread + (settings.role == 2 ? 2 : 1),

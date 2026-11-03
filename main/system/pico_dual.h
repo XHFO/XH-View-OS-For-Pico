@@ -32,6 +32,7 @@ int ps_dual_peer_face(void);
 /// Whether the primary confirmed this revision's presentation; the secondary may then paint.
 bool ps_dual_left_ready(void);
 bool ps_dual_peer_reading(void);
+void ps_dual_set_local_away(bool away);
 /// 取一次“手动翻转待应用”标记，避免从机锁定阻止手动翻转。
 /// Take the one-shot manual-flip marker so a locked secondary still applies its own flip.
 bool ps_dual_take_manual_rotation(void);

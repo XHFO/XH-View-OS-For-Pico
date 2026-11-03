@@ -1,3 +1,10 @@
+## 0.40.0-dual27（独立双机实验版）
+
+- 单侧离开阅读后不再被对端状态拉回阅读页：本机离开阅读时锁存 away，远端阅读状态不再自动 apply，直到本机重新进入阅读。
+- 双机模式恢复主机+从机翻页动画；动画前强制准备新页帧，避免双机路径因缓存未命中而跳过动画。
+- 动画改为斜向纸边滑动，12 帧 FOLLOW 快速 DU，最后全屏 GC16 清残影。
+- Keep a local away latch so a peer's reading state cannot pull the user back into reading; force page-frame preparation so both dual roles animate; use a 12-frame slanted paper edge on fast DU with a final full-screen GC16.
+
 ## 0.40.0-dual26（独立双机实验版）
 
 - 从机在主机发布新页时立即开始加载/排版/推屏，不再等待主机确认推屏完成，提前约半秒。
