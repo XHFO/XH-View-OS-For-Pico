@@ -43,6 +43,7 @@
   .glyph.g4:before{background:linear-gradient(90deg,#f7f5ec 0 44%,#1c1e1b 45%,#f7f5ec 49% 100%)}
   .glyph.g5:before{background:radial-gradient(circle at 70% 65%,#fff 0 16%,#1c1e1b 17% 20%,#f7f5ec 21%)}
   .glyph.g6:before{background:repeating-linear-gradient(0deg,#f7f5ec 0 5px,#1c1e1b 6px 7px)}
+  .glyph.g7:before{background:linear-gradient(90deg,#f7f5ec 0 20%,#b9b5a8 38%,#2c2d29 70%,#0d0e0c 100%)}
   .vname{display:block;font-weight:600;font-size:13.5px;letter-spacing:.01em;line-height:1.35}
   .vdesc{display:block;color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.45}
   .controls{margin-top:24px;border-top:1px solid var(--line);padding-top:17px;display:grid;gap:13px}
@@ -219,6 +220,11 @@
       id: 'blinds', name: '横向百叶', en: 'Blind Wipe', cls: 'g6',
       desc: '分成若干横条依次切换，像老式墨水屏的分区刷新。',
       preset: '建议 5 帧 · 约 520 ms', frames: 5, draw: drawBlinds
+    },
+    {
+      id: 'gradient', name: '黑色渐变', en: 'Black Gradient', cls: 'g7',
+      desc: '黑色渐变阴影从页边扫过，新页从阴影后透出；没有白色纸边，层次更沉。',
+      preset: '建议 4 帧 · 约 560 ms', frames: 4, draw: drawGradient
     }
   ];
 
@@ -365,6 +371,29 @@
     }
   }
 
+  function drawGradient(p) {
+    // 新页从黑色渐变阴影后透出：透明→深黑→近黑的软边。
+    // The new page emerges behind a black gradient: transparent to near-black.
+    const edge = dir > 0 ? W * (1 - p) : W * p;
+    const span = 180;
+    ctx.save();
+    ctx.beginPath();
+    if (dir > 0) ctx.rect(edge, 0, W - edge, H); else ctx.rect(0, 0, edge, H);
+    ctx.clip(); ctx.drawImage(newPage, 0, 0); ctx.restore();
+    ctx.save();
+    const g = ctx.createLinearGradient(dir > 0 ? edge - span : edge + span, 0, edge, 0);
+    g.addColorStop(0, 'rgba(8,9,7,0)');
+    g.addColorStop(.52, 'rgba(8,9,7,.38)');
+    g.addColorStop(.78, 'rgba(8,9,7,.76)');
+    g.addColorStop(1, 'rgba(8,9,7,.96)');
+    ctx.fillStyle = g;
+    if (dir > 0) ctx.fillRect(edge - span, 0, span, H);
+    else ctx.fillRect(edge, 0, span, H);
+    ctx.restore();
+    // 折线压住渐变边缘，避免完全糊成一片。
+    line(edge, 0, edge, H, 2, 'rgba(12,13,10,.95)');
+  }
+
   function drawGhost() {
     if(!ghost) return;
     ctx.save(); ctx.globalAlpha=.055; ctx.drawImage(oldPage,0,0); ctx.restore();
@@ -402,6 +431,7 @@
     play();
   }
 
+  function barset(p){ barEl.style.width=`${Math.min(100,Math.max(0,p*100))}%`; frameLabel.textContent='定格'; }
   function updateFrames(){ framesOut.textContent=frames; frameLabel.textContent=`0 / ${frames}`; }
   function updateSpeed(){ speedOut.textContent=`${speed} ms`; }
 
@@ -439,8 +469,20 @@
   speedEl.oninput=()=>{speed=+speedEl.value;updateSpeed();};
 
   buildList(); updateFrames(); updateSpeed(); renderVariant(0,1);
+  const params = new URLSearchParams(location.search);
+  const requested = Math.max(0, Math.min(variants.length - 1, (parseInt(params.get('v'), 10) || 1) - 1));
   // first load: play once after a beat
-  setTimeout(()=>play(), 380);
+  if (params.has('still')) {
+    select(requested);
+    cancel();
+    const p = Math.max(0, Math.min(0.999, parseFloat(params.get('still')) || 0.5));
+    renderVariant(requested, p);
+    phaseEl.textContent = '定格预览';
+    barset(p);
+  } else {
+    if (requested) select(requested);
+    setTimeout(()=>play(), 380);
+  }
 })();
 </script>
 </body>
