@@ -1,3 +1,8 @@
+## 0.40.0-dual47（独立双机实验版）
+
+- 修正倒置竖屏的翻页方向映射：两台设备现在都按物理屏幕执行下一页从右往左、上一页从左往右。
+- Fix inverted-portrait direction mapping so both devices animate next page right-to-left and previous page left-to-right on the physical screen. Bump to dual47.
+
 ## 0.40.0-dual46（独立双机实验版）
 
 - 动画不再使用黑色像素：黑色渐变改为白色渐变，旧页朝纸缝推白；16/8 级灰阶切换保留。

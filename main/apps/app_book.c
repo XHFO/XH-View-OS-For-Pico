@@ -1229,7 +1229,7 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
     int pw = epd_width(), ph = epd_height();
     enum EpdRotation rotation = epd_get_rotation();
     bool axis_x = rotation == EPD_ROT_LANDSCAPE || rotation == EPD_ROT_INVERTED_LANDSCAPE;
-    bool axis_inverted = rotation == EPD_ROT_INVERTED_LANDSCAPE;
+    bool axis_inverted = rotation == EPD_ROT_INVERTED_LANDSCAPE || rotation == EPD_ROT_INVERTED_PORTRAIT;
     int logical_w = reader_width();
     int seam = dir > 0 ? logical_w * (100 - progress) / 100 : logical_w * progress / 100;
     int x0 = pr.x < 0 ? 0 : pr.x;
@@ -1243,7 +1243,7 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             int base = axis_x ? pr.x : pr.y;
             int span = axis_x ? pr.width : pr.height;
             if (span < 1) span = 1;
-            int logical_x = axis_inverted && axis_x ? span - 1 - (at - base) : at - base;
+            int logical_x = axis_inverted ? span - 1 - (at - base) : at - base;
             // 斜向纸边，比垂直擦除更像翻页；只用黑白，不叠灰阶阴影。
             // A slanted paper edge reads as a page turn; black/white only, no low-gray shadow.
             int edge = seam + (at - base - span / 2) * 60 / span;
