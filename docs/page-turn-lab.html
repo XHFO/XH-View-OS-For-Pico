@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pico 双机阅读 · 翻页动画实验室</title>
+<style>
+  :root{
+    --bg:#141514; --panel:#1d1f1d; --panel2:#252825; --ink:#e9e7df;
+    --muted:#9b9f97; --line:#3a3e39; --accent:#d8ff6a; --accent2:#f0c674;
+    --paper:#f3f1e8; --paper2:#e7e4d8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(1100px 700px at 80% -10%, #2b3325 0%, transparent 60%),
+      radial-gradient(900px 700px at -10% 100%, #242a2b 0%, transparent 55%),
+      var(--bg);
+    color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  .app{display:grid;grid-template-columns:330px minmax(0,1fr);min-height:100vh}
+  aside{border-right:1px solid var(--line);padding:26px 22px;background:rgba(18,20,18,.62);backdrop-filter:blur(8px)}
+  .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 18px var(--accent)}
+  h1{font-size:18px;letter-spacing:.04em;margin:0;font-weight:650}
+  .sub{color:var(--muted);font-size:12px;margin:6px 0 22px}
+  .section-label{font-size:11px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin:22px 0 9px}
+  .variants{display:grid;gap:8px}
+  .variant{
+    display:grid;grid-template-columns:38px 1fr;gap:11px;align-items:start;
+    width:100%;text-align:left;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;padding:11px 12px;cursor:pointer;
+    transition:border-color .15s,background .15s,transform .15s;
+  }
+  .variant:hover{border-color:#5a6352;transform:translateY(-1px)}
+  .variant.on{border-color:var(--accent);background:#22291a;box-shadow:inset 0 0 0 1px rgba(216,255,106,.25)}
+  .glyph{width:38px;height:38px;border-radius:9px;background:var(--paper);position:relative;overflow:hidden;border:1px solid #c9c5b6;flex:none}
+  .glyph:before{content:"";position:absolute;inset:0;background:linear-gradient(135deg,transparent 38%,#fff 39%,#20221f 42%,transparent 44%)}
+  .glyph.g2:before{background:linear-gradient(45deg,transparent 52%,#fff 53%,#20221f 56%,transparent 58%)}
+  .glyph.g3:before{background:linear-gradient(100deg,#f7f5ec 0 35%,#d9d5c6 36%,#1c1e1b 40%,#f7f5ec 44%)}
+  .glyph.g4:before{background:linear-gradient(90deg,#f7f5ec 0 44%,#1c1e1b 45%,#f7f5ec 49% 100%)}
+  .glyph.g5:before{background:radial-gradient(circle at 70% 65%,#fff 0 16%,#1c1e1b 17% 20%,#f7f5ec 21%)}
+  .glyph.g6:before{background:repeating-linear-gradient(0deg,#f7f5ec 0 5px,#1c1e1b 6px 7px)}
+  .vname{display:block;font-weight:600;font-size:13.5px;letter-spacing:.01em;line-height:1.35}
+  .vdesc{display:block;color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.45}
+  .controls{margin-top:24px;border-top:1px solid var(--line);padding-top:17px;display:grid;gap:13px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .row label{color:var(--muted);font-size:12px}
+  .row output{font-variant-numeric:tabular-nums;color:var(--ink);font-size:12px}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:3px;background:#3c403a;border-radius:4px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;border:0}
+  .seg{display:flex;background:#141614;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{flex:1;border:0;background:transparent;color:var(--muted);padding:7px 8px;font-size:12px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#151714;font-weight:650}
+  .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:18px}
+  .btn{border:1px solid var(--line);background:var(--panel2);color:var(--ink);border-radius:9px;padding:9px 10px;font-size:12.5px;cursor:pointer}
+  .btn:hover{border-color:#65705d}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#161814;font-weight:650}
+  .btn.wide{grid-column:1/-1}
+  main{padding:30px clamp(18px,3.4vw,52px) 44px;min-width:0}
+  .top{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:20px}
+  .stage-title{font-size:clamp(21px,2.4vw,31px);font-weight:650;letter-spacing:.02em;margin:0}
+  .stage-title span{color:var(--accent)}
+  .stage-sub{color:var(--muted);font-size:12.5px;margin-top:4px}
+  .badge{font-size:11px;border:1px solid var(--line);color:var(--muted);padding:5px 9px;border-radius:999px;white-space:nowrap}
+  .stage{
+    display:grid;place-items:center;min-height:min(74vh,860px);
+    border:1px solid var(--line);border-radius:18px;
+    background:
+      linear-gradient(180deg,rgba(255,255,255,.02),transparent 32%),
+      repeating-linear-gradient(90deg,rgba(255,255,255,.018) 0 1px,transparent 1px 48px),
+      #101210;
+    padding:clamp(14px,2vw,28px);position:relative;overflow:hidden;
+  }
+  .stage:before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(216,255,106,.045),transparent 52%);pointer-events:none}
+  canvas{width:min(100%,520px);height:auto;display:block;border-radius:4px;box-shadow:0 28px 60px rgba(0,0,0,.55),0 2px 0 rgba(255,255,255,.06) inset;background:var(--paper)}
+  .hud{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px;color:var(--muted);font-size:12px}
+  .hud b{color:var(--ink);font-weight:600}
+  .progress{flex:1;height:3px;background:#2b2f2a;border-radius:2px;overflow:hidden;max-width:280px}
+  .progress i{display:block;height:100%;width:0%;background:var(--accent);transition:width .06s linear}
+  .note{margin-top:16px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .note div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--muted);font-size:11.5px}
+  .note b{display:block;color:var(--ink);font-size:12px;margin-bottom:3px;font-weight:600}
+  .toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);background:var(--accent);color:#151714;padding:10px 16px;border-radius:9px;font-weight:650;font-size:13px;opacity:0;pointer-events:none;transition:.2s;z-index:9}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  @media (max-width:900px){
+    .app{grid-template-columns:1fr}
+    aside{border-right:0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:0 22px;align-items:start}
+    .brand,.sub{grid-column:1/-1}.variants{grid-column:1}.controls{grid-column:2;margin-top:0;border-top:0;padding-top:0}
+    .actions{grid-column:1/-1}
+    main{padding-top:22px}.note{grid-template-columns:1fr}
+  }
+  @media (max-width:620px){
+    aside{display:block}.controls{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+    .stage{min-height:52vh}.top{align-items:flex-start;flex-direction:column}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><span class="dot"></span><h1>翻页动画实验室</h1></div>
+    <div class="sub">Pico 双机阅读 · 墨水屏翻页方案对比</div>
+
+    <div class="section-label">动画方案</div>
+    <div class="variants" id="variants"></div>
+
+    <div class="controls">
+      <div class="row"><label>帧数</label><output id="framesOut">3</output></div>
+      <input id="frames" type="range" min="2" max="7" step="1" value="3">
+      <div class="row"><label>每帧停留</label><output id="speedOut">150 ms</output></div>
+      <input id="speed" type="range" min="40" max="420" step="10" value="150">
+      <div class="row" style="margin-top:2px"><label>方向</label>
+        <div class="seg" style="width:150px">
+          <button id="dirNext" class="on">下一页</button>
+          <button id="dirPrev">上一页</button>
+        </div>
+      </div>
+      <div class="row"><label>残影模拟</label>
+        <div class="seg" style="width:150px">
+          <button id="ghostOff" class="on">关</button>
+          <button id="ghostOn">开</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" id="replay">重播</button>
+      <button class="btn" id="auto">自动循环</button>
+      <button class="btn primary wide" id="choose">选择这个方案</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="top">
+      <div>
+        <h2 class="stage-title" id="title">纸楔翻页 · <span>Paper Wedge</span></h2>
+        <div class="stage-sub" id="desc">斜向纸边推进，露出白色纸背与黑色折线。</div>
+      </div>
+      <div class="badge" id="preset">建议 3 帧 · 约 450 ms</div>
+    </div>
+
+    <div class="stage"><canvas id="screen" width="720" height="960" aria-label="翻页动画预览"></canvas></div>
+    <div class="hud">
+      <span><b id="phase">等待播放</b> · <span id="elapsed">0 ms</span></span>
+      <div class="progress"><i id="bar"></i></div>
+      <span id="frameLabel">0 / 0</span>
+    </div>
+
+    <div class="note">
+      <div><b>墨水屏约束</b>快速 DU 帧只做黑白翻转；最终需要一次 GL16/GC16 定稿清残影。</div>
+      <div><b>双机同步</b>主机先开始并释放 left_ready；从机用自己的动画掩盖网络间隔。</div>
+      <div><b>选择方式</b>点“选择这个方案”，告诉我方案代号即可。</div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const W = 720, H = 960;
+  const screen = document.getElementById('screen');
+  const ctx = screen.getContext('2d');
+  const variantsEl = document.getElementById('variants');
+  const titleEl = document.getElementById('title');
+  const descEl = document.getElementById('desc');
+  const presetEl = document.getElementById('preset');
+  const framesEl = document.getElementById('frames');
+  const framesOut = document.getElementById('framesOut');
+  const speedEl = document.getElementById('speed');
+  const speedOut = document.getElementById('speedOut');
+  const phaseEl = document.getElementById('phase');
+  const elapsedEl = document.getElementById('elapsed');
+  const barEl = document.getElementById('bar');
+  const frameLabel = document.getElementById('frameLabel');
+  const ghostOn = document.getElementById('ghostOn');
+
+  const paper = makePaper();
+  const oldPage = makePage(paper, 18, '风从山谷里来', '第 18 页', [
+    '清晨的山脊像一条尚未完全醒来的线。风从谷底升起来，带着松针和湿土的气味。',
+    '他把书翻到下一页，纸张发出很轻的一声。远处的云正慢慢越过垭口。',
+    '在这样的光里，字句似乎也比平时更慢一些。'
+  ]);
+  const newPage = makePage(paper, 19, '风从山谷里来', '第 19 页', [
+    '风越过垭口之后，山谷忽然安静下来。只有书页边缘还在轻轻颤动。',
+    '她伸手按住纸角，等那一阵风过去。阳光落在字上，像一层很薄的灰。',
+    '有些页面需要慢慢翻，才能看清它背后的空白。'
+  ]);
+
+  const variants = [
+    {
+      id: 'wedge', name: '纸楔翻页', en: 'Paper Wedge', cls: 'g1',
+      desc: '斜向纸边推进，露出白色纸背与黑色折线。当前固件方向。',
+      preset: '建议 3 帧 · 约 450 ms', frames: 3, draw: drawWedge
+    },
+    {
+      id: 'corner', name: '右下角折页', en: 'Corner Peel', cls: 'g2',
+      desc: '从右下角掀起一角，白色纸背先出现，再展开到整页。',
+      preset: '建议 4 帧 · 约 560 ms', frames: 4, draw: drawCorner
+    },
+    {
+      id: 'curl', name: '弧面卷页', en: 'Soft Curl', cls: 'g3',
+      desc: '弧形页边加浅灰阴影，像纸张被手指轻轻卷起。',
+      preset: '建议 5 帧 · 约 650 ms', frames: 5, draw: drawCurl
+    },
+    {
+      id: 'slide', name: '整页推移', en: 'Push Slide', cls: 'g4',
+      desc: '旧页向左滑出，新页从右侧跟进，中间保留一道空白纸缝。',
+      preset: '建议 3 帧 · 约 420 ms', frames: 3, draw: drawSlide
+    },
+    {
+      id: 'flash', name: '空白闪页', en: 'Blank Flash', cls: 'g5',
+      desc: '先露出一张空白纸页，再落新页；层次最明显，但闪动感更强。',
+      preset: '建议 4 帧 · 约 600 ms', frames: 4, draw: drawFlash
+    },
+    {
+      id: 'blinds', name: '横向百叶', en: 'Blind Wipe', cls: 'g6',
+      desc: '分成若干横条依次切换，像老式墨水屏的分区刷新。',
+      preset: '建议 5 帧 · 约 520 ms', frames: 5, draw: drawBlinds
+    }
+  ];
+
+  let selected = 0, dir = 1, frames = 3, speed = 150, auto = false;
+  let timer = 0, raf = 0, running = false, startedAt = 0, frameIndex = 0, frameTotal = 0;
+  let ghost = false;
+
+  function makePaper() {
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    g.fillStyle = '#f3f1e8'; g.fillRect(0,0,W,H);
+    const grd = g.createLinearGradient(0,0,W,H);
+    grd.addColorStop(0,'rgba(255,255,255,.42)'); grd.addColorStop(.55,'rgba(255,255,255,0)'); grd.addColorStop(1,'rgba(96,88,62,.10)');
+    g.fillStyle = grd; g.fillRect(0,0,W,H);
+    for (let i=0;i<14000;i++) {
+      const x=Math.random()*W, y=Math.random()*H, a=Math.random()*.09;
+      g.fillStyle = `rgba(60,55,40,${a})`; g.fillRect(x,y,1,1);
+    }
+    g.strokeStyle='rgba(80,72,52,.06)'; g.lineWidth=1;
+    for(let y=0;y<H;y+=4){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke();}
+    return c;
+  }
+
+  function makePage(base, number, title, label, paras) {
+    const c = document.createElement('canvas'); c.width=W; c.height=H;
+    const g = c.getContext('2d');
+    g.drawImage(base,0,0);
+    g.fillStyle = '#1b1c19';
+    g.font = '600 21px "Songti SC","Noto Serif CJK SC",serif';
+    g.fillText('山 风 手 记', 72, 76);
+    g.font = '400 12px "PingFang SC",sans-serif'; g.fillStyle='#66665c';
+    g.fillText('A FIELD NOTE', 72, 98);
+    g.strokeStyle='rgba(30,30,25,.35)'; g.beginPath(); g.moveTo(72,118); g.lineTo(648,118); g.stroke();
+    g.fillStyle='#1b1c19'; g.font='400 14px "Songti SC",serif';
+    g.fillText('第 三 章', 72, 164);
+    g.font='600 44px "Songti SC","Noto Serif CJK SC",serif';
+    g.fillText(title, 70, 222);
+    g.strokeStyle='rgba(30,30,25,.18)'; g.beginPath(); g.moveTo(72,250); g.lineTo(320,250); g.stroke();
+    let y=310;
+    g.font='400 24px "Songti SC","Noto Serif CJK SC",serif';
+    for(const p of paras){
+      const chars=[...p]; let line='';
+      for(const ch of chars){
+        if(g.measureText(line+ch).width>576){ g.fillText(line,72,y); y+=43; line=ch; }
+        else line+=ch;
+      }
+      if(line){ g.fillText(line,72,y); y+=43; }
+      y+=17;
+    }
+    g.font='400 13px "PingFang SC",sans-serif'; g.fillStyle='#747368';
+    g.fillText(label, 72, 872);
+    g.fillText(String(number), 620, 872);
+    g.strokeStyle='rgba(30,30,25,.16)'; g.beginPath(); g.moveTo(72,900); g.lineTo(648,900); g.stroke();
+    g.fillStyle='#6b6a5f'; g.font='400 11px "PingFang SC",sans-serif';
+    g.fillText('PICO · DUAL READER', 72, 926);
+    g.fillText('18:42', 614, 926);
+    return c;
+  }
+
+  function clipNew(region) {
+    ctx.save(); ctx.beginPath();
+    if(region) region(); else ctx.rect(0,0,W,H);
+    ctx.clip(); ctx.drawImage(dir>0 ? newPage : oldPage, 0, 0); ctx.restore();
+  }
+  function drawBase(which) { ctx.drawImage(which === 'old' ? oldPage : newPage, 0, 0); }
+  function line(x1,y1,x2,y2,w=2,c='#1b1c19'){ctx.strokeStyle=c;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();}
+  function poly(points, fill) { ctx.fillStyle=fill;ctx.beginPath();ctx.moveTo(points[0][0],points[0][1]);for(let i=1;i<points.length;i++)ctx.lineTo(points[i][0],points[i][1]);ctx.closePath();ctx.fill(); }
+
+  function drawWedge(p) {
+    const edge = dir>0 ? W*(1-p) : W*p;
+    const slant = 58;
+    clipNew(() => {
+      if(dir>0) ctx.rect(edge,0,W-edge,H); else ctx.rect(0,0,edge,H);
+    });
+    ctx.save();
+    ctx.beginPath();
+    if(dir>0){ctx.moveTo(edge,0);ctx.lineTo(edge+slant,H);ctx.lineTo(edge+slant-26,H);ctx.lineTo(edge-26,0);} 
+    else {ctx.moveTo(edge,0);ctx.lineTo(edge-slant,H);ctx.lineTo(edge-slant+26,H);ctx.lineTo(edge+26,0);}
+    ctx.closePath(); ctx.fillStyle='#f7f5ec'; ctx.fill();
+    ctx.strokeStyle='#171815'; ctx.lineWidth=3; ctx.stroke();
+    ctx.restore();
+    ctx.save(); ctx.globalAlpha=.16; ctx.fillStyle='#111'; ctx.fillRect(dir>0?edge-40:0,0,40,H); ctx.restore();
+  }
+
+  function drawCorner(p) {
+    drawBase('old');
+    const fw = W*p, fh = H*p;
+    const x0 = W, y0 = H - fh, x1 = W - fw, y1 = H;
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.lineTo(W,H); ctx.closePath();
+    ctx.clip(); ctx.drawImage(newPage,0,0); ctx.restore();
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.lineTo(W,H); ctx.closePath();
+    ctx.fillStyle='#f7f5ec'; ctx.fill();
+    ctx.strokeStyle='#171815'; ctx.lineWidth=3; ctx.stroke();
+    ctx.restore();
+    ctx.save(); ctx.globalAlpha=.18; ctx.fillStyle='#111';
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(W-10,H-10); ctx.lineTo(W-10,H); ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+
+  function drawCurl(p) {
+    drawBase('old');
+    const edge = dir>0 ? W*(1-p) : W*p;
+    const bow = 46*Math.sin(Math.PI*p);
+    ctx.save();
+    ctx.beginPath();
+    if(dir>0){ctx.moveTo(edge,0);ctx.quadraticCurveTo(edge-bow,H/2,edge,H);ctx.lineTo(W,0);ctx.lineTo(W,H);ctx.closePath();}
+    else {ctx.moveTo(edge,0);ctx.quadraticCurveTo(edge+bow,H/2,edge,H);ctx.lineTo(0,0);ctx.lineTo(0,H);ctx.closePath();}
+    ctx.clip(); ctx.drawImage(newPage,0,0); ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    if(dir>0){ctx.moveTo(edge,0);ctx.quadraticCurveTo(edge-bow,H/2,edge,H);ctx.quadraticCurveTo(edge+18,H/2,edge,0);}
+    else {ctx.moveTo(edge,0);ctx.quadraticCurveTo(edge+bow,H/2,edge,H);ctx.quadraticCurveTo(edge-18,H/2,edge,0);}
+    ctx.closePath(); ctx.fillStyle='#f8f6ed'; ctx.fill(); ctx.strokeStyle='#171815'; ctx.lineWidth=2.5; ctx.stroke(); ctx.restore();
+    ctx.save(); ctx.globalAlpha=.14; ctx.fillStyle='#111';
+    if(dir>0) ctx.fillRect(edge-48,0,48,H); else ctx.fillRect(0,0,edge+48,H); ctx.restore();
+  }
+
+  function drawSlide(p) {
+    const shift = (dir>0 ? -1 : 1) * W * p;
+    ctx.fillStyle='#d9d5c6'; ctx.fillRect(0,0,W,H);
+    ctx.drawImage(oldPage, shift,0);
+    ctx.drawImage(newPage, W*(dir>0?1:-1)+shift,0);
+    const seam = dir>0 ? shift+W : shift;
+    ctx.save(); ctx.globalAlpha=.18; ctx.fillStyle='#111'; ctx.fillRect(seam-(dir>0?22:-22),0,22,H); ctx.restore();
+  }
+
+  function drawFlash(p) {
+    if(p < .42){ ctx.drawImage(oldPage,0,0); ctx.save(); ctx.globalAlpha=Math.min(1,p/.42); ctx.fillStyle='#f7f5ec'; ctx.fillRect(0,0,W,H); ctx.restore(); }
+    else if(p < .58){ ctx.fillStyle='#f7f5ec'; ctx.fillRect(0,0,W,H); ctx.save(); ctx.globalAlpha=.06; ctx.drawImage(oldPage,0,0); ctx.restore(); }
+    else { ctx.fillStyle='#f7f5ec'; ctx.fillRect(0,0,W,H); ctx.save(); ctx.globalAlpha=Math.min(1,(p-.58)/.42); ctx.drawImage(newPage,0,0); ctx.restore(); }
+  }
+
+  function drawBlinds(p) {
+    drawBase('old');
+    const bands=8, h=H/bands;
+    for(let i=0;i<bands;i++){
+      const t=(p-i*0.055)/(1-0.385);
+      if(t<=0) continue;
+      const q=Math.min(1,t), y=i*h;
+      ctx.save(); ctx.beginPath(); ctx.rect(0,y,W*q,h); ctx.clip();
+      ctx.drawImage(newPage,0,0); ctx.restore();
+      line(0,y+h-1,W*q,y+h-1,1,'rgba(20,20,18,.35)');
+    }
+  }
+
+  function drawGhost() {
+    if(!ghost) return;
+    ctx.save(); ctx.globalAlpha=.055; ctx.drawImage(oldPage,0,0); ctx.restore();
+  }
+
+  function renderVariant(i,p) {
+    ctx.save(); ctx.clearRect(0,0,W,H);
+    if(p >= 1) { ctx.drawImage(newPage,0,0); if(ghost){ctx.save();ctx.globalAlpha=.055;ctx.drawImage(oldPage,0,0);ctx.restore();} ctx.restore(); return; }
+    ctx.drawImage(oldPage,0,0);
+    variants[i].draw(p);
+    // subtle e-ink scan texture
+    ctx.save(); ctx.globalAlpha=.035; ctx.fillStyle='#1b1c19';
+    for(let y=0;y<H;y+=3) ctx.fillRect(0,y,W,1);
+    ctx.restore();
+    drawGhost();
+    ctx.restore();
+  }
+
+  function buildList() {
+    variants.forEach((v,i)=>{
+      const b=document.createElement('button');
+      b.className='variant'+(i===0?' on':''); b.type='button';
+      b.innerHTML=`<span class="glyph ${v.cls}"></span><span><span class="vname">${i+1}. ${v.name} <span style="color:var(--muted);font-weight:400">${v.en}</span></span><span class="vdesc">${v.desc}</span></span>`;
+      b.onclick=()=>select(i);
+      variantsEl.appendChild(b);
+    });
+  }
+
+  function select(i){
+    selected=i; [...variantsEl.children].forEach((b,n)=>b.classList.toggle('on',n===i));
+    const v=variants[i];
+    titleEl.innerHTML=`${v.name} · <span>${v.en}</span>`;
+    descEl.textContent=v.desc; presetEl.textContent=v.preset;
+    framesEl.value=v.frames; frames=v.frames; updateFrames();
+    play();
+  }
+
+  function updateFrames(){ framesOut.textContent=frames; frameLabel.textContent=`0 / ${frames}`; }
+  function updateSpeed(){ speedOut.textContent=`${speed} ms`; }
+
+  function play(){
+    cancel(); running=true; startedAt=performance.now(); frameIndex=0; frameTotal=frames;
+    phaseEl.textContent='播放中'; barEl.style.width='0%'; elapsedEl.textContent='0 ms';
+    const v=variants[selected];
+    const frameP = k => k/(frameTotal-1);
+    const tick = () => {
+      if(!running) return;
+      if(frameIndex>=frameTotal){ finish(); return; }
+      const p = frameP(frameIndex);
+      renderVariant(selected,p);
+      barEl.style.width = `${Math.min(100,p*100)}%`;
+      frameLabel.textContent=`${frameIndex+1} / ${frameTotal}`;
+      elapsedEl.textContent=`${Math.round(performance.now()-startedAt)} ms`;
+      frameIndex++;
+      timer=setTimeout(tick, speed);
+    };
+    renderVariant(selected,0); tick();
+  }
+  function finish(){ running=false; renderVariant(selected,1); barEl.style.width='100%'; phaseEl.textContent='完成'; elapsedEl.textContent=`${Math.round(performance.now()-startedAt)} ms`; frameLabel.textContent=`${frameTotal} / ${frameTotal}`; if(auto) setTimeout(play, 700); }
+  function cancel(){ running=false; clearTimeout(timer); cancelAnimationFrame(raf); }
+
+  function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),1800); }
+
+  document.getElementById('replay').onclick=()=>play();
+  document.getElementById('auto').onclick=(e)=>{auto=!auto;e.currentTarget.classList.toggle('primary',auto);e.currentTarget.textContent=auto?'停止循环':'自动循环';if(auto&&!running)play();if(!auto)cancel();};
+  document.getElementById('dirNext').onclick=()=>{dir=1;document.getElementById('dirNext').classList.add('on');document.getElementById('dirPrev').classList.remove('on');play();};
+  document.getElementById('dirPrev').onclick=()=>{dir=-1;document.getElementById('dirPrev').classList.add('on');document.getElementById('dirNext').classList.remove('on');play();};
+  document.getElementById('ghostOff').onclick=()=>{ghost=false;document.getElementById('ghostOff').classList.add('on');document.getElementById('ghostOn').classList.remove('on');play();};
+  document.getElementById('ghostOn').onclick=()=>{ghost=true;document.getElementById('ghostOn').classList.add('on');document.getElementById('ghostOff').classList.remove('on');play();};
+  document.getElementById('choose').onclick=()=>{localStorage.setItem('pico-page-turn',variants[selected].id);toast(`已选择：${variants[selected].name}（${variants[selected].en}）`);};
+  framesEl.oninput=()=>{frames=+framesEl.value;updateFrames();play();};
+  speedEl.oninput=()=>{speed=+speedEl.value;updateSpeed();};
+
+  buildList(); updateFrames(); updateSpeed(); renderVariant(0,1);
+  // first load: play once after a beat
+  setTimeout(()=>play(), 380);
+})();
+</script>
+</body>
+</html>
