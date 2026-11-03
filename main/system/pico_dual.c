@@ -28,6 +28,10 @@
 #include "pico_power.h"
 #include "pico_ink.h"
 #include "read_pico_connectivity.h"
+#ifdef ESP_PLATFORM
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#endif
 #include "read_pico_sd.h"
 #include "ttf_font.h"
 #ifdef PICO_NATIVE_PREVIEW
@@ -74,6 +78,11 @@ static int pair_sock = -1;
 static bool pair_scanning, pair_found, pair_failed;
 static char pair_ip[48], pair_code[7];
 static int64_t pair_started, pair_last_tx;
+static bool hotspot_active;
+#ifdef ESP_PLATFORM
+static esp_netif_t* hotspot_netif;
+#endif
+static void hotspot_stop(void);
 static void pair_stop(void);
 static void pair_scan_start(void);
 static void pair_scan_update(void);
@@ -121,7 +130,47 @@ bool ps_dual_holds_awake(void) {
     return ps_dual_enabled() && dual_session &&
         (status.connected || status.data_connected || status.scanning || status.busy);
 }
+static bool hotspot_start(void) {
+#ifdef ESP_PLATFORM
+    if (hotspot_active) return true;
+    if (read_pico_connectivity_quiesce(2500) != ESP_OK) return false;
+    esp_wifi_stop();
+    hotspot_netif = esp_netif_create_default_wifi_ap();
+    if (!hotspot_netif) { (void)read_pico_connectivity_resume(); return false; }
+    wifi_config_t ap = {0};
+    snprintf((char*)ap.ap.ssid, sizeof(ap.ap.ssid), "PicoDual");
+    snprintf((char*)ap.ap.password, sizeof(ap.ap.password), "readpico");
+    ap.ap.ssid_len = (uint8_t)strlen((char*)ap.ap.ssid);
+    ap.ap.channel = 1;
+    ap.ap.max_connection = 2;
+    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (!err) err = esp_wifi_set_config(WIFI_IF_AP, &ap);
+    if (!err) err = esp_wifi_start();
+    if (err != ESP_OK) {
+        esp_netif_destroy(hotspot_netif); hotspot_netif = NULL;
+        (void)read_pico_connectivity_resume();
+        return false;
+    }
+    hotspot_active = true;
+    return true;
+#else
+    return false;
+#endif
+}
+static void hotspot_stop(void) {
+#ifdef ESP_PLATFORM
+    if (!hotspot_active) return;
+    esp_wifi_stop();
+    if (hotspot_netif) { esp_netif_destroy(hotspot_netif); hotspot_netif = NULL; }
+    hotspot_active = false;
+    (void)read_pico_connectivity_resume();
+#else
+    hotspot_active = false;
+#endif
+}
 void ps_dual_suspend(void) {
+    hotspot_stop();
     pico_dual_ble_stop();
     ble_generation = 0;
     if (dual_session) {
@@ -144,6 +193,8 @@ bool ps_dual_configure(int role, const char* host, const char* code) {
         snprintf(next.host, sizeof(next.host), "%s", host ? host : "");
         snprintf(next.code, sizeof(next.code), "%s", code);
     }
+    if (role == 2 && host && !strncmp(host, "192.168.4.1", 11))
+        (void)read_pico_connectivity_connect("PicoDual", "readpico");
     if (!ps_store("dualconfig1", &next, sizeof(next))) {
         ps_toast("设置保存失败，请检查 TF 卡");
         return false;
@@ -457,17 +508,20 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     last_tick = ctx->now_ms;
     read_pico_connectivity_status_t* net = NULL;
     // 日常联网快照只用于设置页；读书不复制大扫描数组。/ Full Wi-Fi snapshots are only needed by setup, not each reading tick.
-    bool online = read_pico_connectivity_online();
+    bool online = hotspot_active || read_pico_connectivity_online();
 #ifdef PICO_NATIVE_PREVIEW
     online = native_wifi;
 #endif
     if (ps_route() == PS_DUAL && ctx->now_ms - last_ip >= 1000) {
         last_ip = ctx->now_ms;
-        net = malloc(sizeof(*net));
-        if (net) {
-            read_pico_connectivity_get_status(net);
-            snprintf(primary_ip, sizeof(primary_ip), "%s", net->ip);
-            free(net);
+        if (hotspot_active) snprintf(primary_ip, sizeof(primary_ip), "192.168.4.1");
+        else {
+            net = malloc(sizeof(*net));
+            if (net) {
+                read_pico_connectivity_get_status(net);
+                snprintf(primary_ip, sizeof(primary_ip), "%s", net->ip);
+                free(net);
+            }
         }
     }
     // 浮层只延后切换正文，不能停止通信心跳；触摸/笔迹仍让路。
@@ -752,6 +806,7 @@ static void pair_scan_update(void) {
         if (!primary_ip[0] || now - last_ip >= 1000) {
             char ip[48];
             if (local_address(ip)) snprintf(primary_ip, sizeof(primary_ip), "%s", ip);
+            else if (hotspot_start()) snprintf(primary_ip, sizeof(primary_ip), "192.168.4.1");
             else primary_ip[0] = 0;
             last_ip = now;
         }
