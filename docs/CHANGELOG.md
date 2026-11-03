@@ -1,3 +1,8 @@
+## 0.40.0-dual31（独立双机实验版）
+
+- 暂时停用不安全的 SoftAP 自动启动：上一版在 WiFi 所有权未就绪时调用 `esp_netif_create_default_wifi_ap` 会触发 ESP_ERR_INVALID_STATE 并无限重启。恢复 BLE 发现 + 现有局域网配对；热点握手待安全 AP 生命周期完成后再启用。
+- Disable the unsafe automatic SoftAP path that could abort and reboot in `esp_netif_create_default_wifi_ap`; keep BLE discovery plus existing LAN pairing until the AP lifecycle is safe.
+
 ## 0.40.0-dual30（独立双机实验版）
 
 - 自动发现失败后只保留重新搜索/取消，不再显示手动连接入口；手动输入只在首次进入配对页、尚未开始自动搜索时提供。

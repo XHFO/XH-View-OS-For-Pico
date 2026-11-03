@@ -806,7 +806,6 @@ static void pair_scan_update(void) {
         if (!primary_ip[0] || now - last_ip >= 1000) {
             char ip[48];
             if (local_address(ip)) snprintf(primary_ip, sizeof(primary_ip), "%s", ip);
-            else if (hotspot_start()) snprintf(primary_ip, sizeof(primary_ip), "192.168.4.1");
             else primary_ip[0] = 0;
             last_ip = now;
         }
