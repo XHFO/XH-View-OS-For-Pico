@@ -71,7 +71,7 @@ static void orientation_save(void) {
 static uint32_t applied, presented, stored, content_revision;
 static int64_t last_tick, last_ip, last_work;
 static int pair_sock = -1;
-static bool pair_scanning, pair_found;
+static bool pair_scanning, pair_found, pair_failed;
 static char pair_ip[48], pair_code[7];
 static int64_t pair_started, pair_last_tx;
 static void pair_stop(void);
@@ -602,7 +602,7 @@ void ps_dual_render(uint8_t* fb) {
     ps_button(fb, x + (w - 16) / 3 + 8, 104, (w - 16) / 3, 40, "主机", settings.role == 1);
     ps_button(fb, x + 2 * ((w - 16) / 3 + 8), 104, (w - 16) / 3, 40, "从机", settings.role == 2);
     if (!settings.role) {
-        if (pair_scanning || pair_found) {
+        if (pair_scanning || pair_found || pair_failed) {
             ps_text(fb, x, 170, 14, pair_found ? "发现主机" : "正在搜索主机…", 1);
             if (pair_found) {
                 snprintf(text, sizeof(text), "主机地址  %s", pair_ip);
@@ -613,6 +613,11 @@ void ps_dual_render(uint8_t* fb) {
                 ps_button(fb, x, 292, w, 40, "确认配对", true);
                 ps_button(fb, x, 340, w, 36, "重新搜索", false);
                 ps_button(fb, x, 384, w, 36, "取消", false);
+            } else if (pair_failed) {
+                ps_text(fb, x, 190, 14, "未找到主机", 1);
+                ps_text(fb, x, 220, 12, "请确认主机已开启并选择主机", 4);
+                ps_button(fb, x, 280, w, 40, "重新搜索", true);
+                ps_button(fb, x, 328, w, 36, "取消", false);
             } else {
                 ps_text(fb, x, 210, 12, "请让主机停留在双机阅读页", 4);
                 ps_button(fb, x, 292, w, 40, "取消搜索", false);
@@ -720,6 +725,7 @@ static void pair_scan_start(void) {
     }
     pair_stop();
     pair_found = false;
+    pair_failed = false;
     pair_ip[0] = pair_code[0] = 0;
     pair_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (pair_sock < 0) { ps_toast("无法启动配对搜索"); return; }
@@ -812,7 +818,8 @@ static void pair_scan_update(void) {
     }
     if (pair_scanning && now - pair_started > 30000) {
         pair_stop();
-        ps_toast("未找到主机，请确认两台在同一 Wi-Fi");
+        pair_failed = true;
+        ps_toast("未找到主机，请确认蓝牙已开启");
         ps_dirty();
     }
 }
@@ -899,7 +906,12 @@ bool ps_dual_event(const ps_event_t* e) {
             pair_scan_start();
         return true;
     }
-    if (!settings.role && (pair_scanning || pair_found)) {
+    if (!settings.role && (pair_scanning || pair_found || pair_failed)) {
+        if (pair_failed) {
+            if (e->y >= 280 && e->y < 320) { pair_scan_start(); return true; }
+            if (e->y >= 328 && e->y < 364) { pair_failed = false; ps_dirty(); return true; }
+            return true;
+        }
         if (pair_found && e->y >= 292 && e->y < 332) {
             if (ps_dual_configure(2, pair_ip, pair_code)) {
                 pair_stop(); ps_toast("配对已保存，正在连接主机");

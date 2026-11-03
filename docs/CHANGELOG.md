@@ -1,3 +1,8 @@
+## 0.40.0-dual30（独立双机实验版）
+
+- 自动发现失败后只保留重新搜索/取消，不再显示手动连接入口；手动输入只在首次进入配对页、尚未开始自动搜索时提供。
+- After automatic discovery fails, only retry/cancel remain; manual entry is offered only before starting automatic discovery.
+
 ## 0.40.0-dual29（独立双机实验版）
 
 - 配对发现改用 BLE 广播/扫描：主机在广播扫描响应中携带配对页 IP 和六位码，从机主动扫描读取，不再依赖局域网 UDP 广播；UDP 保留为兼容回退。
