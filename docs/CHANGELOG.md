@@ -1,3 +1,9 @@
+## 0.40.0-dual25（独立双机实验版）
+
+- 单人接力阅读时顶部不再显示过期的“主机/从机第几页”，改为实际全书页码，翻页后同步更新。
+- 翻页动画改为 12 帧干净滑动，使用 FOLLOW 快速 DU，去掉灰色阴影；动画后执行一次全屏 GC16，清除页缝以及顶部目录/进度区的残影。
+- A solo reader now shows the real whole-book page in the header instead of a stale paired page. The page turn uses 12 clean slide frames on FOLLOW fast DU with no gray shadow, followed by one full-screen GC16 to clear gutter and header ghosting.
+
 ## 0.40.0-dual24（独立双机实验版）
 
 - 双机阅读新增接力：一台离开正文/目录去书架、其他应用或批注键盘时，另一台进入单人阅读，可正常翻页；返回后以仍在阅读的一台当前页重新合流。

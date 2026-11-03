@@ -870,7 +870,7 @@ static void draw_compact_header(uint8_t* fb, size_t page) {
         fit_text(title, 28, available - ttf_text_width_px(28, "…"));
         strcat(title, "…");
     }
-    if(ps_dual_enabled()&&s_dual_displayed)snprintf(label,sizeof(label),"%s · 第 %u 页",ps_dual_role()==1?"主机":"从机",(unsigned)s_dual_displayed);
+    if(ps_dual_enabled() && s_dual_displayed && !s_dual_solo) snprintf(label,sizeof(label),"%s · 第 %u 页",ps_dual_role()==1?"主机":"从机",(unsigned)s_dual_displayed);
     snprintf(percent_label, sizeof(percent_label), "%u%%", pct);
     int page_px = 26;
     int page_width = available - ttf_text_width_px(26, percent_label) - 18;
@@ -1230,7 +1230,6 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
     bool axis_inverted = rotation == EPD_ROT_INVERTED_LANDSCAPE;
     int logical_w = reader_width();
     int seam = dir > 0 ? logical_w * (100 - progress) / 100 : logical_w * progress / 100;
-    int shadow = 24;
     int x0 = pr.x < 0 ? 0 : pr.x;
     int y0 = pr.y < 0 ? 0 : pr.y;
     int x1 = pr.x + pr.width > pw ? pw : pr.x + pr.width;
@@ -1243,28 +1242,20 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             int span = axis_x ? pr.width : pr.height;
             if (span < 1) span = 1;
             int logical_x = axis_inverted && axis_x ? span - 1 - (at - base) : at - base;
-            // 斜向页边：两端各偏 15px，像纸张从一角掀起。
-            // Slanted edge: +/-15 px at the ends, like a sheet lifting from a corner.
-            int edge = seam + (at - base - span / 2) * 30 / span;
-            bool take_new = dir > 0 ? logical_x >= edge : logical_x <= edge;
-            int dist = logical_x > edge ? logical_x - edge : edge - logical_x;
+            bool take_new = dir > 0 ? logical_x >= seam : logical_x < seam;
+            int dist = logical_x > seam ? logical_x - seam : seam - logical_x;
             size_t idx = (size_t)y * row_bytes + x / 2;
             int shift = (x & 1) * 4;
             uint8_t old_byte = dst[idx];
-            int old_gray = (old[idx] >> shift) & 15;
-            int new_gray = (fresh[idx] >> shift) & 15;
-            int gray = take_new ? new_gray : old_gray;
-            // 白色页边 + 旧页一侧的柔和阴影；不再同时压暗两侧形成黑缝。
-            // White page edge plus a soft shadow on the old side only; no dark line on both sides.
+            int gray = take_new ? ((fresh[idx] >> shift) & 15) : ((old[idx] >> shift) & 15);
+            // 干净的白色页缝，不叠灰阶阴影；低灰阶最容易在墨水屏上留残影。
+            // A clean white gutter without gray shadows; low grays are the main e-ink ghosting source.
             if (dist <= 1) gray = 15;
-            else if (dist < shadow && !take_new) {
-                int amount = (shadow - dist) * 48 / shadow;
-                gray = gray * (100 - amount) / 100 + 12 * 17 * amount / 100;
-            }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
     }
 }
+
 static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     prepare_page_images();
     int64_t started = esp_timer_get_time();
@@ -1276,7 +1267,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {28, 52, 74, 90};
+            static const int steps[] = {8, 16, 24, 33, 41, 50, 58, 66, 75, 83, 91, 100};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;
@@ -1284,10 +1275,19 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
                 turn_anim_compose(ctx->fb, s_turn_old, s_next_fb, s_turn_anim_dir, steps[i]);
                 unlock_draw();
-                guard_draw_result(ctx->hl, update_display_area_with(ctx->hl, &E0470_WAVEFORM, MODE_DU, s_area));
-                vTaskDelay(pdMS_TO_TICKS(12));
+                guard_draw_result(ctx->hl, update_display_area_with(ctx->hl, &E0470_FOLLOW_WAVEFORM, MODE_DU, s_area));
+                vTaskDelay(pdMS_TO_TICKS(3));
                 lock_draw();
             }
+            // 动画后全屏 GC16：页缝和顶部目录/进度区的低灰阶残影一起清掉。
+            // One full-screen GC16 after the animation clears gutter and header ghosting.
+            if (cached) memcpy(ctx->fb, s_next_fb, fb_bytes());
+            else draw_reader(ctx->fb, s_page);
+            s_area = (EpdRect){0, 0, reader_width(), reader_height()};
+            s_mode = MODE_GC16;
+            s_reader_split = true;
+            unlock_draw();
+            return APP_REDRAW_AREA;
         }
     }
     if (cached)
