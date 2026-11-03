@@ -43,6 +43,8 @@ static bool calibrated;
 static uint32_t base_applied;
 static bool reading_active = true;
 static bool reading_known;
+static bool contact_latched;
+static int64_t contact_same_since;
 static bool manual_rotation;
 static int64_t orientation_store_at;
 static uint8_t orientation_bits(void) {
@@ -264,10 +266,30 @@ bool ps_dual_left_ready(void) {
     return status.left_ready;
 }
 bool ps_dual_contact_likely(void) {
-    if (!calibrated) return false;
+    if (!calibrated) {
+        contact_latched = false;
+        contact_same_since = 0;
+        return false;
+    }
     int local = contact_face();
     int peer = ps_dual_peer_face();
-    return local != 0 && peer != 0 && local != peer;
+    if (local && peer) {
+        if (local != peer) {
+            // 一旦确认相对，短暂的运动/姿态不明不会解除屏蔽。
+            // Once opposite faces are confirmed, brief motion or unknown pose cannot release the guard.
+            contact_latched = true;
+            contact_same_since = 0;
+        } else {
+            // 只有两端稳定同向一段时间才认为已展开。
+            // Only stable same-direction faces for a while count as unfolded.
+            int64_t now = ps_now();
+            if (!contact_same_since) contact_same_since = now;
+            if (now - contact_same_since >= 800) contact_latched = false;
+        }
+    } else {
+        contact_same_since = 0;
+    }
+    return contact_latched;
 }
 bool ps_dual_calibrate(void) {
     load();
@@ -290,6 +312,8 @@ bool ps_dual_calibrate(void) {
     }
     base = (dual_base_t){.magic = 0x31425344u, .x = x, .y = y, .z = z};
     calibrated = true;
+    contact_latched = false;
+    contact_same_since = 0;
     base_applied = status.base_seq;
     if (!ps_store("dualbase1", &base, sizeof(base))) {
         calibrated = false;
@@ -471,6 +495,8 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         else
             base = (dual_base_t){.magic = 0x31425344u, .x = status.base_x, .y = status.base_y, .z = status.base_z};
         calibrated = true;
+        contact_latched = false;
+        contact_same_since = 0;
         base_applied = status.base_seq;
         (void)ps_store("dualbase1", &base, sizeof(base));
         ps_dirty();

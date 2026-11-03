@@ -1,3 +1,9 @@
+## 0.40.0-dual23（独立双机实验版）
+
+- 贴合防误触改为锁存：一旦确认两屏相对，触摸离开、设备一起运动或姿态短暂不明都不会解除；只有展开并稳定同向 800ms 才恢复。
+- 贴合锁存期间底部三键仍可导航，但不会清除屏蔽；中央长按恢复取消，避免折叠时误解除。
+- Latch the contact guard once opposite faces are confirmed: quiet gaps, shared motion and ambiguous pose no longer release it. Only stable unfolded faces for 800 ms clear it. Keys still navigate but do not clear the latch; the central-hold recovery is removed.
+
 ## 0.40.0-dual22（独立双机实验版）
 
 - 修复双机书库尚未完全一致时，姿态/校准/防误触控制帧被 `control_ready` 拦截的问题；这些控制帧现在只要求蓝牙控制通道兼容，不再等待书库同步。

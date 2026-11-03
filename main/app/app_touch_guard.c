@@ -95,7 +95,9 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
     // The three bottom keys are a separate physical touch area (y>=1300),
     // never ghost contacts. They must always work and also clear the guard.
     if (touch->y >= 1300) {
-        if (g.blocked) {
+        // 贴合屏蔽期间按键仍可导航，但不能清除屏蔽；展开后按键才恢复“顺带解除”。
+        // Keys still navigate during a contact latch, but cannot clear it; once unfolded they clear again.
+        if (g.blocked && !contact) {
             end_block();
             g.suspended_until = now_ms + 2000;
         }
@@ -147,46 +149,12 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
     }
 
     if (g.blocked) {
-        // 只要还有触点就继续屏蔽；全部离开并安静 500ms 才恢复。
-        // Remain blocked while any contact persists; release only after 500 ms quiet.
-        if (touch->touched) {
-            g.quiet_since = 0;
-            g.block_until = now_ms + GUARD_BLOCK_MS;
-            // 单指停在屏幕中央 0.9s 作为恢复手势；鬼触通常是对置双点/边缘抖动。
-            // A single stationary finger in the central safe zone for 0.9 s recovers;
-            // ghost contact is typically opposed points or edge chatter.
-            // 覆盖中央区域和下方中键带，用户可以用平时返回主页的中键长按恢复。
-            // Cover the center and the lower center-key band, so the usual home/back
-            // touch key can also be held to recover.
-            const bool center = touch->count == 1 &&
-                touch->x >= 684 / 5 && touch->x < 684 * 4 / 5 &&
-                touch->y >= 1216 / 5 && touch->y < 1216 * 9 / 10;
-            if (center) {
-                int dx = (int)touch->x - (int)g.calm_x;
-                int dy = (int)touch->y - (int)g.calm_y;
-                if (dx < 0) dx = -dx;
-                if (dy < 0) dy = -dy;
-                if (!g.calm_since || dx + dy > 24) {
-                    g.calm_since = now_ms;
-                    g.calm_x = touch->x;
-                    g.calm_y = touch->y;
-                } else if (now_ms - g.calm_since >= GUARD_RECOVER_HOLD_MS) {
-                    end_block();
-                    g.wait_release = true;
-                    g.wait_since = now_ms;
-                    memset(touch, 0, sizeof(*touch));
-                    return true;
-                }
-            } else {
-                g.calm_since = 0;
-            }
-        } else if (!g.quiet_since) {
-            g.quiet_since = now_ms;
-            g.calm_since = 0;
-        } else if (now_ms - g.quiet_since >= GUARD_QUIET_MS) {
-            end_block();
-            return false;
-        }
+        // 贴合状态下屏蔽保持锁存：触点离开、设备一起移动或姿态暂时不明都不解除；
+        // 只有展开且稳定同向 800ms 后由上层 contact=false 结束。
+        // Keep the shield latched through quiet, shared motion and ambiguous pose;
+        // only the upper layer's stable unfolded contact=false ends it.
+        if (touch->touched) g.quiet_since = 0;
+        else if (!g.quiet_since) g.quiet_since = now_ms;
         memset(touch, 0, sizeof(*touch));
         return true;
     }

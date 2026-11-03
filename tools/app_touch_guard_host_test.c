@@ -27,32 +27,17 @@ int main(void) {
         assert(!app_touch_guard_filter(&t, now, true, true, false));
         now += 120;
     }
-    // In face-to-face contact every screen touch is suppressed immediately.
+    // In face-to-face contact every screen touch is suppressed and stays latched.
     app_touch_guard_reset();
     cst836u_touch_t tap = sample(true, 340, 600, -1, -1);
     assert(app_touch_guard_filter(&tap, now, true, true, true));
     assert(app_touch_guard_blocked() && !tap.touched);
-    app_touch_guard_take_event();
-    cst836u_touch_t key_clear = sample(true, 240, 1300, -1, -1);
-    assert(!app_touch_guard_filter(&key_clear, now + 20, true, true, true));
-    assert(!app_touch_guard_blocked());
-    now += 40;
-    app_touch_guard_reset();
-    bool blocked = false;
-    for (int i = 0; i < 8 && !blocked; i++) {
-        cst836u_touch_t t = sample(true, 40, 100, 640, 1100);
-        blocked = app_touch_guard_filter(&t, now, true, true, true);
-        if (!blocked) {
-            assert(t.touched);
-            now += 30;
-        } else {
-            assert(!t.touched && t.count == 0);
-            assert(app_touch_guard_blocked());
-            assert(app_touch_guard_take_event() == 1);
-        }
-    }
-    assert(blocked);
-    // A persistent contact is ignored until it leaves and stays quiet for 500 ms.
+    assert(app_touch_guard_take_event() == 1);
+    // The bottom keys still navigate but must not clear a contact latch.
+    cst836u_touch_t key = sample(true, 240, 1300, -1, -1);
+    assert(!app_touch_guard_filter(&key, now + 20, true, true, true));
+    assert(app_touch_guard_blocked());
+    // A persistent touch, quiet gap, and a central hold cannot release contact mode.
     for (int i = 0; i < 10; i++) {
         cst836u_touch_t t = sample(true, 30, 1200, -1, -1);
         assert(app_touch_guard_filter(&t, now, true, true, true));
@@ -60,50 +45,21 @@ int main(void) {
     }
     cst836u_touch_t empty = sample(false, 0, 0, -1, -1);
     assert(app_touch_guard_filter(&empty, now, true, true, true));
-    now += 520;
+    now += 600;
     empty = sample(false, 0, 0, -1, -1);
-    assert(!app_touch_guard_filter(&empty, now, true, true, true));
-    assert(!app_touch_guard_blocked());
-    assert(app_touch_guard_take_event() == 2);
-    // The three bottom keys are physical, always work, and clear the guard.
-    app_touch_guard_reset();
-    now += 1000;
-    for (int i = 0; i < 8 && !app_touch_guard_blocked(); i++) {
-        cst836u_touch_t ghost = sample(true, 40, 100, 640, 1100);
-        (void)app_touch_guard_filter(&ghost, now, true, true, true);
-        now += 30;
-    }
+    assert(app_touch_guard_filter(&empty, now, true, true, true));
     assert(app_touch_guard_blocked());
-    cst836u_touch_t key = sample(true, 240, 1300, -1, -1);
-    assert(!app_touch_guard_filter(&key, now, true, true, true));
-    assert(!app_touch_guard_blocked());
-    now += 40;
-    // A deliberate central hold recovers and then waits for lift; the recovery touch must not tap.
-    app_touch_guard_reset();
-    now += 1000;
-    for (int i = 0; i < 8 && !app_touch_guard_blocked(); i++) {
-        cst836u_touch_t ghost = sample(true, 40, 100, 640, 1100);
-        (void)app_touch_guard_filter(&ghost, now, true, true, true);
-        now += 30;
-    }
-    assert(app_touch_guard_blocked());
-    (void)app_touch_guard_take_event();
-    bool recovered = false;
-    for (int i = 0; i < 30 && !recovered; i++) {
+    for (int i = 0; i < 30; i++) {
         cst836u_touch_t hold = sample(true, 342, 608, -1, -1);
-        (void)app_touch_guard_filter(&hold, now, true, true, true);
-        recovered = !app_touch_guard_blocked();
+        assert(app_touch_guard_filter(&hold, now, true, true, true));
         now += 35;
     }
-    assert(recovered && !app_touch_guard_blocked());
-    // While the recovery finger is still down, input stays suppressed; lifting arms the pass-through.
-    cst836u_touch_t hold = sample(true, 342, 608, -1, -1);
-    (void)app_touch_guard_filter(&hold, now, true, true, true);
-    now += 40;
-    cst836u_touch_t lift = sample(false, 0, 0, -1, -1);
-    assert(!app_touch_guard_filter(&lift, now, true, true, true));
-    cst836u_touch_t normal = sample(true, 340, 600, -1, -1);
-    assert(!app_touch_guard_filter(&normal, now + 50, true, true, true));
+    assert(app_touch_guard_blocked());
+    // Only a stable unfolded contact=false ends the latch.
+    empty = sample(false, 0, 0, -1, -1);
+    assert(!app_touch_guard_filter(&empty, now, true, true, false));
+    assert(!app_touch_guard_blocked());
+    assert(app_touch_guard_take_event() == 2);
     // Unfolded pose must never filter normal sliding, even with noisy multi-point samples.
     app_touch_guard_reset();
     for (int i = 0; i < 20; i++) {
@@ -117,6 +73,6 @@ int main(void) {
     cst836u_touch_t t = sample(true, 40, 100, 640, 1100);
     assert(!app_touch_guard_filter(&t, now, false, true, true));
     assert(!app_touch_guard_filter(&t, now, true, false, true));
-    puts("PASS: paired ghost-touch guard blocks opposed contacts, releases after quiet, bypasses normal taps");
+    puts("PASS: paired ghost-touch guard latches through contact motion/quiet and releases only when unfolded");
     return 0;
 }
