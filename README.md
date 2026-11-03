@@ -1,6 +1,6 @@
 # XH View OS For Pico · Duo
 
-> **Private dual-reader preview · 0.40.0-dual25** — Complete firmware source for `experiment/dual-pico-reader`. Wi-Fi synchronizes books and the shared font; authenticated BLE synchronizes opening, paired pages and turns. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system. The upstream hardware reference follows below.
+> **Private dual-reader preview · 0.40.0-dual26** — Complete firmware source for `experiment/dual-pico-reader`. Wi-Fi synchronizes books and the shared font; authenticated BLE synchronizes opening, paired pages and turns. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system. The upstream hardware reference follows below.
 
 **Languages:** [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md)
 

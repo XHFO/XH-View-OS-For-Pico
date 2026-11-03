@@ -548,7 +548,6 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     }
     const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
     if (ui_idle && status.connected && status.synced &&
-        (settings.role == 1 || status.left_ready) &&
         path && font && status.reading.revision != applied &&
         (app == &app_book || (app->product_shell && idle_reading_route()))) {
         if (app_book_dual_apply(path, font, status.reading.spread + (settings.role == 2 ? 2 : 1),

@@ -1869,7 +1869,8 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
     bool resume = pending_restore(path, s_file_size, &p) || book_progress_load(path, s_file_size, &p);
     s_px = resume ? p.px : app_settings_book_px();
     if (s_px < BOOK_PX_MIN || s_px > BOOK_PX_MAX) s_px = 48;
-    if(ps_dual_enabled()){s_px=s_dual_reflow?s_dual_old_px:s_dual_px;resume=false;s_dual_blank=false;if(!s_dual_target&&!s_dual_annotation)s_dual_target=ps_dual_role()==1?1:2;}
+    bool dual_linked = ps_dual_enabled() && ps_dual_peer_reading();
+    if(dual_linked){s_px=s_dual_reflow?s_dual_old_px:s_dual_px;resume=false;s_dual_blank=false;if(!s_dual_target&&!s_dual_annotation)s_dual_target=ps_dual_role()==1?1:2;}
     size_t chapter = resume && p.chapter < book_chapter_count() ? p.chapter : 0;
     if (annotated && s_annotation_target.chapter >= book_chapter_count()) {
         free_book(); copy_text(s_message, sizeof(s_message), "批注所在章节不存在"); return false;

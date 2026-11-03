@@ -1,3 +1,9 @@
+## 0.40.0-dual26（独立双机实验版）
+
+- 从机在主机发布新页时立即开始加载/排版/推屏，不再等待主机确认推屏完成，提前约半秒。
+- 修复单人接力/返回主页后本地阅读进度不恢复：对端不在阅读页时优先读取本机进度，不再强制从共享页或书首开始。
+- The secondary starts loading/laying out/painting as soon as the primary publishes the target instead of waiting for left_ready, roughly half a second earlier. Honor local saved progress when the peer is not reading, so reopening a book resumes instead of starting at the beginning.
+
 ## 0.40.0-dual25（独立双机实验版）
 
 - 单人接力阅读时顶部不再显示过期的“主机/从机第几页”，改为实际全书页码，翻页后同步更新。

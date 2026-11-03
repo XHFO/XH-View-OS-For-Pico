@@ -101,7 +101,7 @@ try:
     assert (a.state['sound_played'],b.state['sound_played'])==(sounds[0]+1,sounds[1]+1)
     # 静音不阻挡翻页；接收端始终不因同步重复发声。/ Muting never blocks turns; synchronized peers do not echo cues.
     for flags in (13,14):
-        b.cmd(f'sound-options {flags}');sounds=(a.state['sound_played'],b.state['sound_played'])
+        b.cmd(f'sound-options {flags}');pump(20);sounds=(a.state['sound_played'],b.state['sound_played'])
         b.cmd('powerkey');until(lambda:a.state.get('book_page')==3 and b.state.get('book_page')==4,'muted secondary next')
         assert (a.state['sound_played'],b.state['sound_played'])==sounds
         a.cmd('powerkey');until(lambda:a.state.get('book_page')==1 and b.state.get('book_page')==2,'restore first spread')
