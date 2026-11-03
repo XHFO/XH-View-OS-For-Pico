@@ -1,3 +1,8 @@
+## 0.40.0-dual34（独立双机实验版）
+
+- 翻页动画减到 3 帧，缓存未命中时不再强制同步绘制新页，直接正常推屏；动画后改用全屏 GL16，取消整屏 GC16 等待，优先降低翻页延迟。
+- Reduce the page turn to three frames, skip animation when the next frame is not cached instead of synchronously drawing it, and finish with full-screen GL16 rather than waiting for a full GC16.
+
 ## 0.40.0-dual33（独立双机实验版）
 
 - 修复 BLE 扫描响应被服务 UUID 过滤掉的问题：扫描响应是独立的发现事件，只带厂商数据、没有服务 UUID；现在先解析配对 IP/码，再决定是否连接。

@@ -1266,21 +1266,13 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
     int64_t started = esp_timer_get_time();
     lock_draw();
     bool cached = !s_toolbar && !s_selection && !s_scrubbing && !s_clear_confirm && s_next_fb && s_next_page == (int)s_page;
-    if (s_turn_anim_pending && !cached) {
-        ensure_prep();
-        if (s_next_fb) {
-            draw_reader(s_next_fb, s_page);
-            s_next_page = (int)s_page;
-            cached = true;
-        }
-    }
     bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
     s_turn_anim_pending = false;
     if (animate) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {16, 33, 50, 67, 84, 100};
+            static const int steps[] = {33, 66, 100};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;
@@ -1298,9 +1290,9 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             if (cached) memcpy(ctx->fb, s_next_fb, fb_bytes());
             else draw_reader(ctx->fb, s_page);
             s_area = (EpdRect){0, 0, reader_width(), reader_height()};
-            s_mode = MODE_GC16;
-            s_reader_split = false;
-            s_full = true; // 最后一次走 update_display_full，彻底清残影。
+            s_mode = MODE_GL16;
+            s_reader_split = true;
+            s_full = false;
             unlock_draw();
             return APP_REDRAW_AREA;
         }
