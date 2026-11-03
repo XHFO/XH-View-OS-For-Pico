@@ -1318,8 +1318,12 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             // One full-screen GC16 after the animation clears gutter and header ghosting.
             if (cached) memcpy(ctx->fb, s_next_fb, fb_bytes());
             else draw_reader(ctx->fb, s_page);
-            s_area = (EpdRect){0, 0, reader_width(), reader_height()};
-            s_mode = MODE_GL16;
+            // 正文最后一帧已经是新页，不再做整屏 GL16，避免结尾白闪；
+            // 只补一次正文 DU，并单独用 DU 更新顶部栏。
+            // The last body frame already shows the new page; skip the full GL16
+            // flash and only refresh the body/header with DU.
+            s_area = reader_area();
+            s_mode = MODE_DU;
             s_reader_split = true;
             s_full = false;
             unlock_draw();

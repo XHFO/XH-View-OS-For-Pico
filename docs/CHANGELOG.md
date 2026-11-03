@@ -1,3 +1,8 @@
+## 0.40.0-dual42（独立双机实验版）
+
+- 移除翻页动画结尾的整屏 GL16 白闪：最后一帧正文已经是新页，改为正文 DU + 顶部栏 DU，不再整屏闪一下。
+- Remove the final full-screen GL16 flash after the white-gradient animation; the last frame is already the new page, so refresh the body and header with DU only. Bump to dual42.
+
 ## 0.40.0-dual41（独立双机实验版）
 
 - 黑色渐变改为白色渐变：旧页朝纸缝推白，快速白闪一帧后露出新页；渐变帧减到 2 帧，保留纯白刷新帧与 GL16 定稿。
