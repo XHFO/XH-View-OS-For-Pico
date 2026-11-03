@@ -1256,14 +1256,18 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
             else {
-                // 斜向纸楔：上方窄、下方宽，外缘黑线，内缘浅灰阴影。
-                // Slanted paper wedge: narrower at the top, wider at the bottom, black outer
-                // edge and a soft gray inner shadow, so the blank sheet reads as a layer.
-                int depth = at - base;
-                int paper = 10 + (span > 0 ? (span - depth) * 22 / span : 22);
-                if (rel >= -paper && rel <= 1) gray = 15;
-                else if (rel > 1 && rel <= 3) gray = 0;
-                else if (rel < -paper && rel >= -paper - 2) gray = 12;
+                // 黑色渐变页边：旧页朝纸缝逐渐压黑，新页从黑幕后露出。
+                // 只用 4 级灰阶，避免墨水屏出现连续色带。
+                // Black gradient edge: the old page darkens toward the gutter while the new
+                // page emerges behind the black veil. Quantized to four gray levels for e-ink.
+                if (rel >= -1 && rel <= 1) gray = 0;
+                else if (!take_new) {
+                    int d = rel < 0 ? -rel : rel;
+                    int q = d * 3 / 170;
+                    if (q > 3) q = 3;
+                    int old_gray = (old[idx] >> shift) & 15;
+                    gray = (old_gray * q) / 3;
+                }
             }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
         }
@@ -1296,7 +1300,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {33, 66, 100};
+            static const int steps[] = {25, 50, 75, 100};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;

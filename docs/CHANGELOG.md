@@ -1,3 +1,8 @@
+## 0.40.0-dual39（独立双机实验版）
+
+- 翻页动画改为第 7 版黑色渐变：旧页朝纸缝压黑，新页从黑幕后露出；使用 4 级灰阶避免连续色带，帧数改为 4 帧。
+- Replace the white paper edge with the selected black-gradient transition: old page darkens toward the gutter, new page emerges behind it, quantized to four gray levels. Bump to dual39.
+
 ## 0.40.0-dual38（独立双机实验版）
 
 - 两台都播放翻页动画；主机在动画开始时先发出 left_ready，从机随即开始自己的动画，不再等主机动画结束，也不会因此慢一秒。
