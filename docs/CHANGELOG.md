@@ -1,3 +1,8 @@
+## 0.40.0-dual41（独立双机实验版）
+
+- 黑色渐变改为白色渐变：旧页朝纸缝推白，快速白闪一帧后露出新页；渐变帧减到 2 帧，保留纯白刷新帧与 GL16 定稿。
+- Switch the transition from black to white: wash the old page toward the gutter, flash one white frame, then reveal the new page; two gradient frames plus the white refresh and GL16. Bump to dual41.
+
 ## 0.40.0-dual40（独立双机实验版）
 
 - 黑色渐变结尾插入一帧纯白正文块，再做最终新页刷新；用于清掉渐变边缘和上一页残影。

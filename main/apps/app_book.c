@@ -1257,17 +1257,17 @@ static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *f
             else if (progress >= 100) gray = (fresh[idx] >> shift) & 15;
             else if (progress <= 0) gray = (old[idx] >> shift) & 15;
             else {
-                // 黑色渐变页边：旧页朝纸缝逐渐压黑，新页从黑幕后露出。
+                // 白色渐变页边：旧页朝纸缝逐渐推白，快速闪过后露出新页。
                 // 只用 4 级灰阶，避免墨水屏出现连续色带。
-                // Black gradient edge: the old page darkens toward the gutter while the new
-                // page emerges behind the black veil. Quantized to four gray levels for e-ink.
-                if (rel >= -1 && rel <= 1) gray = 0;
+                // White gradient edge: the old page washes out toward the gutter, flashes
+                // white briefly, then the new page appears. Quantized to four levels.
+                if (rel >= -1 && rel <= 1) gray = 15;
                 else if (!take_new) {
                     int d = rel < 0 ? -rel : rel;
                     int q = d * 3 / 170;
                     if (q > 3) q = 3;
                     int old_gray = (old[idx] >> shift) & 15;
-                    gray = (old_gray * q) / 3;
+                    gray = old_gray + (15 - old_gray) * (3 - q) / 3;
                 }
             }
             dst[idx] = (uint8_t)((old_byte & ~(15 << shift)) | ((gray & 15) << shift));
@@ -1301,7 +1301,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {20, 45, 70, 101, 100};
+            static const int steps[] = {35, 70, 101, 100};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;
