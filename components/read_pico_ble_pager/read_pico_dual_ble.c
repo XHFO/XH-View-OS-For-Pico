@@ -170,19 +170,24 @@ static void discover_peer(const struct ble_gap_disc_desc* disc) {
     if(connecting || connection != NONE)return;
     struct ble_hs_adv_fields fields;
     if(ble_hs_adv_parse_fields(&fields,disc->data,disc->length_data))return;
-    bool found=false;
-    for(unsigned i=0;i<fields.num_uuids128;i++)if(!ble_uuid_cmp(&fields.uuids128[i].u,&service_uuid.u))found=true;
-    if(!found)return;
+    // 扫描响应是独立的 BLE_GAP_EVENT_DISC，只有厂商数据，没有服务 UUID。
+    // The scan response arrives as its own discovery event with manufacturer data
+    // but no service UUID; parse it before the UUID filter.
     if(fields.mfg_data && fields.mfg_data_len >= 9 && fields.mfg_data[0] == 0xff && fields.mfg_data[1] == 0xff) {
         unsigned a=fields.mfg_data[2],b=fields.mfg_data[3],c=fields.mfg_data[4],d=fields.mfg_data[5];
         unsigned code=((unsigned)fields.mfg_data[6]<<16)|((unsigned)fields.mfg_data[7]<<8)|fields.mfg_data[8];
-        if (code > 999999) return;
-        portENTER_CRITICAL(&guard);
-        snprintf(peer_info.ip,sizeof(peer_info.ip),"%u.%u.%u.%u",a,b,c,d);
-        snprintf(peer_info.code,sizeof(peer_info.code),"%06u",code);
-        peer_info.found=true;
-        portEXIT_CRITICAL(&guard);
+        if (code <= 999999) {
+            portENTER_CRITICAL(&guard);
+            snprintf(peer_info.ip,sizeof(peer_info.ip),"%u.%u.%u.%u",a,b,c,d);
+            snprintf(peer_info.code,sizeof(peer_info.code),"%06u",code);
+            peer_info.found=true;
+            portEXIT_CRITICAL(&guard);
+        }
     }
+    if(disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP)return;
+    bool found=false;
+    for(unsigned i=0;i<fields.num_uuids128;i++)if(!ble_uuid_cmp(&fields.uuids128[i].u,&service_uuid.u))found=true;
+    if(!found)return;
     if(scan_only)return;
     if(esp_timer_get_time()<reject_until)
         for(unsigned i=0;i<rejected_count;i++)if(!memcmp(&rejected[i],&disc->addr,sizeof(ble_addr_t)))return;

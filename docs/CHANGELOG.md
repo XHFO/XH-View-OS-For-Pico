@@ -1,3 +1,8 @@
+## 0.40.0-dual33（独立双机实验版）
+
+- 修复 BLE 扫描响应被服务 UUID 过滤掉的问题：扫描响应是独立的发现事件，只带厂商数据、没有服务 UUID；现在先解析配对 IP/码，再决定是否连接。
+- Fix BLE scan responses being dropped by the service-UUID filter: scan responses are separate discovery events with manufacturer data and no UUID. Parse pairing data first, then connect. Bump to dual33.
+
 ## 0.40.0-dual32（独立双机实验版）
 
 - 修复 BLE 配对信息晚到后不生效：主机的 IP/配对码在广播启动后才就绪时，会重启一次广播并更新扫描响应，不再一直广播空信息。
