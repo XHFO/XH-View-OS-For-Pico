@@ -1198,7 +1198,7 @@ static bool present(app_ctx_t* ctx, app_redraw_t redraw) {
     guard_draw_result(ctx->hl, err);
     // 仅实际正文推屏成功后确认左页，失败保留重试；不以已排版代替已显示。
     // Confirm the left page only after successful text presentation; retain failures for retry, never equate layout with display.
-    bool presented_text = redraw == APP_REDRAW_PAGE || redraw == APP_REDRAW_FULL || s_reader_split;
+    bool presented_text = redraw == APP_REDRAW_PAGE || redraw == APP_REDRAW_FULL || s_reader_split || s_full;
     if (err == EPD_DRAW_SUCCESS && presented_text && s_dual_present_pending && !s_dual_target &&
         !s_open_path[0] && s_view == READING && !s_page_jump_open && !s_toolbar &&
         !s_selection && !s_image_open && !s_image_confirm_open && !s_scrubbing && !s_progress_pending) {
@@ -1280,7 +1280,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         if (!s_turn_old)
             s_turn_old = heap_caps_aligned_alloc(16, fb_bytes(), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_turn_old) {
-            static const int steps[] = {8, 16, 24, 33, 41, 50, 58, 66, 75, 83, 91, 100};
+            static const int steps[] = {16, 33, 50, 67, 84, 100};
             memcpy(s_turn_old, ctx->fb, fb_bytes());
             s_area = reader_area();
             s_mode = MODE_DU;
@@ -1289,7 +1289,8 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
                 turn_anim_compose(ctx->fb, s_turn_old, s_next_fb, s_turn_anim_dir, steps[i]);
                 unlock_draw();
                 guard_draw_result(ctx->hl, update_display_area_with(ctx->hl, &E0470_FOLLOW_WAVEFORM, MODE_DU, s_area));
-                vTaskDelay(pdMS_TO_TICKS(3));
+                // 不再额外等待；每帧由面板扫描时间自然限速。
+                // No extra delay; panel scan time naturally limits each frame.
                 lock_draw();
             }
             // 动画后全屏 GC16：页缝和顶部目录/进度区的低灰阶残影一起清掉。
@@ -1298,7 +1299,8 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             else draw_reader(ctx->fb, s_page);
             s_area = (EpdRect){0, 0, reader_width(), reader_height()};
             s_mode = MODE_GC16;
-            s_reader_split = true;
+            s_reader_split = false;
+            s_full = true; // 最后一次走 update_display_full，彻底清残影。
             unlock_draw();
             return APP_REDRAW_AREA;
         }

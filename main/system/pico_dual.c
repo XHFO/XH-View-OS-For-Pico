@@ -10,6 +10,15 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#ifdef ESP_PLATFORM
+#include "lwip/sockets.h"
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 #include "../apps/app_book.h"
 #include "book_store.h"
 #include "dual_link.h"
@@ -61,6 +70,13 @@ static void orientation_save(void) {
 }
 static uint32_t applied, presented, stored, content_revision;
 static int64_t last_tick, last_ip, last_work;
+static int pair_sock = -1;
+static bool pair_scanning, pair_found;
+static char pair_ip[48], pair_code[7];
+static int64_t pair_started, pair_last_tx;
+static void pair_stop(void);
+static void pair_scan_start(void);
+static void pair_scan_update(void);
 static unsigned library_revision;
 static char primary_ip[48];
 static char draft_host[48];
@@ -487,6 +503,7 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         ps_dirty();
     }
     last_work = ctx->now_ms;
+    pair_scan_update();
     uint8_t packet[DL_CONTROL_MAX];
     for (unsigned i = 0; i < 4; ++i) {
         size_t n = pico_dual_ble_receive(packet, sizeof(packet));
@@ -585,9 +602,27 @@ void ps_dual_render(uint8_t* fb) {
     ps_button(fb, x + (w - 16) / 3 + 8, 104, (w - 16) / 3, 40, "主机", settings.role == 1);
     ps_button(fb, x + 2 * ((w - 16) / 3 + 8), 104, (w - 16) / 3, 40, "从机", settings.role == 2);
     if (!settings.role) {
+        if (pair_scanning || pair_found) {
+            ps_text(fb, x, 170, 14, pair_found ? "发现主机" : "正在搜索主机…", 1);
+            if (pair_found) {
+                snprintf(text, sizeof(text), "主机地址  %s", pair_ip);
+                ps_text(fb, x, 200, 13, text, 1);
+                snprintf(text, sizeof(text), "配对码  %s", pair_code);
+                ps_text(fb, x, 228, 20, text, 1);
+                ps_text(fb, x, 258, 11, "请确认与主机屏幕显示的六位码相同", 4);
+                ps_button(fb, x, 292, w, 40, "确认配对", true);
+                ps_button(fb, x, 340, w, 36, "重新搜索", false);
+                ps_button(fb, x, 384, w, 36, "取消", false);
+            } else {
+                ps_text(fb, x, 210, 12, "请让主机停留在双机阅读页", 4);
+                ps_button(fb, x, 292, w, 40, "取消搜索", false);
+            }
+            return;
+        }
         ps_text(fb, x, 170, 14, "先将两台设备连接到同一个 Wi-Fi", 1);
         ps_text(fb, x, 200, 12, "一台选择主机，另一台选择从机", 4);
-        ps_button(fb, x, 250, w, 42, "打开 Wi-Fi 设置", false);
+        ps_button(fb, x, 250, w, 42, "自动搜索主机", true);
+        ps_button(fb, x, 300, w, 38, "打开 Wi-Fi 设置", false);
         return;
     }
     for (int role = 1; role <= 2; ++role) {
@@ -670,6 +705,82 @@ static bool parse_ipv4(const char* text, unsigned parts[4]) {
     }
     return parts[0] != 0 && parts[0] < 224 && parts[3] != 0 && parts[3] != 255;
 }
+static void pair_stop(void) {
+    if (pair_sock >= 0) close(pair_sock);
+    pair_sock = -1;
+    pair_scanning = false;
+}
+static void pair_scan_start(void) {
+    load();
+    if (!local_address(draft_local_ip)) {
+        ps_toast("请先连接与主机相同的 Wi-Fi");
+        return;
+    }
+    pair_stop();
+    pair_found = false;
+    pair_ip[0] = pair_code[0] = 0;
+    pair_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (pair_sock < 0) { ps_toast("无法启动配对搜索"); return; }
+    int yes = 1;
+    setsockopt(pair_sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(18772), .sin_addr.s_addr = htonl(INADDR_ANY) };
+    if (bind(pair_sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        pair_stop(); ps_toast("配对搜索端口被占用"); return;
+    }
+    int flags = fcntl(pair_sock, F_GETFL, 0);
+    fcntl(pair_sock, F_SETFL, flags | O_NONBLOCK);
+    pair_scanning = true;
+    pair_started = ps_now();
+    ps_toast("正在搜索同一 Wi-Fi 的主机");
+    ps_dirty();
+}
+static void pair_scan_update(void) {
+    load();
+    int64_t now = ps_now();
+    if (settings.role == 1 && primary_ip[0] && settings.code[0] && now - pair_last_tx >= 1500) {
+        pair_last_tx = now;
+        int s = socket(AF_INET, SOCK_DGRAM, 0);
+        if (s >= 0) {
+            int yes = 1;
+            setsockopt(s, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+            struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(18772) };
+            inet_pton(AF_INET, "255.255.255.255", &to.sin_addr);
+            char msg[80];
+            int n = snprintf(msg, sizeof(msg), "PICOPAIR1 %s %s", settings.code, primary_ip);
+            (void)sendto(s, msg, (size_t)n, 0, (struct sockaddr*)&to, sizeof(to));
+            close(s);
+        }
+    }
+    if (!pair_scanning) return;
+    char buf[96];
+    for (int i = 0; i < 4; i++) {
+        struct sockaddr_in from;
+        socklen_t len = sizeof(from);
+        int n = (int)recvfrom(pair_sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&from, &len);
+        if (n <= 0) break;
+        buf[n] = 0;
+        char code[8] = {0}, ip[48] = {0};
+        unsigned a, b, c, d;
+        if (sscanf(buf, "PICOPAIR1 %7s %47s", code, ip) == 2 && strlen(code) == 6 &&
+            sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+            bool digits = true;
+            for (int j = 0; j < 6; j++) if (code[j] < '0' || code[j] > '9') digits = false;
+            if (digits) {
+                snprintf(pair_code, sizeof(pair_code), "%.6s", code);
+                snprintf(pair_ip, sizeof(pair_ip), "%s", ip);
+                pair_found = true;
+                pair_scanning = false;
+                ps_dirty();
+                break;
+            }
+        }
+    }
+    if (pair_scanning && now - pair_started > 15000) {
+        pair_stop();
+        ps_toast("未找到主机，请确认两台在同一 Wi-Fi");
+        ps_dirty();
+    }
+}
 static void secondary_host(const char* input);
 static void secondary_code(const char* input);
 static void edit_host(const char* initial) {
@@ -750,10 +861,26 @@ bool ps_dual_event(const ps_event_t* e) {
             snprintf(code, sizeof(code), "%06u", (unsigned)(esp_random() % 1000000));
             ps_dual_configure(1, "", code);
         } else if (role == 2)
-            secondary_begin();
+            pair_scan_start();
+        return true;
+    }
+    if (!settings.role && (pair_scanning || pair_found)) {
+        if (pair_found && e->y >= 292 && e->y < 332) {
+            if (ps_dual_configure(2, pair_ip, pair_code)) {
+                pair_stop(); ps_toast("配对已保存，正在连接主机");
+            }
+            return true;
+        }
+        if (pair_found && e->y >= 340 && e->y < 376) { pair_scan_start(); return true; }
+        if (pair_found && e->y >= 384 && e->y < 420) { pair_stop(); ps_dirty(); return true; }
+        if (!pair_found && e->y >= 292 && e->y < 332) { pair_stop(); ps_dirty(); return true; }
         return true;
     }
     if (!settings.role && e->y >= 250 && e->y < 292) {
+        pair_scan_start();
+        return true;
+    }
+    if (!settings.role && e->y >= 300 && e->y < 338) {
         ps_navigate(PS_WIFI);
         return true;
     }

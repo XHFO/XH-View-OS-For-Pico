@@ -168,6 +168,8 @@ struct dual_link {
     uint32_t request_sequence, peer_sequence;
     int64_t control_sent, request_started;
 };
+static void cache_load(dual_link_t* d);
+static void cache_save(dual_link_t* d);
 static uint32_t get32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
@@ -389,6 +391,7 @@ static void scan_step(dual_link_t* d) {
             d->count = used;
             d->scan = false;
             d->list_limit = d->count;
+            cache_save(d);
             return;
         }
         d->dir = opendir(d->cfg.roots[d->root_at]);
@@ -852,6 +855,50 @@ static void produce(dual_link_t* d) {
     }
     if (d->now - d->last_tx > 2000) queue(d, PING, NULL, 0);
 }
+#ifdef ESP_PLATFORM
+#define DUAL_CACHE_MAGIC 0x31434c44u
+static void cache_path(dual_link_t* d, char* out, size_t n) {
+    snprintf(out, n, "%s/.dual-hash-cache", d->cfg.destination);
+}
+static void cache_load(dual_link_t* d) {
+    char path[DL_PATH + 32];
+    cache_path(d, path, sizeof(path));
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    uint32_t magic = 0, count = 0;
+    if (fread(&magic, sizeof(magic), 1, f) != 1 || magic != DUAL_CACHE_MAGIC ||
+        fread(&count, sizeof(count), 1, f) != 1 || count > DL_BOOKS) {
+        fclose(f); return;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        local_t b;
+        if (fread(&b, sizeof(b), 1, f) != 1 || !b.path[0] || b.path[sizeof(b.path)-1] ||
+            !b.bytes || !memchr(b.path, 0, sizeof(b.path))) break;
+        if (d->count < DL_BOOKS) {
+            b.seen = false;
+            d->local[d->count++] = b;
+        }
+    }
+    fclose(f);
+}
+static void cache_save(dual_link_t* d) {
+    char path[DL_PATH + 32];
+    cache_path(d, path, sizeof(path));
+    char temp[DL_PATH + 40];
+    snprintf(temp, sizeof(temp), "%s.tmp", path);
+    FILE* f = fopen(temp, "wb");
+    if (!f) return;
+    uint32_t magic = DUAL_CACHE_MAGIC, count = d->count;
+    bool ok = fwrite(&magic, sizeof(magic), 1, f) == 1 && fwrite(&count, sizeof(count), 1, f) == 1;
+    for (unsigned i = 0; ok && i < d->count; ++i) ok = fwrite(&d->local[i], sizeof(d->local[i]), 1, f) == 1;
+    if (fflush(f) != 0) ok = false;
+    fclose(f);
+    if (ok) rename(temp, path); else remove(temp);
+}
+#else
+static void cache_load(dual_link_t* d) { (void)d; }
+static void cache_save(dual_link_t* d) { (void)d; }
+#endif
 dual_link_t* dl_create(const dl_config_t* cfg) {
     if (!cfg || (cfg->role != 1 && cfg->role != 2) || strlen(cfg->code) != 6 || !cfg->root_count ||
         cfg->root_count > 3 || !cfg->destination[0] || !cfg->port || cfg->port > 65535)
@@ -888,6 +935,7 @@ dual_link_t* dl_create(const dl_config_t* cfg) {
     d->annotation_valid = false;
     d->annotation_seq = 0;
     d->orientation_revision = 1;
+    cache_load(d);
     return d;
 }
 void dl_destroy(dual_link_t* d) {
@@ -898,6 +946,7 @@ void dl_destroy(dual_link_t* d) {
     close_file(&d->hash_file);
     hash_abort(&d->scan_hash);
     if (d->dir) closedir(d->dir);
+    cache_save(d);
     free(d);
 }
 static int catalog_compare(const void* a, const void* b) {
