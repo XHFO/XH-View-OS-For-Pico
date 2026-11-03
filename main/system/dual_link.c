@@ -154,6 +154,11 @@ struct dual_link {
     uint32_t base_seq;
     bool calibration_request;
     bool reading_active, peer_reading, reading_dirty;
+    bool annotation_dirty, annotation_valid;
+    uint32_t annotation_seq;
+    uint8_t annotation_type;
+    uint32_t annotation_chapter, annotation_start, annotation_end;
+    char annotation_text[80];
     uint32_t orientation_revision, orientation_sequence;
     bool orientation_dirty, orientation_seen, control_compatible, orientation_last;
     uint8_t orientation_request;
@@ -879,6 +884,9 @@ dual_link_t* dl_create(const dl_config_t* cfg) {
     d->reading_active = true;
     d->peer_reading = true;
     d->reading_dirty = false;
+    d->annotation_dirty = false;
+    d->annotation_valid = false;
+    d->annotation_seq = 0;
     d->orientation_revision = 1;
     return d;
 }
@@ -979,6 +987,24 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
             d->orientation_dirty = false; return 6;
         }
     }
+    if (d->annotation_dirty && d->control_compatible) {
+        size_t len = strnlen(d->annotation_text, DL_CONTROL_MAX - 19);
+        p[0] = 15; p[1] = d->annotation_type;
+        put32(p + 2, d->annotation_seq); put32(p + 6, d->annotation_chapter);
+        put32(p + 10, d->annotation_start); put32(p + 14, d->annotation_end);
+        p[18] = (uint8_t)len; memcpy(p + 19, d->annotation_text, len);
+        d->annotation_dirty = false;
+        return 19 + len;
+    }
+    if (!control_ready(d)) return 0;
+    if (d->cfg.role == 1 && d->state_dirty && nonzero(d->reading.book)) {
+        p[0] = 2; memcpy(p + 1, d->reading.book, 32);
+        put32(p + 33, d->reading.revision); put32(p + 37, d->reading.spread);
+        put32(p + 41, d->reading.total); memcpy(p + 45, d->reading.font, 32);
+        put32(p + 77, d->peer_sequence); p[81] = d->left_ready;
+        p[82] = d->reading.font_px; p[83] = d->reading.reflow_pending; p[84] = d->reading.reflow_from_px;
+        d->state_dirty = false; d->orientation_last = false; return 85;
+    }
     if (d->guard_dirty && d->control_compatible) {
         p[0] = d->cfg.role == 1 ? 9 : 10;
         p[1] = d->guard ? 1 : 0;
@@ -1008,15 +1034,6 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         d->reading_dirty = false;
         return 2;
     }
-    if (!control_ready(d)) return 0;
-    if (d->cfg.role == 1 && d->state_dirty && nonzero(d->reading.book)) {
-        p[0] = 2; memcpy(p + 1, d->reading.book, 32);
-        put32(p + 33, d->reading.revision); put32(p + 37, d->reading.spread);
-        put32(p + 41, d->reading.total); memcpy(p + 45, d->reading.font, 32);
-        put32(p + 77, d->peer_sequence); p[81] = d->left_ready;
-        p[82] = d->reading.font_px; p[83] = d->reading.reflow_pending; p[84] = d->reading.reflow_from_px;
-        d->state_dirty = false; d->orientation_last = false; return 85;
-    }
     if (d->cfg.role == 2 && d->request_pending &&
         (!d->request_at || d->now - d->request_at >= 500)) {
         p[0] = nonzero(d->request_book) ? 3 : d->request_page ? 5 : d->request_px ? 6 : 4;
@@ -1035,6 +1052,18 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         if (n != 35 || p[1] > 1 || p[34] != CONTROL_VERSION) return false;
         d->control_compatible = true;
         d->peer_catalog_valid = p[1]; memcpy(d->peer_catalog, p + 2, 32);
+        return true;
+    }
+    if (p[0] == 15) {
+        if (n < 19 || p[18] > n - 19 || p[18] > sizeof(d->annotation_text) - 1) return false;
+        d->annotation_seq = get32(p + 2);
+        d->annotation_type = p[1];
+        d->annotation_chapter = get32(p + 6);
+        d->annotation_start = get32(p + 10);
+        d->annotation_end = get32(p + 14);
+        memcpy(d->annotation_text, p + 19, p[18]);
+        d->annotation_text[p[18]] = 0;
+        d->annotation_valid = true;
         return true;
     }
     if (p[0] == 14) {
@@ -1169,6 +1198,13 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->base_seq = d->base_seq;
     out->calibration_request = d->calibration_request;
     out->peer_reading = d->peer_reading;
+    out->annotation_valid = d->annotation_valid;
+    out->annotation_seq = d->annotation_seq;
+    out->annotation_type = d->annotation_type;
+    out->annotation_chapter = d->annotation_chapter;
+    out->annotation_start = d->annotation_start;
+    out->annotation_end = d->annotation_end;
+    memcpy(out->annotation_text, d->annotation_text, sizeof(out->annotation_text));
 }
 static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool reopen) {
     if (!d || !path || !page || page == UINT32_MAX || strlen(path) >= DL_PATH) return false;
@@ -1369,6 +1405,23 @@ bool dl_calibration_request(dual_link_t* d) {
 }
 void dl_calibration_clear(dual_link_t* d) {
     if (d) d->calibration_request = false;
+}
+bool dl_annotation(dual_link_t* d, uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text) {
+    if (!d || type > 2 || !text) return false;
+    d->annotation_type = type;
+    d->annotation_chapter = chapter;
+    d->annotation_start = start;
+    d->annotation_end = end;
+    size_t len = strlen(text);
+    if (len > DL_CONTROL_MAX - 19) {
+        len = DL_CONTROL_MAX - 19;
+        while (len && ((unsigned char)text[len] & 0xc0) == 0x80) --len;
+    }
+    memcpy(d->annotation_text, text, len);
+    d->annotation_text[len] = 0;
+    if (++d->annotation_seq == 0) d->annotation_seq = 1;
+    d->annotation_dirty = true;
+    return true;
 }
 bool dl_reading_active(dual_link_t* d, bool active) {
     if (!d) return false;

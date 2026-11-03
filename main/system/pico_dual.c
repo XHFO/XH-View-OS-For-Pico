@@ -44,6 +44,7 @@ static uint32_t base_applied;
 static bool reading_active = true;
 static bool reading_known;
 static bool contact_latched;
+static uint32_t annotation_applied;
 static int64_t contact_same_since;
 static bool manual_rotation;
 static int64_t orientation_store_at;
@@ -255,6 +256,12 @@ bool ps_dual_calibrated(void) {
     load();
     return calibrated;
 }
+void ps_dual_sync_annotation(uint8_t type, uint32_t chapter, uint32_t offset, uint32_t end, const char* text) {
+    load();
+    if (!settings.role) return;
+    if (!dual_session && !start()) return;
+    (void)dl_annotation(dual_session, type, chapter, offset, end, text ? text : "");
+}
 bool ps_dual_guard_enabled(void) {
     load();
     return guard_enabled != 0;
@@ -264,6 +271,9 @@ int ps_dual_peer_face(void) {
 }
 bool ps_dual_left_ready(void) {
     return status.left_ready;
+}
+bool ps_dual_peer_reading(void) {
+    return status.peer_reading;
 }
 bool ps_dual_contact_likely(void) {
     if (!calibrated) {
@@ -502,7 +512,10 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         ps_dirty();
         ps_toast("开合校准已同步");
     }
-    if (before.peer_reading && !status.peer_reading) app_book_dual_pause();
+    if (status.annotation_valid && status.annotation_seq != annotation_applied &&
+        app_book_dual_annotation(status.annotation_type, status.annotation_chapter,
+                                 status.annotation_start, status.annotation_end, status.annotation_text))
+        annotation_applied = status.annotation_seq;
     if (memcmp(&orientation, &status.orientation, sizeof(orientation))) {
         orientation = status.orientation;
         ps_dirty();
@@ -534,9 +547,7 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
             stored = status.reading.revision;
     }
     const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
-    bool engaged = app_book_dual_engaged();
     if (ui_idle && status.connected && status.synced &&
-        (status.peer_reading || !engaged) &&
         (settings.role == 1 || status.left_ready) &&
         path && font && status.reading.revision != applied &&
         (app == &app_book || (app->product_shell && idle_reading_route()))) {

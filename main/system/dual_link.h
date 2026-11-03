@@ -53,6 +53,10 @@ typedef struct {
     uint32_t base_seq; ///< 基准版本，用于只应用一次。/ Baseline revision, applied once.
     bool calibration_request; ///< 从机请求主机重新校准。/ Secondary asks the primary to calibrate.
     bool peer_reading; ///< 对端当前是否仍在阅读页。/ Whether the peer is still on the reading page.
+    bool annotation_valid; ///< 是否收到划词/批注事件。/ Whether a selection/annotation event is available.
+    uint32_t annotation_seq, annotation_chapter, annotation_start, annotation_end;
+    uint8_t annotation_type;
+    char annotation_text[80];
 } dl_status_t;
 /// 所有接口只从UI线程使用，tick每次至多一个文件块。/ UI-thread only; tick processes at most one file block.
 dual_link_t* dl_create(const dl_config_t* config);
@@ -105,6 +109,9 @@ void dl_calibration_clear(dual_link_t* link);
 /// 通知对端本机是否仍在阅读页；离开时对端冻结当前页，不做偶数翻页。
 /// Tell the peer whether this unit is still reading; the peer freezes its page when not.
 bool dl_reading_active(dual_link_t* link, bool active);
+/// 同步已提交的划词/批注；文本会截断到控制帧上限。
+/// Sync a committed selection/annotation; text is truncated to the control-frame limit.
+bool dl_annotation(dual_link_t* link, uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text);
 
 /// BLE 已加密且认证后才交付控制帧；这些接口只从 UI 线程调用。
 /// Deliver control frames only after BLE encryption/authentication; UI-thread only.

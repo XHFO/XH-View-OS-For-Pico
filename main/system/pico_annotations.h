@@ -15,8 +15,13 @@ typedef struct {
     char quote[512];
 } ps_book_anchor_t;
 typedef struct { uint32_t start,end; } ps_book_range_t;
+#define PS_READER_REC_NOTE 0
+#define PS_READER_REC_HIGHLIGHT 1
+#define PS_READER_REC_BOOKMARK 2
 
 bool ps_reader_real_highlight(const ps_book_anchor_t *anchor);
+bool ps_reader_apply_note(const ps_book_anchor_t *anchor, const char *text);
+bool ps_reader_apply_remote_highlight(const ps_book_anchor_t *anchor);
 bool ps_reader_real_bookmark(const ps_book_anchor_t *anchor);
 void ps_reader_real_note(const ps_book_anchor_t *anchor);
 void ps_reader_real_records(const char *path,uint64_t file_bytes);

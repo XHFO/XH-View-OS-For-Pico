@@ -1,3 +1,9 @@
+## 0.40.0-dual24（独立双机实验版）
+
+- 双机阅读新增接力：一台离开正文/目录去书架、其他应用或批注键盘时，另一台进入单人阅读，可正常翻页；返回后以仍在阅读的一台当前页重新合流。
+- 划线与笔记提交后通过 BLE 同步到对端当前同一本书；对端在对应页重绘显示。批注键盘只占本机，另一侧保持独立阅读与翻页。
+- Add solo relay reading: when one unit leaves the text/contents for the shelf, another app or the annotation keyboard, the peer becomes a normal single reader and can turn pages; returning rejoins at the peer's current page. Committed highlights/notes sync to the peer for the same book.
+
 ## 0.40.0-dual23（独立双机实验版）
 
 - 贴合防误触改为锁存：一旦确认两屏相对，触摸离开、设备一起运动或姿态短暂不明都不会解除；只有展开并稳定同向 800ms 才恢复。

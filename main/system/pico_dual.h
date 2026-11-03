@@ -26,10 +26,12 @@ bool ps_dual_contact_likely(void);
 /// Desk-unfolded calibration; the primary samples and broadcasts, a secondary requests it.
 bool ps_dual_calibrate(void);
 bool ps_dual_calibrated(void);
+void ps_dual_sync_annotation(uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text);
 int ps_dual_peer_face(void);
 /// 主机是否已确认当前版本推屏成功；从机据此才允许真正显示。
 /// Whether the primary confirmed this revision's presentation; the secondary may then paint.
 bool ps_dual_left_ready(void);
+bool ps_dual_peer_reading(void);
 /// 取一次“手动翻转待应用”标记，避免从机锁定阻止手动翻转。
 /// Take the one-shot manual-flip marker so a locked secondary still applies its own flip.
 bool ps_dual_take_manual_rotation(void);

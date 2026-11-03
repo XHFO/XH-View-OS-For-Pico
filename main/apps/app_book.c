@@ -125,6 +125,9 @@ static book_view_t s_view;
 static uint32_t s_dual_present_pending;
 static enum EpdRotation s_book_rotation;
 static uint32_t s_dual_target,s_dual_displayed;
+static bool s_dual_solo,s_dual_rejoin;
+static int64_t s_dual_peer_away_since;
+static bool s_remote_annotation;
 static bool s_dual_blank,s_dual_applying;
 static char s_dual_font[BOOK_STORE_PATH_MAX];
 static uint8_t s_dual_px = 48, s_dual_old_px = 48;
@@ -2116,7 +2119,7 @@ static void sensor_set(app_ctx_t* ctx, bool on) {
     }
 }
 static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
-    if(ps_dual_enabled()){if(!s_dual_anchor.pending&&!s_dual_target&&!s_selection&&!s_toolbar&&!s_page_jump_open&&!s_image_confirm_open)ps_dual_turn(dir);return APP_REDRAW_NONE;}
+    if(ps_dual_enabled() && !s_dual_solo){if(!s_dual_anchor.pending&&!s_dual_target&&!s_selection&&!s_toolbar&&!s_page_jump_open&&!s_image_confirm_open)ps_dual_turn(dir);return APP_REDRAW_NONE;}
     if (s_cover_open) return dir > 0 ? close_image() : APP_REDRAW_NONE;
     if (!s_text || s_clear_confirm || s_selection || s_scrubbing || s_progress_pending || s_page_jump_open) return APP_REDRAW_NONE;
     if (dir > 0 && s_page + 1 >= book_layout_page_count() && !book_layout_complete()) {
@@ -2913,7 +2916,7 @@ app_redraw_t app_book_external_turn(app_ctx_t* ctx, int direction) {
         s_toolbar || s_selection || s_image_confirm_open || (s_image_open && !s_cover_open) || s_scrubbing || s_progress_pending ||
         s_page_jump_open || s_clear_confirm || s_batch_confirm || s_scan_pending ||
         s_open_path[0] || s_resume_path[0] || (direction != -1 && direction != 1)) return APP_REDRAW_NONE;
-    if (ps_dual_enabled()) {
+    if (ps_dual_enabled() && !s_dual_solo) {
         if (s_dual_anchor.pending || s_dual_target || !ps_dual_turn(direction)) return APP_REDRAW_NONE;
         // 已接收异步翻页，推屏由双机服务完成。/ Accepted asynchronous turn; the paired service owns presentation.
         return APP_REDRAW_DONE;
@@ -3021,6 +3024,20 @@ bool app_book_dual_apply(const char *path,const char *font,uint32_t target,uint8
     s_dual_target=target;s_dual_blank=false;copy_text(s_dual_font,sizeof(s_dual_font),font);
     if((s_text&&!strcmp(s_path,path))||!strcmp(s_open_path,path)||!strcmp(s_requested_path,path))return true;
     s_dual_applying=true;bool ok=app_book_open_path(path);s_dual_applying=false;return ok;
+}
+bool app_book_dual_annotation(uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text) {
+    if (!s_product_session || !s_text || !s_path[0] || !text) return false;
+    if (strcmp(s_path, ps_dual_path())) return false;
+    ps_book_anchor_t a = {0};
+    copy_text(a.path, sizeof(a.path), s_path);
+    copy_text(a.title, sizeof(a.title), s_title);
+    if (type == PS_READER_REC_NOTE) a.quote[0] = 0;
+    else copy_text(a.quote, sizeof(a.quote), text);
+    a.chapter = chapter; a.start = start; a.end = end; a.file_bytes = s_file_size;
+    bool ok = type == PS_READER_REC_HIGHLIGHT ? ps_reader_apply_remote_highlight(&a) :
+              type == PS_READER_REC_NOTE ? ps_reader_apply_note(&a, text) : false;
+    if (ok) { s_remote_annotation = true; invalidate_prep(); }
+    return ok;
 }
 bool app_book_dual_engaged(void) {
     return s_product_session && s_text && !s_open_path[0] &&
@@ -3157,6 +3174,23 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
         char next[BOOK_STORE_PATH_MAX];copy_text(next,sizeof(next),s_requested_path);s_requested_path[0]=0;copy_text(s_open_path,sizeof(s_open_path),next);s_open_presented=true;
     }
     if (s_open_path[0]) return open_pending_book(ctx);
+    if (s_remote_annotation) { s_remote_annotation = false; invalidate_prep(); return APP_REDRAW_PAGE; }
+    if (ps_dual_enabled() && s_text) {
+        bool peer = ps_dual_peer_reading();
+        if (!peer) {
+            if (!s_dual_peer_away_since) s_dual_peer_away_since = ps_now();
+            if (!s_dual_solo && ps_now() - s_dual_peer_away_since >= 1000) s_dual_solo = true;
+        } else {
+            s_dual_peer_away_since = 0;
+            if (s_dual_solo && !s_dual_rejoin) s_dual_rejoin = true;
+        }
+        if (peer && s_dual_rejoin) {
+            if (ps_dual_seek((uint32_t)s_page + 1)) {
+                s_dual_rejoin = false;
+                s_dual_solo = false;
+            }
+        }
+    }
     if(s_dual_anchor.pending&&ps_dual_enabled())return dual_anchor_tick(ctx);
     if(s_dual_target&&ps_dual_enabled())return dual_page_tick(ctx);
     if(s_dual_present_pending && s_view == READING && !s_page_jump_open && !s_toolbar && !s_selection &&

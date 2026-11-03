@@ -176,6 +176,7 @@ typedef struct {
 // UI drafts never serve ISR or DMA; use the existing external cache region without changing storage layout or main-thread access.
 static PICO_UI_CACHE_ATTR reader_real_draft_t real_draft;
 static bool editor_real_note;
+static bool applying_remote_annotation;
 static bool real_draft_clear_pending,draft_clear_pending;
 static int64_t draft_clear_retry_ms;
 
@@ -917,6 +918,7 @@ static void note_done(const char *text){
         if(!n.text[0]&&!n.ink_count){ps_toast("请写下笔记文字");return;}
         (void)draft_save();
         if(add_record(&n)){
+            ps_dual_sync_annotation(PS_READER_REC_NOTE, n.chapter, n.offset, n.end, n.text);
             memset(&real_draft,0,sizeof(real_draft));real_draft.version=1;
             real_draft_clear_pending=!reader_store("reader-real-d2",&real_draft,sizeof(real_draft));
             if(real_draft_clear_pending)ps_toast("笔记已保存，草稿清理稍后重试");
@@ -1094,9 +1096,25 @@ static bool real_save(const ps_book_anchor_t *a,int type){
             ps_toast(type==REC_HIGHLIGHT?"此段已有划线":"当前位置已有书签");return true;
         }
     }
-    return add_record(&n);
+    bool ok = add_record(&n);
+    if (ok && type == REC_HIGHLIGHT && !applying_remote_annotation)
+        ps_dual_sync_annotation(PS_READER_REC_HIGHLIGHT, n.chapter, n.offset, n.end, n.quote);
+    return ok;
 }
 bool ps_reader_real_highlight(const ps_book_anchor_t *a){return real_save(a,REC_HIGHLIGHT);}
+bool ps_reader_apply_note(const ps_book_anchor_t *a, const char *text){
+    reader_record_t n;
+    if (!real_record(a, REC_NOTE, &n) || !text || !text[0]) return false;
+    ri_copy(n.text, sizeof(n.text), text);
+    if (!add_record(&n)) return false;
+    return true;
+}
+bool ps_reader_apply_remote_highlight(const ps_book_anchor_t *a){
+    applying_remote_annotation = true;
+    bool ok = ps_reader_real_highlight(a);
+    applying_remote_annotation = false;
+    return ok;
+}
 bool ps_reader_real_bookmark(const ps_book_anchor_t *a){return real_save(a,REC_BOOKMARK);}
 void ps_reader_real_note(const ps_book_anchor_t *a){
     reader_record_t n;if(!real_record(a,REC_NOTE,&n)){ps_toast("无法批注，此处的原文位置无效");return;}
