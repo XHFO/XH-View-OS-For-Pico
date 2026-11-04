@@ -518,6 +518,12 @@ void epd_push_pixels(EpdRect area, short time, int color);
  *      If you don't have special waveforms, use `EPD_BUILTIN_WAVEFORM`.
  * @returns `EPD_DRAW_SUCCESS` on sucess, a combination of error flags otherwise.
  */
+/// 为下一次 epd_draw_base 指定逐行/逐列相位 LUT；执行后自动清除。
+/// Select per-line/per-column phase LUTs for the next epd_draw_base; cleared after execution.
+void epd_set_line_phase_luts(const uint8_t* const* phase_luts, const int8_t* line_phase);
+void epd_set_col_phase_luts(const uint8_t* const* phase_luts, const int* x0, const int* x1,
+                            const int8_t* phase, int nbands);
+void epd_clear_phase_luts(void);
 enum EpdDrawError epd_draw_base(
     EpdRect area,
     const uint8_t* data,

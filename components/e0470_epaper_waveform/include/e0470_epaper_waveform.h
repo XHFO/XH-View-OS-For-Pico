@@ -79,6 +79,9 @@ extern const EpdWaveform E0470_WAVEFORM;
 #define E0470_FOLLOW_WHITE_FRAMES 8
 #define E0470_FOLLOW_FRAMES 8
 extern const EpdWaveform E0470_FOLLOW_WAVEFORM;
+/// 单相执行表：配合逐行/逐列相位 LUT 提交，不直接驱动灰阶。
+/// Single-phase apply table used with per-line/per-column phase LUTs.
+extern const EpdWaveform E0470_APPLY_WAVEFORM;
 
 /// 按上面的公式生成 frames 帧的跟随表写进 dst（容量 frames×16×4 字节）。
 /// / Build a follow table of `frames` into dst (frames×16×4 bytes).

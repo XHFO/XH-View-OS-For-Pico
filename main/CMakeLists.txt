@@ -13,6 +13,7 @@ set(main_requires
     espressif__qrcode
     continuous_du
     e0470_epaper_waveform
+    e0470_page_turn
     read_pico_pmu
     fatfs
     wear_levelling

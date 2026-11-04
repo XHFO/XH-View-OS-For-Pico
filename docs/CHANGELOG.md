@@ -1,3 +1,9 @@
+## 0.40.0-dual50（独立双机实验版）
+
+- 移植 E0470 错相揭页引擎：8 条带、37 个 GL16 相位、11090us 节拍；新增单相执行波形和逐行/逐列相位 LUT 底层接口。
+- 翻页不再使用 2 帧 DU + 定期 GC16；每像素完整走完 GL16 相位，减少整屏白闪和残影。
+- Port the E0470 staggered page-turn engine (8 bands, 37 GL16 phases, 11090us tick) with an apply waveform and per-line/column phase LUTs. Bump to dual50.
+
 ## 0.40.0-dual49（独立双机实验版）
 
 - 双机模式从书架打开图书改为本地先成功打开、再通知对端，避免远端切换打断本地打开；保留换书状态清理。

@@ -68,6 +68,7 @@
 #include "app.h"
 #include "app_book.h"
 #include "../system/pico_dual.h"
+#include "e0470_page_turn.h"
 #include "../system/pico_system.h"
 #include "../system/pico_annotations.h"
 #include "app_registry.h"
@@ -1295,6 +1296,35 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         }
     }
     bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
+    if (animate && ctx->hl && ctx->hl->back_fb && s_next_fb && ps_dual_anim_enabled()) {
+        // 使用 E0470 错相揭页引擎：旧帧放 back，新帧放 front，由引擎一次完成
+        // 8 条带 x 37 相 GL16；不再额外整屏 GC16。
+        // Use the E0470 staggered page-turn engine: old page in back, new page in front,
+        // eight bands by 37 GL16 phases, with no extra full-screen GC16.
+        if (ps_dual_role() == 1 && s_dual_present_pending)
+            ps_dual_presented(s_dual_present_pending);
+        memcpy(ctx->hl->back_fb, ctx->fb, fb_bytes());
+        memcpy(ctx->fb, s_next_fb, fb_bytes());
+        s_turn_anim_pending = false;
+        s_dual_present_pending = 0;
+        s_dual_cleanup_pending = false;
+        e0470_page_turn_set_tick_us(E0470_TURN_FAST_TICK_US);
+        enum EpdDrawError terr = e0470_page_turn(
+            ctx->hl, (EpdRect){0, 0, reader_width(), reader_height()},
+            s_turn_anim_dir > 0 ? E0470_TURN_RTL : E0470_TURN_LTR);
+        if (terr == EPD_DRAW_SUCCESS) {
+            unlock_draw();
+            return APP_REDRAW_NONE;
+        }
+        // 引擎失败时保留新帧，走一次整屏 GC16 恢复。
+        // If the engine fails, retain the new frame and recover with one full GC16.
+        s_area = (EpdRect){0, 0, reader_width(), reader_height()};
+        s_mode = MODE_GC16;
+        s_reader_split = false;
+        s_full = true;
+        unlock_draw();
+        return APP_REDRAW_AREA;
+    }
     s_turn_anim_pending = false;
     if (animate) {
         // 主机在动画开始时先确认左页，让从机同步开始动画，而不是等主机动画结束。
