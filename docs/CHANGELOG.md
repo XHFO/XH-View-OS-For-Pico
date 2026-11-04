@@ -1,3 +1,8 @@
+## 0.40.0-dual51（独立双机实验版）
+
+- 错相揭页引擎明确使用整屏逻辑区域：顶部栏、正文和底部区域一起参与 8 条带动画；旧动画回退路径也改为整屏。
+- Make the staggered page-turn engine cover the full logical screen, including header/body/footer; the fallback animation path also uses the full screen. Bump to dual51.
+
 ## 0.40.0-dual50（独立双机实验版）
 
 - 移植 E0470 错相揭页引擎：8 条带、37 个 GL16 相位、11090us 节拍；新增单相执行波形和逐行/逐列相位 LUT 底层接口。

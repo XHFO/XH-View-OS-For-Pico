@@ -293,6 +293,7 @@ static int reader_width(void) { return epd_rotated_display_width(); }
 static int reader_height(void) { return epd_rotated_display_height(); }
 static int reader_footer_top(void) { return s_product_session ? reader_height() - 16 : ((reader_height() - 224) / 32) * 32; }
 static EpdRect reader_area(void) { return s_product_session ? (EpdRect){0, 96, reader_width(), reader_height() - 96} : (EpdRect){0, 0, reader_width(), reader_footer_top()}; }
+static EpdRect full_screen_area(void) { return (EpdRect){0, 0, reader_width(), reader_height()}; }
 static EpdRect body_rect(void) {
     int top = s_product_session ? (ttf_font_is_builtin() ? 212 : 96) : (ttf_font_is_builtin() ? 140 : 24);
     return (EpdRect){UI_MARGIN, top, reader_width() - 2 * UI_MARGIN, reader_footer_top() - 8 - top};
@@ -1226,7 +1227,7 @@ static void turn_anim_free(void) {
     s_turn_old = NULL;
 }
 static void turn_anim_compose(uint8_t *dst, const uint8_t *old, const uint8_t *fresh, int dir, int progress) {
-    EpdRect body = reader_area();
+    EpdRect body = full_screen_area();
     EpdRect pr = ui_rotate_rect_to_fb(body);
     int pw = epd_width(), ph = epd_height();
     enum EpdRotation rotation = epd_get_rotation();
@@ -1310,7 +1311,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         s_dual_cleanup_pending = false;
         e0470_page_turn_set_tick_us(E0470_TURN_FAST_TICK_US);
         enum EpdDrawError terr = e0470_page_turn(
-            ctx->hl, (EpdRect){0, 0, reader_width(), reader_height()},
+            ctx->hl, full_screen_area(),
             s_turn_anim_dir > 0 ? E0470_TURN_RTL : E0470_TURN_LTR);
         if (terr == EPD_DRAW_SUCCESS) {
             unlock_draw();
@@ -1355,7 +1356,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
             // 动画全部走正文局部 DU；每 6 页才做一次整屏 GC16 清残影。
             // All animation frames stay in the body's local DU; a full GC16 runs
             // only every six turns to clean accumulated ghosting.
-            s_area = reader_area();
+            s_area = full_screen_area();
             s_mode = MODE_DU;
             s_reader_split = true;
             s_full = false;
