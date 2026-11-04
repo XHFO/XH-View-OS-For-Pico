@@ -1,3 +1,8 @@
+## 0.40.0-dual52（独立双机实验版）
+
+- 修复“回到双机阅读”按钮点击无反应：对端未 ready 时先本地打开对端当前书，再进入阅读合流，不再直接返回失败。
+- Fix the dead “return to dual reading” button: if the peer is not ready, open its current book locally first and rejoin from reading. Bump to dual52.
+
 ## 0.40.0-dual51（独立双机实验版）
 
 - 错相揭页引擎明确使用整屏逻辑区域：顶部栏、正文和底部区域一起参与 8 条带动画；旧动画回退路径也改为整屏。

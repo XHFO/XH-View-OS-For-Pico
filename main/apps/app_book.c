@@ -2330,12 +2330,19 @@ bool app_book_power_prepare(void) { app_book_global_prepare();save_progress();re
 bool app_book_global_is_open(void) { return s_product_session && s_text && !s_open_path[0]; }
 bool app_book_global_has_selection(void) { return app_book_global_is_open() && s_selection && s_selection_end > s_selection_start; }
 bool app_book_resume_last(void) {
-    if (ps_dual_enabled()) {
-        if (!ps_dual_resume()) return false;
+    if (ps_dual_enabled() && ps_dual_resume()) {
         dl_status_t current; ps_dual_status(&current);
-        return app_book_dual_apply(ps_dual_path(), ps_dual_font(),
+        if (app_book_dual_apply(ps_dual_path(), ps_dual_font(),
             current.reading.spread + (ps_dual_role()==2?2:1), current.reading.font_px,
-            current.reading.reflow_pending, current.reading.revision);
+            current.reading.reflow_pending, current.reading.revision)) return true;
+    }
+    // 对端尚未 ready 时不要留下一个无响应的悬浮按钮：本地打开对端当前书，
+    // 进入阅读后再由双机状态合流。
+    // If the peer is not ready, do not leave a dead floating button: open the peer's
+    // current book locally first, then rejoin through the normal dual state.
+    if (ps_dual_enabled()) {
+        const char* peer_path = ps_dual_path();
+        if (peer_path && *peer_path && app_book_open_path(peer_path)) return true;
     }
     return s_last_product_path[0] && app_book_open_path(s_last_product_path);
 }
