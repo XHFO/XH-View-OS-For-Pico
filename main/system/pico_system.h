@@ -14,7 +14,7 @@ typedef enum {
     PS_WIFI, PS_HA_SETTINGS, PS_PRINTER_SETTINGS, PS_READING_SETTINGS,
     PS_INPUT_SETTINGS, PS_SLEEP_SETTINGS, PS_QUICK_SETTINGS, PS_GAMES,
     PS_PLAYGAME, PS_ONBOARDING, PS_CLOCK, PS_QUOTES, PS_IMPORT, PS_EDITOR,
-    PS_STORAGE, PS_TRANSFER, PS_USB_TRANSFER, PS_ARCADEGAME, PS_BLUETOOTH, PS_DATETIME, PS_POWER, PS_NAV_SETTINGS, PS_APPLICATION, PS_CANVAS, PS_WIRELESS_MANAGE, PS_SOUND, PS_CLOUDFLARE, PS_APPS, PS_DUAL, PS_ROUTE_COUNT
+    PS_STORAGE, PS_TRANSFER, PS_USB_TRANSFER, PS_ARCADEGAME, PS_BLUETOOTH, PS_DATETIME, PS_POWER, PS_NAV_SETTINGS, PS_APPLICATION, PS_CANVAS, PS_WIRELESS_MANAGE, PS_SOUND, PS_CLOUDFLARE, PS_APPS, PS_DUAL, PS_ANIMATION_SETTINGS, PS_ROUTE_COUNT
 } ps_route_t;
 typedef enum { PS_PRESS, PS_MOVE, PS_RELEASE, PS_TAP, PS_LONG, PS_SWIPE_L,
     PS_SWIPE_R, PS_SWIPE_U, PS_SWIPE_D, PS_CANCEL } ps_event_type_t;
@@ -59,6 +59,9 @@ bool ps_touch_guard_set(bool enabled);
 void ps_book_rotation_enter(app_ctx_t* ctx);
 bool ps_book_rotation_tick(app_ctx_t* ctx, bool idle);
 void ps_toast(const char *text);
+/// 单行顶部提示，不弹底部气泡；用于防误触等状态。 / One-line top notice instead of a bottom toast.
+void ps_notice(const char *text);
+void ps_notice_draw(uint8_t *fb, int y);
 void ps_dirty(void);
 /// 手势/覆盖层/快捷编排/按住/切页期间暂停非必要后台文件读取。/ Pause optional file reads during input, overlays, quick editing or navigation.
 bool ps_background_io_allowed(void);

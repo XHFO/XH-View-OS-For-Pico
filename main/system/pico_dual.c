@@ -77,6 +77,7 @@ static int64_t last_tick, last_ip, last_work;
 static int pair_sock = -1;
 static bool pair_scanning, pair_found, pair_failed;
 static int anim_gray = 16;
+static bool anim_enabled = true;
 static char pair_ip[48], pair_code[7];
 static int64_t pair_started, pair_last_tx;
 static bool hotspot_active;
@@ -114,6 +115,11 @@ static void load(void) {
     if (ps_load("duallock1", &locked, sizeof(locked))) rotation_locked = locked ? 1 : 0;
     uint8_t guard = 1;
     if (ps_load("duaguard1", &guard, sizeof(guard))) guard_enabled = guard ? 1 : 0;
+    uint8_t anim = 1;
+    if (ps_load("animcfg1", &anim, sizeof(anim))) {
+        anim_enabled = !!(anim & 1);
+        anim_gray = (anim & 2) ? 8 : 16;
+    }
     dual_base_t stored;
     if (ps_load("dualbase1", &stored, sizeof(stored)) && stored.magic == 0x31425344u) {
         base = stored; calibrated = true;
@@ -321,8 +327,34 @@ static int contact_face(void) {
     if (dot < 0 && dot * dot > limit) return -1;
     return 0;
 }
-int ps_dual_anim_gray(void) { return anim_gray; }
-void ps_dual_toggle_anim_gray(void) { anim_gray = anim_gray == 16 ? 8 : 16; }
+int ps_dual_anim_gray(void) { load(); return anim_gray; }
+static void anim_save(void) {
+    uint8_t bits = (anim_enabled ? 1 : 0) | (anim_gray == 8 ? 2 : 0);
+    if (!ps_store("animcfg1", &bits, sizeof(bits))) ps_toast("动画设置保存失败");
+}
+void ps_dual_toggle_anim_gray(void) {
+    load(); anim_gray = anim_gray == 16 ? 8 : 16; anim_save();
+}
+bool ps_dual_anim_enabled(void) { load(); return anim_enabled; }
+bool ps_dual_anim_set_enabled(bool enabled) {
+    load(); anim_enabled = enabled; anim_save(); return true;
+}
+void ps_animation_render(uint8_t* fb) {
+    ps_view_t v = ps_view();
+    ps_heading(fb, "翻页动画", "控制双机阅读与单机阅读的翻页过渡");
+    int x = 20, w = v.w - 40;
+    ps_button(fb, x, 150, w, 44, anim_enabled ? "翻页动画：开" : "翻页动画：关", anim_enabled);
+    ps_button(fb, x, 206, w, 40, anim_gray == 16 ? "动画灰阶：16 灰" : "动画灰阶：8 灰", anim_gray == 16);
+    ps_text(fb, x, 266, 12, "关闭后翻页直接切换，不做过渡动画。", 4);
+    ps_text(fb, x, 292, 12, "灰阶只影响动画渐变，不影响正文清晰度。", 4);
+    ps_text(fb, x, 330, 11, "双机阅读中关闭动画可进一步降低翻页延迟。", 5);
+}
+bool ps_animation_event(const ps_event_t* e) {
+    if (!e || e->type != PS_TAP) return false;
+    if (e->y >= 150 && e->y < 194) { ps_dual_anim_set_enabled(!ps_dual_anim_enabled()); ps_dirty(); return true; }
+    if (e->y >= 206 && e->y < 246 && ps_dual_anim_enabled()) { ps_dual_toggle_anim_gray(); ps_dirty(); return true; }
+    return false;
+}
 bool ps_dual_calibrated(void) {
     load();
     return calibrated;
@@ -735,16 +767,14 @@ void ps_dual_render(uint8_t* fb) {
     ps_button(fb, x + half + 8, 450, w - half - 8, 34, locked ? "方向锁定：开" : "方向锁定：关", locked);
     bool calibrated = ps_dual_calibrated();
     ps_button(fb, x, 492, w, 34, calibrated ? "重新校准开合姿态" : "校准开合姿态（展开平放）", !calibrated);
-    snprintf(text, sizeof(text), "动画灰阶：%d 灰（点击切换）", anim_gray);
-    ps_button(fb, x, 532, w, 30, text, false);
-    ps_text(fb, x, 568, 11, calibrated ? "已校准：折叠时屏蔽触摸，展开时正常滑动" : "未校准：防误触暂不启用", calibrated ? 4 : 5);
+    ps_text(fb, x, 532, 11, calibrated ? "已校准：折叠时屏蔽触摸，展开时正常滑动" : "未校准：防误触暂不启用", calibrated ? 4 : 5);
     if (!v.landscape) {
-        ps_text(fb, x, 594, 13, "主机显示单页，从机显示下一页", 1);
-        ps_text(fb, x, 620, 12, "主机电源短按：上一组双页", 3);
-        ps_text(fb, x, 646, 12, "从机电源短按：下一组双页", 3);
-        ps_text(fb, x, 672, 12, "长按电源：锁屏、关机或重启", 3);
-        ps_text(fb, x, 712, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
-        ps_text(fb, x, 734, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
+        ps_text(fb, x, 560, 13, "主机显示单页，从机显示下一页", 1);
+        ps_text(fb, x, 588, 12, "主机电源短按：上一组双页", 3);
+        ps_text(fb, x, 614, 12, "从机电源短按：下一组双页", 3);
+        ps_text(fb, x, 640, 12, "长按电源：锁屏、关机或重启", 3);
+        ps_text(fb, x, 684, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
+        ps_text(fb, x, 706, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
     }
 }
 // 只读当前网络，不扫描网段或保存未完成配置。/ Read the current network without scanning hosts or persisting an unfinished setup.
@@ -1004,11 +1034,6 @@ bool ps_dual_event(const ps_event_t* e) {
                 return true;
             }
         }
-    }
-    if (settings.role && e->y >= 532 && e->y < 562) {
-        ps_dual_toggle_anim_gray();
-        ps_dirty();
-        return true;
     }
     if (settings.role && e->y >= 492 && e->y < 526) {
         (void)ps_dual_calibrate();

@@ -1,3 +1,10 @@
+## 0.40.0-dual48（独立双机实验版）
+
+- 修复双机阅读里读完第一本回书架后第二本打不开：用户主动换书现在本地立即打开，并清理上一本的远程目标/锚点；双机模式下同时通知对端。
+- 将翻页动画设置移到“外观与操作”，新增动画开关与 16/8 灰阶；关闭后直接翻页。
+- 防误触提示改为顶部居中单行文本，不再使用底部气泡；阅读页显示在顶部栏内。
+- Fix opening a second book after returning to the shelf in dual mode; move animation settings under Appearance & Controls with an on/off switch; show the touch-guard message as a top-center line instead of a bottom toast.
+
 ## 0.40.0-dual47（独立双机实验版）
 
 - 修正倒置竖屏的翻页方向映射：两台设备现在都按物理屏幕执行下一页从右往左、上一页从左往右。

@@ -95,7 +95,7 @@
 #include "ui_kit.h"
 #include "settings.h"
 
-#define PS_VERSION "0.40.0-dual47"
+#define PS_VERSION "0.40.0-dual48"
 #define PS_OS_NAME "XH View OS For Pico"
 #define PS_RELEASE_LABEL "双机阅读实验版"
 const char *ps_version(void){return PS_VERSION;}
@@ -150,6 +150,8 @@ static int64_t s_ink_gray_due;
 static int s_x0, s_y0, s_lastx, s_lasty, s_fan_side, s_fan_selected = -1;
 static int64_t s_down_ms, s_move_ms, s_last_input, s_pmu_ms, s_acc_ms, s_toast_until;
 static char s_toast[128], s_store_root[160];
+static int64_t s_notice_until;
+static char s_notice[96];
 static bool s_store_is_sd, s_store_lost, s_transfer_prepared, s_network_resume_pending;
 static bool s_store_media_known;
 static uint32_t s_store_media_generation;
@@ -849,6 +851,15 @@ void ps_toast(const char* text) {
     s_toast_until = ps_now() + 3000;
     s_dirty = true;
 }
+void ps_notice(const char* text) {
+    snprintf(s_notice, sizeof(s_notice), "%s", text ? text : "");
+    s_notice_until = ps_now() + 3000;
+    ps_dirty();
+}
+void ps_notice_draw(uint8_t* fb, int y) {
+    if (!fb || !s_notice[0] || ps_now() >= s_notice_until) return;
+    ps_center(fb, ps_view().w / 2, y, 10, s_notice, 5);
+}
 static bool reader_route(ps_route_t r) {
     return r == PS_SHELF || r == PS_READ || r == PS_RECORDS || r == PS_READING_SETTINGS ||
            r == PS_INPUT_SETTINGS || r == PS_IMPORT || r == PS_EDITOR;
@@ -860,7 +871,7 @@ static bool home_route(ps_route_t r) {
 static bool setting_route(ps_route_t r) {
     return r == PS_DEVICE || r == PS_WIFI || r == PS_TRANSFER || r == PS_WIRELESS_MANAGE || r == PS_HA_SETTINGS || r == PS_PRINTER_SETTINGS ||
            r == PS_READING_SETTINGS || r == PS_INPUT_SETTINGS || r == PS_SLEEP_SETTINGS ||
-           r == PS_QUICK_SETTINGS || r == PS_NAV_SETTINGS || r == PS_STORAGE || r == PS_USB_TRANSFER || r == PS_BLUETOOTH || r == PS_DATETIME || r == PS_POWER || r == PS_SOUND || r == PS_DUAL;
+           r == PS_QUICK_SETTINGS || r == PS_NAV_SETTINGS || r == PS_STORAGE || r == PS_USB_TRANSFER || r == PS_BLUETOOTH || r == PS_DATETIME || r == PS_POWER || r == PS_SOUND || r == PS_DUAL || r == PS_ANIMATION_SETTINGS;
 }
 static void enter(ps_route_t r) {
     if (r == PS_GAMES || r == PS_PLAYGAME || r == PS_ARCADEGAME || r == PS_APPLICATION) s_section = 2;
@@ -1644,16 +1655,16 @@ static void render_panel(uint8_t *fb) {
     ps_icon(fb,v.w/2-11,v.h-72,22,PI_SETTINGS,2);
 }
 
-enum { DEVICE_GROUP_COUNT=6, DEVICE_ABOUT=6, DEVICE_SETTING_COUNT=17 };
+enum { DEVICE_GROUP_COUNT=6, DEVICE_ABOUT=6, DEVICE_SETTING_COUNT=18 };
 typedef struct {const char *label,*detail;uint8_t icon,first,count;} device_group_t;
 typedef struct {const char *label,*detail;uint8_t icon,route;} device_setting_t;
 static const device_group_t device_groups[] = {
     {"存储与传输","TF 卡、图书与文件",PI_SD,0,1},
     {"网络与连接","Wi-Fi、手机与蓝牙",PI_LINK,1,3},
     {"阅读与输入","排版与笔记输入",PI_BOOK,4,3},
-    {"外观与操作","导航、菜单与提示音",PI_LAYOUT,7,3},
-    {"应用与服务","应用、家庭与打印机",PI_GRID,10,4},
-    {"系统与电源","锁屏、时间与测试",PI_POWER,14,3}
+    {"外观与操作","导航、菜单、提示音与动画",PI_LAYOUT,7,4},
+    {"应用与服务","应用、家庭与打印机",PI_GRID,11,4},
+    {"系统与电源","锁屏、时间与测试",PI_POWER,15,3}
 };
 static const device_setting_t device_settings[] = {
     {NULL,NULL,PI_SD,PS_TRANSFER},
@@ -1666,6 +1677,7 @@ static const device_setting_t device_settings[] = {
     {"首页导航","排序与隐藏",PI_LAYOUT,PS_NAV_SETTINGS},
     {"快捷菜单","功能位置与排序",PI_GRID,PS_QUICK_SETTINGS},
     {"提示音","触摸与充电提示",PI_NOTE,PS_SOUND},
+    {"翻页动画","开关与灰阶",PI_LAYOUT,PS_ANIMATION_SETTINGS},
     {"应用集","系统与 TF 应用",PI_GRID,PS_APPS},
     {"Home Assistant","连接与实体",PI_HOME,PS_HA_SETTINGS},
     {"3D 打印机","Bambu Lab 与 Formlabs",PI_PRINTER,PS_PRINTER_SETTINGS},
@@ -1866,6 +1878,7 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
         else if (s_route == PS_POWER) ps_power_render(fb);
         else if (s_route == PS_SOUND) ps_sound_render(fb);
         else if (s_route == PS_DUAL) ps_dual_render(fb);
+        else if (s_route == PS_ANIMATION_SETTINGS) ps_animation_render(fb);
         else if (s_route == PS_NAV_SETTINGS) ps_navigation_render(fb);
         else if (s_route == PS_QUICK_SETTINGS)
             quick_settings_render(fb);
@@ -1888,6 +1901,7 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
         else
             snprintf(battery, sizeof(battery), "--%%");
         ps_text(fb, v.w - 49, 7, 10, battery, 5);
+        ps_notice_draw(fb, 7);
     }
     if (s_panel) render_panel(fb);
     if (s_fan) render_fan(fb);
@@ -2073,6 +2087,7 @@ static bool dispatch(const ps_event_t *e) {
     if(s_route==PS_POWER)return ps_power_event(e);
     if(s_route==PS_SOUND)return ps_sound_event(e);
     if(s_route==PS_DUAL)return ps_dual_event(e);
+    if(s_route==PS_ANIMATION_SETTINGS)return ps_animation_event(e);
     if(s_route==PS_NAV_SETTINGS)return ps_navigation_event(e);
     if(s_route==PS_STORAGE)return ps_storage_event(e);
     if(s_route==PS_USB_TRANSFER)return ps_usb_event(e);

@@ -423,9 +423,9 @@ void app_loop_run(const app_loop_config_t* config) {
             guard_blocked = app_touch_guard_filter(&touch, ctx.now_ms, ps_dual_enabled(), ps_touch_guard_enabled(), ps_dual_contact_likely());
             int guard_event = app_touch_guard_take_event();
             if (guard_event == 1) {
-                ps_toast("检测到贴合误触，已持续屏蔽；展开后恢复触摸");
+                ps_notice("贴合误触：触摸已屏蔽，展开后恢复");
             } else if (guard_event == 2) {
-                ps_toast("触摸已恢复");
+                ps_notice("触摸已恢复");
             }
             if (guard_blocked) {
                 held_key = -1;

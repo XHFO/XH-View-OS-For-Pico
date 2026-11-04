@@ -880,6 +880,7 @@ static void draw_compact_header(uint8_t* fb, size_t page) {
     ui_text_vc(fb, progress.x + 4, 20, 28, title, EPD_DRAW_ALIGN_LEFT, false);
     ui_text_vc(fb, progress.x + 4, 51, page_px, label, EPD_DRAW_ALIGN_LEFT, false);
     ui_text_vc(fb, progress.x + progress.width - 6, 51, 26, percent_label, EPD_DRAW_ALIGN_RIGHT, false);
+    ps_notice_draw(fb, 64);
     EpdRect track = {progress.x + 4, 74, progress.width - 10, 4};
     epd_fill_rect(track, UI_GRAY_LIGHT, fb);
     int thumb = track.x + (int)((uint64_t)(track.width - 1) * pct / 100);
@@ -1879,6 +1880,17 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
         copy_text(s_message, sizeof(s_message), "无法读取文件，请检查存储卡");
         return false;
     }
+    // 用户从书架换书时清掉上一本的远程目标/锚点，避免第二本被旧的
+    // 页码或批注锚点拦住；远端主动切换由 s_dual_applying 保护。
+    // Clear the previous book's remote target/anchor on a user-initiated open;
+    // remote switches are protected by s_dual_applying.
+    if (!s_dual_applying) {
+        s_dual_target = s_dual_present_pending = s_dual_displayed = 0;
+        s_dual_anchor.pending = false;
+        s_dual_wait = s_dual_blank = s_dual_annotation = false;
+        s_dual_reflow = 0;
+        s_turn_anim_pending = false;
+    }
     bool annotated = s_annotation_pending && !strcmp(path, s_annotation_target.path);
     if (annotated && (uint64_t)st.st_size != s_annotation_target.file_bytes) {
         copy_text(s_message, sizeof(s_message), "图书文件已更换，原批注位置无法定位");
@@ -2199,7 +2211,7 @@ static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
 #else
     s_full = false;
 #endif
-    s_turn_anim_pending = !s_full;
+    s_turn_anim_pending = ps_dual_anim_enabled() && !s_full;
     if (s_unsaved < 8) ++s_unsaved;
     if (s_unsaved >= 8 && !s_save_failed) save_progress();
     ESP_LOGI(TAG, "turn chapter=%u page=%u/%u pct=%u", (unsigned)s_chapter, (unsigned)s_page + 1, (unsigned)book_layout_page_count(), percent(s_page));
@@ -2543,7 +2555,7 @@ static bool request_path_valid(const char* path) {
 }
 bool app_book_open_path(const char* path) {
     if (!request_path_valid(path)) return false;
-    if(ps_dual_enabled()&&!s_dual_applying){ps_dual_open(path);return false;}
+    if(ps_dual_enabled()&&!s_dual_applying) (void)ps_dual_open(path);
     copy_text(s_requested_path, sizeof(s_requested_path), path);
     s_annotation_pending = false;
     return true;
@@ -3175,7 +3187,7 @@ static app_redraw_t dual_page_ready(app_ctx_t* ctx) {
     // 主机是同步基准：不做动画，立即推屏并置 left_ready；从机用动画掩盖等待和网络间隔。
     // The primary is the sync reference: present immediately so the secondary starts
     // after left_ready; only the secondary animates to mask the network gap.
-    s_turn_anim_pending = previous_page && s_dual_displayed != previous_page;
+    s_turn_anim_pending = ps_dual_anim_enabled() && previous_page && s_dual_displayed != previous_page;
     s_turn_anim_dir = s_dual_displayed > previous_page ? 1 : -1;
     if (s_turn_anim_pending && ++s_dual_cleanup_turns % 6 == 0) s_dual_cleanup_pending = true;
     s_dual_target=0; s_dual_blank=s_dual_wait=false; s_view=READING;
