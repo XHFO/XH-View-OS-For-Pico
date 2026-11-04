@@ -1956,6 +1956,10 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
     s_size_settle_ms = 0;
     pending_mark_latest(s_path);
     if (s_product_session) copy_text(s_last_product_path, sizeof(s_last_product_path), s_path);
+    // 本地已经成功打开后再通知对端，避免远端切换和本地打开互相打断。
+    // Notify the peer only after the local open succeeds, so remote switching cannot
+    // interrupt the local open.
+    if (ps_dual_enabled() && !s_dual_applying) (void)ps_dual_open(s_path);
     save_progress();
     ESP_LOGI(TAG, "opened kind=%d chapters=%u pages=%u px=%d source=%lld chapter=%lld ms", book_kind(), (unsigned)book_chapter_count(), (unsigned)book_layout_page_count(), s_px,
              (long long)source_ms, (long long)((esp_timer_get_time() - open_started) / 1000 - source_ms));
@@ -2555,7 +2559,6 @@ static bool request_path_valid(const char* path) {
 }
 bool app_book_open_path(const char* path) {
     if (!request_path_valid(path)) return false;
-    if(ps_dual_enabled()&&!s_dual_applying) (void)ps_dual_open(path);
     copy_text(s_requested_path, sizeof(s_requested_path), path);
     s_annotation_pending = false;
     return true;

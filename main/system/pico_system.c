@@ -95,7 +95,7 @@
 #include "ui_kit.h"
 #include "settings.h"
 
-#define PS_VERSION "0.40.0-dual48"
+#define PS_VERSION "0.40.0-dual49"
 #define PS_OS_NAME "XH View OS For Pico"
 #define PS_RELEASE_LABEL "双机阅读实验版"
 const char *ps_version(void){return PS_VERSION;}
@@ -1841,6 +1841,14 @@ static PICO_STORE_COLD void onboarding_render(uint8_t* fb) {
     ps_button(fb, 20, v.h - 79, v.w - 40, 39, step == 3 ? "开始阅读" : "下一步", true);
 }
 
+static bool dual_resume_visible(void) {
+    return ps_dual_enabled() && ps_dual_peer_reading() && !app_book_global_is_open() &&
+           (s_route == PS_SHELF || home_route(s_route));
+}
+static EpdRect dual_resume_rect(void) {
+    ps_view_t v = ps_view();
+    return (EpdRect){v.w - 178, v.h - 68, 158, 38};
+}
 static void render(app_ctx_t* ctx, uint8_t* fb) {
     (void)ctx;
     bool frozen=local_hold()&&!ps_usb_local_route(s_route);
@@ -1907,6 +1915,9 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     if (s_fan) render_fan(fb);
     if(ps_usb_background()&&!s_panel&&!s_fan&&(frozen||s_route==PS_CANVAS||s_route==PS_CLOUDFLARE))ps_usb_background_render(fb);
     if (!standby) ps_corner_controls(fb);
+    if (dual_resume_visible() && !s_panel && !s_fan)
+        ps_button(fb, dual_resume_rect().x, dual_resume_rect().y, dual_resume_rect().width,
+                  dual_resume_rect().height, "回到双机阅读", true);
     if (!fan_frame_active() && s_toast[0] && ps_now() < s_toast_until) {
         int tw = v.w - 48;
         ps_box(fb, 24, v.h - 78, tw, 34, 5, 2, true);
@@ -2063,6 +2074,11 @@ static bool dispatch(const ps_event_t *e) {
     bool frozen=local_hold()&&!ps_usb_local_route(s_route);
     bool root=!frozen&&launcher_root();
     if(s_panel)return panel_event(e);
+    if (dual_resume_visible() && e->type == PS_TAP && ps_hit(e->x, e->y, dual_resume_rect().x,
+            dual_resume_rect().y, dual_resume_rect().width, dual_resume_rect().height)) {
+        if (!resume_real_book()) ps_toast("另一台尚未就绪");
+        return true;
+    }
     if(!standby&&e->type==PS_TAP) {
         if(s_route!=PS_QUICK_SETTINGS&&(e->x<48||e->x>=v.w-48)&&e->y>=v.h-48){open_panel(1);return true;}
         if(root&&e->y>=28&&e->y<70){if(e->x>=v.w-46)ps_global_open_settings(s_ctx);else{int count=ps_navigation_count(),w=(v.w-72-(count-1)*4)/count,col=(e->x-12)/(w+4);if(e->x>=12&&col<count)launcher_switch(col);}return true;}

@@ -1,3 +1,10 @@
+## 0.40.0-dual49（独立双机实验版）
+
+- 双机模式从书架打开图书改为本地先成功打开、再通知对端，避免远端切换打断本地打开；保留换书状态清理。
+- 书架/主页新增“回到双机阅读”悬浮按钮，单台退出阅读后可一键回到对端当前页。
+- 打开本地书成功后同步对端。
+- Open books locally first and notify the peer only after success; add a floating “return to dual reading” button on shelf/home. Bump to dual49.
+
 ## 0.40.0-dual48（独立双机实验版）
 
 - 修复双机阅读里读完第一本回书架后第二本打不开：用户主动换书现在本地立即打开，并清理上一本的远程目标/锚点；双机模式下同时通知对端。
