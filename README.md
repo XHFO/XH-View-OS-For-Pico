@@ -1,6 +1,6 @@
 # XH View OS For Pico · Duo
 
-> **Private dual-reader preview · 0.40.0-dual72** — Complete firmware source for `experiment/dual-pico-reader`. Wi-Fi synchronizes books and the shared font; authenticated BLE synchronizes opening, paired pages and turns. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system. The upstream hardware reference follows below.
+> **Dual-reader preview · 0.40.0-dual72** — Complete firmware source for `experiment/dual-pico-reader`. Wi-Fi synchronizes books and the shared font; authenticated BLE synchronizes opening, paired pages and turns. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system. The upstream hardware reference follows below.
 
 **Languages:** [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md)
 
@@ -12,9 +12,9 @@
 ![Target](https://img.shields.io/badge/target-ESP32--S3-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 
 **XH View OS For Pico** is XH Lab's system firmware for the Read Pico, an ESP32-S3
-development board with a 4.7" monochrome e-paper panel. This private repository
-contains the complete firmware source, system applications and build materials for
-the current Duo preview branch.
+development board with a 4.7" monochrome e-paper panel. This repository contains
+the complete firmware source, system applications and build materials for the
+current Duo preview branch.
 
 The system integrates a bookshelf and reader, transfer tooling, Home Link, TF-card
 applications, diagnostics and dual-reader synchronization. Hardware demo and

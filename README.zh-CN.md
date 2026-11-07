@@ -14,7 +14,7 @@
 ![Target](https://img.shields.io/badge/target-ESP32--S3-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 
 **XH View OS For Pico** 是 XH Lab 面向小纸 Pico（ESP32-S3、4.7 寸单色墨水屏）
-构建的系统固件。本私有仓库包含当前双机预览分支的完整固件源码、系统应用和构建资料。
+构建的系统固件。本仓库包含当前双机预览分支的完整固件源码、系统应用和构建资料。
 
 系统整合书架与阅读器、传书工具、Home Link、TF 应用、诊断页面和双机联动；
 原有硬件演示与诊断页面继续保留。小纸 Pico 板级支持、PMU 协议主机端和芯片驱动
