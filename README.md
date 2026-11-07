@@ -11,16 +11,19 @@
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v6.1-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 ![Target](https://img.shields.io/badge/target-ESP32--S3-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 
-Read Pico is an ESP32-S3 development board in the Read series with a 4.7" monochrome e-paper panel,
-made by Shenzhen MindReset Technology Co., Ltd. for developers building open-source
-e-paper firmware. This repository contains the factory firmware shipped with the board.
+**XH View OS For Pico** is XH Lab's system firmware for the Read Pico, an ESP32-S3
+development board with a 4.7" monochrome e-paper panel. This private repository
+contains the complete firmware source, system applications and build materials for
+the current Duo preview branch.
 
-The firmware provides separate demo and diagnostic pages for the display, touch,
-accelerometer, power, keys, TF card, fonts, sleep and wake. Use them to check the
-hardware and as reference implementations for your own firmware.
+The system integrates a bookshelf and reader, transfer tooling, Home Link, TF-card
+applications, diagnostics and dual-reader synchronization. Hardware demo and
+diagnostic pages remain available. The Read Pico board support, PMU protocol host
+and chip drivers originate from the MindReset upstream project and can be reused
+independently.
 
-The board support, PMU protocol host and chip drivers are independent components
-that can be reused. This is a hardware demo, not a finished reader product.
+This is a preview system firmware repository, not a separately published finished
+reader product.
 
 Agent-facing layout, `app_desc_t` contract, glossary and comment style are in
 [AGENTS.md](AGENTS.md).
