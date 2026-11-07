@@ -16,6 +16,7 @@
 #include "book_store.h"
 #include "display.h"
 #include "e0470_epaper_waveform.h"
+#include "e0470_page_turn.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"

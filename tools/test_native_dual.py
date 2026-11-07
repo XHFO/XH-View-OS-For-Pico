@@ -115,6 +115,7 @@ try:
         for _ in range(3):d.cmd(f'tick {d.now+600}')
         pump(5)
     def page_identity(d):return (d.state['dual_page'],d.state['book_chapter'],d.state['page_start'],d.state['page_end'],d.state['dual_revision'])
+    def page_position(d):return page_identity(d)[:4]
     def tap(d,x,y):
         d.cmd(f'touch down {round(x)} {round(y)} {d.now+80}')
         d.cmd(f'touch up {round(x)} {round(y)} {d.now+60}')
@@ -124,7 +125,7 @@ try:
         assert (global_preferences(a),global_preferences(b))==preferences
         assert a.state['rotation_locked'] and b.state['rotation_locked']
     def rotation_switch(d,role,enabled):
-        before=(page_identity(a),page_identity(b));base=a.state['dual_base_rotation']
+        before=(page_position(a),page_position(b));base=a.state['dual_base_rotation']
         expected=[a.state['dual_primary_flip'],a.state['dual_secondary_flip']];expected[role-1]=enabled
         d.cmd('route 34');pump(4)
         tap(d,180 if role==1 else 288,182)
@@ -132,7 +133,7 @@ try:
         d.capture(f'rotation-switch-{role}-{int(enabled)}')
         tap(d,23,47)
         until(lambda:a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_target')==b.state.get('dual_target')==0,'rotation settings Back resumes reading')
-        assert (page_identity(a),page_identity(b))==before
+        assert (page_position(a),page_position(b))==before
         orientation_preferences_preserved()
     until(lambda:orientation_is(3,False,False),'default shared orientation')
     assert (a.state['rotation'],b.state['rotation'])==(3,3)
@@ -218,7 +219,7 @@ try:
     orientation_preferences_preserved()
     a.cmd('dual 1 127.0.0.1 123456');b.cmd('dual 2 127.0.0.1 123456')
     a.cmd('route 0');b.cmd('route 0')
-    until(lambda:a.state['dual_synced'] and b.state['dual_synced'] and a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_target')==b.state.get('dual_target')==0,'re-enable retains reading and role offsets')
+    until(lambda:a.state['dual_synced'] and b.state['dual_synced'] and a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_target')==b.state.get('dual_target')==0 and a.state['dual_left_ready'] and b.state['dual_left_ready'],'re-enable retains reading and role offsets')
     assert orientation_is(3,False,True) and (a.state['rotation'],b.state['rotation'])==(3,1)
     assert (page_identity(a)[:4],page_identity(b)[:4])==before
     orientation_preferences_preserved()

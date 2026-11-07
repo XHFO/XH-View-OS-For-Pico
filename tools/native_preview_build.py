@@ -82,6 +82,13 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
     cp('read_pico_dual_ble.h','components/read_pico_ble_pager/include/read_pico_dual_ble.h')
     cp('nvs.h','tools/book_storage_stubs/nvs.h')
     put('e0470_epaper_waveform.h','#pragma once\n#include "epdiy.h"\nextern const EpdWaveform E0470_FOLLOW_WAVEFORM,E0470_WAVEFORM;\n')
+    put('e0470_page_turn.h','''#pragma once
+#include "epdiy.h"
+#define E0470_TURN_FAST_TICK_US 11090
+enum e0470_page_turn_direction {E0470_TURN_RTL=1,E0470_TURN_LTR=-1};
+void e0470_page_turn_set_tick_us(int us);
+enum EpdDrawError e0470_page_turn(EpdiyHighlevelState *hl,EpdRect area,enum e0470_page_turn_direction direction);
+''')
     put('read_pico_init.h','#pragma once\n#include "app.h"\nesp_err_t read_pico_sensor_wake(sc7a20h_handle_t);esp_err_t read_pico_sensor_sleep(sc7a20h_handle_t);esp_err_t read_pico_accel_read(sc7a20h_handle_t,sc7a20h_sample_t*);\n')
     cp('read_pico_pmu_protocol.h','components/read_pico_pmu/include/read_pico_pmu_protocol.h')
     put('read_pico_pmu.h','#pragma once\n#include <stdint.h>\n#include <stdbool.h>\n#include "read_pico_pmu_protocol.h"\ntypedef struct {bool present,status_ok,time_ok,time_synced;int last_err;uint32_t flags;uint16_t last_op_status;uint16_t soc_permille;int charge_state;uint32_t unix_sec;} pmu_snapshot_t;bool read_pico_pmu_ready(void);int read_pico_pmu_cmd(uint16_t,const uint8_t*,size_t);int read_pico_pmu_refresh(void);const pmu_snapshot_t *read_pico_pmu_get(void);\n')

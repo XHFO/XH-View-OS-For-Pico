@@ -155,7 +155,7 @@ int read_pico_pmu_cmd(uint16_t cmd,const uint8_t *data,size_t bytes){
     if(cmd!=PMU_CMD_TIME_SYNC||!data||bytes!=4)return ESP_ERR_INVALID_ARG;
     runtime_epoch=(uint32_t)data[0]|(uint32_t)data[1]<<8|(uint32_t)data[2]<<16|(uint32_t)data[3]<<24;runtime_epoch_ms=runtime_now;return ESP_OK;
 }
-static const char *route_names[]={"书架","阅读","书签与笔记","家庭","打印监看","系统设置","Wi-Fi","家庭设置","打印设置","阅读设置","输入设置","休眠设置","快捷编排","小游戏","棋类对局","首次引导","翻页时钟","划线摘录","导入图书","输入","TF 卡存储","Wi-Fi 传书","USB 传输","休闲游戏","蓝牙翻页器","日期与时间","电源与锁屏","首页导航","应用","电脑画布","无线管理","提示音","网站流量","应用集","双机阅读"};
+static const char *route_names[]={"书架","阅读","书签与笔记","家庭","打印监看","系统设置","Wi-Fi","家庭设置","打印设置","阅读设置","输入设置","休眠设置","快捷编排","小游戏","棋类对局","首次引导","翻页时钟","划线摘录","导入图书","输入","TF 卡存储","Wi-Fi 传书","USB 传输","休闲游戏","蓝牙翻页器","日期与时间","电源与锁屏","首页导航","应用","电脑画布","无线管理","提示音","网站流量","应用集","双机阅读","翻页动画"};
 _Static_assert(ARRAY_COUNT(route_names)==PS_ROUTE_COUNT,"Every native route needs a readable name");
 static uint64_t frame_hash(void){uint64_t h=UINT64_C(1469598103934665603);for(size_t i=0;i<sizeof(runtime_fb);i++)h=(h^runtime_fb[i])*UINT64_C(1099511628211);return h;}
 void app_present(app_ctx_t *ctx,const app_desc_t *app,app_redraw_t redraw){
@@ -352,7 +352,7 @@ static void state(bool ok,const char *error){bool changed=save_state();ps_view_t
     printf(",\"rotation\":%d,\"physical_hash\":\"%llx\"",epd_get_rotation(),(unsigned long long)runtime_digest);
     dl_status_t dual_status;ps_dual_status(&dual_status);printf(",\"dual_role\":%d,\"dual_connected\":%s,\"dual_synced\":%s,\"dual_scanning\":%s,\"dual_books\":%u,\"dual_spread\":%u,\"dual_revision\":%u",ps_dual_role(),dual_status.connected?"true":"false",dual_status.synced?"true":"false",dual_status.scanning?"true":"false",dual_status.books,dual_status.reading.spread,dual_status.reading.revision);
     printf(",\"dual_left_ready\":%s",dual_status.left_ready?"true":"false");
-    printf(",\"dual_base_rotation\":%d,\"dual_primary_flip\":%s,\"dual_secondary_flip\":%s,\"dual_guard\":%s,\"dual_peer_reading\":%s",dual_status.orientation.inverted?EPD_ROT_INVERTED_PORTRAIT:EPD_ROT_PORTRAIT,dual_status.orientation.primary_flip?"true":"false",dual_status.orientation.secondary_flip?"true":"false",dual_status.guard?"true":"false",dual_status.peer_reading?"true":"false");
+    printf(",\"dual_base_rotation\":%d,\"dual_primary_flip\":%s,\"dual_secondary_flip\":%s,\"dual_guard\":%s,\"dual_peer_reading\":%s,\"dual_remote_open\":%s",dual_status.orientation.inverted?EPD_ROT_INVERTED_PORTRAIT:EPD_ROT_PORTRAIT,dual_status.orientation.primary_flip?"true":"false",dual_status.orientation.secondary_flip?"true":"false",dual_status.guard?"true":"false",dual_status.peer_reading?"true":"false",dual_status.remote_open?"true":"false");
     printf(",\"dual_reused\":%u,\"dual_verified_bytes\":%u,\"dual_resumed\":%u",dual_status.reused,dual_status.verified_bytes,dual_status.resumed);
     if(runtime_app==&app_book)printf(",\"book_page\":%zu,\"book_pages\":%zu,\"book_chapter\":%zu,\"book_jump\":%s,\"book_tools\":%s,\"selection\":%s",native_preview_book_page()+1,native_preview_book_pages(),native_preview_book_chapter()+1,native_preview_book_jump_open()?"true":"false",native_preview_book_tools_open()?"true":"false",native_preview_book_selection_active()?"true":"false");
     if(runtime_app==&app_book)printf(",\"book_px\":%u",native_preview_book_px());

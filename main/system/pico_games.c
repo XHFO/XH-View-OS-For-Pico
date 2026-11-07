@@ -763,20 +763,28 @@ bool ps_games_key(int key) {
     s_in_call=true;bool changed=s_app->key(key);finish_call();return changed;
 }
 bool ps_games_tick(void) {
-    if(ps_dual_game_close_take()){
+    uint32_t dual_request=0,dual_session=0;bool dual_result=false;
+    if(ps_dual_game_open_result_take(&dual_request,&dual_result)&&!dual_result)
+        ps_toast("另一台无法打开同一游戏");
+    if(ps_dual_game_close_take(&dual_session,&dual_request)){
         s_dual_game_applying=true;
         if(game_route(ps_route()))ps_navigate(PS_GAMES);
         s_dual_game_applying=false;
+        ps_dual_game_close_finish(dual_request,!game_route(ps_route()));
         return true;
     }
     uint8_t open_kind=0;
-    if(ps_dual_game_open_take(&open_kind)){
+    if(ps_dual_game_open_take(&open_kind,&dual_session,&dual_request)){
+        bool opened=false;
         for(unsigned i=0;i<s_count;i++)if(s_items[i].info.kind==open_kind){
             s_dual_game_applying=true;
-            if(!open_item(i))ps_toast(s_error);
+            opened=open_item(i);
+            if(!opened)ps_toast(s_error);
             s_dual_game_applying=false;
-            return true;
+            break;
         }
+        ps_dual_game_open_finish(dual_request,dual_session,opened);
+        return true;
     }
     if(s_catalog_dirty&&!storage_held()&&ps_background_io_allowed()){ps_games_rescan();return true;}
     if(s_home_portal)return ps_home_portal_tick();

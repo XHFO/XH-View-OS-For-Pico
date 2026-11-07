@@ -97,15 +97,20 @@ static void test_pages(bool landscape)
         bool was=g_save.progress[type].automatic;tap(x+22,test_view.landscape?y+40:y+75);assert(g_save.progress[type].automatic!=was);
         tap(x+w-50,y+h-15);assert(ps_route()==PS_PLAYGAME&&g_pos.type==type);render_pure();
         for(int p=0;p<pg_count(&g_pos);p++){int px,py;pg_point_xy(pg_board_rect(),p,&px,&py);assert(pg_board_hit(px,py)==p);}
-        int sx,sy,sw;pg_side_rect(&sx,&sy,&sw);tap(sx+sw/2,sy+120);assert(g_modal==2);render_pure();
+        int sx,sy,sw;pg_side_rect(&sx,&sy,&sw);
+        int rules_y=test_view.landscape?(type==PG_GO?248:240):sy+120;
+        int restart_y=test_view.landscape?(type==PG_GO?200:176):sy+76;
+        int control_x=test_view.landscape?80:sx+sw/2;
+        tap(control_x,rules_y);assert(g_modal==2);render_pure();
         pg_pos_t before_modal=g_pos;unsigned before_stores=test_stores;
         tap(1,80);assert(!g_modal&&!memcmp(&before_modal,&g_pos,sizeof(g_pos))&&test_stores==before_stores);
-        tap(sx+sw/2,sy+120);assert(g_modal==2);assert(ps_games_key(-1)&&!g_modal);
+        tap(control_x,rules_y);assert(g_modal==2);assert(ps_games_key(-1)&&!g_modal);
         int buttons=type==PG_GO?3:2,bw=(sw-(buttons-1)*8)/buttons;
-        tap(sx+(buttons-1)*(bw+8)+bw/2,sy+76);assert(g_modal==1);render_pure();
+        int restart_x=test_view.landscape?80:sx+(buttons-1)*(bw+8)+bw/2;
+        tap(restart_x,restart_y);assert(g_modal==1);render_pure();
         before_modal=g_pos;before_stores=test_stores;
         tap(1,80);assert(!g_modal&&!memcmp(&before_modal,&g_pos,sizeof(g_pos))&&test_stores==before_stores);
-        tap(sx+(buttons-1)*(bw+8)+bw/2,sy+76);assert(g_modal==1);assert(ps_games_key(-1)&&!g_modal);
+        tap(restart_x,restart_y);assert(g_modal==1);assert(ps_games_key(-1)&&!g_modal);
         if(type==PG_GOMOKU||type==PG_GO)board_tap(type==PG_GO?40:112);
         else{board_tap(type==PG_CHESS?52:54);assert(g_selected>=0);render_pure();board_tap(type==PG_CHESS?36:45);}
         assert(g_pos.turn==-1&&g_pos.moves==1);assert(ps_games_tick()&&g_busy);render_pure();
@@ -122,7 +127,9 @@ static void test_score_and_promotion(void)
         test_view=(ps_view_t){landscape?640:360,landscape?360:640,landscape};pg_start_game(PG_GO);
         assert(pg_commit(pg_point(40)));assert(pg_commit(pg_point(41)));assert(pg_commit(pg_point(-1)));assert(pg_commit(pg_point(-1)));
         assert(g_pos.result==PG_SCORE);board_tap(40);assert(g_save.dead[5]&1);render_pure();
-        int x,y,w;pg_side_rect(&x,&y,&w);tap(x+w/4,y+90);assert(g_save.recorded&&g_pos.result!=PG_SCORE);render_pure();
+        int x,y,w;pg_side_rect(&x,&y,&w);
+        tap(landscape?80:x+w/4,landscape?128:y+90);
+        assert(g_save.recorded&&g_pos.result!=PG_SCORE);render_pure();
         unsigned played=g_save.progress[PG_GO].played;pg_record_result();assert(g_save.progress[PG_GO].played==played);
         ps_games_init();assert(g_pos.moves==4&&g_pos.result!=PG_SCORE&&(g_save.dead[5]&1));
         pg_start_game(PG_CHESS);memset(g_pos.board,0,sizeof(g_pos.board));g_pos.board[60]=6;g_pos.board[7]=-6;g_pos.board[8]=1;

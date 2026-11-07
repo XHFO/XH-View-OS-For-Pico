@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -17,9 +18,17 @@ static bool radio=true,connecting,ready;
 static unsigned tx_at,tx_n,rx_n,hello_at,hello_n;
 static uint8_t tx[97],rx[97],hello[10];
 static pico_dual_ble_status_t status={.simulated=true};
+static pico_dual_ble_peer_info_t peer;
 static void lost(void){if(fd>=0)close(fd);fd=-1;connecting=ready=false;tx_at=tx_n=rx_n=hello_at=hello_n=0;status.connected=false;++status.generation;}
 void pico_dual_ble_stop(void){lost();if(listener>=0)close(listener);listener=-1;role=0;status.active=false;}
 void pico_dual_ble_test_enabled(bool enabled){radio=enabled;lost();if(listener>=0)close(listener);listener=-1;}
+void pico_dual_ble_set_pairing_info(const char* ip,const char* c){
+ peer.found=ip&&*ip&&c&&strlen(c)==6;
+ if(peer.found){snprintf(peer.ip,sizeof(peer.ip),"%s",ip);snprintf(peer.code,sizeof(peer.code),"%s",c);}
+}
+esp_err_t pico_dual_ble_scan_start(void){return ESP_OK;}
+void pico_dual_ble_scan_stop(void){}
+void pico_dual_ble_peer_info(pico_dual_ble_peer_info_t* out){if(out)*out=peer;}
 static void pump(void){
  if(!role||!radio)return;
  if(fd<0){

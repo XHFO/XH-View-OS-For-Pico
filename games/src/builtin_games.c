@@ -966,18 +966,21 @@ static void pa_snake_single_rect(int direction,int *x,int *y,int *w,int *h)
     else if(direction==3){*x=488;*y=144;*w=48;*h=72;}
     else {*x=560;*y=144;*w=48;*h=72;}
 }
-static void pa_draw_controller(uint8_t *fb)
+static void pa_draw_controller(uint8_t *fb,int kind)
 {
     ps_view_t v=ps_view();
     // 说明并入右侧连接状态，避免副标题占用控制区顶部。
     // The subtitle is folded into the right-side status to keep the control area clear.
-    ps_heading(fb,"贪吃蛇 · 控制",NULL);
+    ps_heading(fb,kind==PA_2048?"2048 · 控制":"贪吃蛇 · 控制",NULL);
     // 连接状态放标题栏右侧，避开系统状态栏和中间功能键。
     // Put connection status at the right of the title bar, clear of the OS status bar and center controls.
     ps_text(fb,v.w-124,36,11,"蓝牙已连接",4);
     const char *arrows[]={"↑","→","↓","←"};
     for(int d=0;d<4;d++){int x,y,w,h;pa_controller_rect(d,&x,&y,&w,&h);ps_button(fb,x,y,w,h,arrows[d],false);}
-    if(v.landscape){
+    if(kind==PA_2048){
+        if(v.landscape)ps_button(fb,224,160,160,54,"重新开始",false);
+        else ps_button(fb,40,390,260,52,"重新开始",false);
+    }else if(v.landscape){
         ps_button(fb,224,96,160,54,"暂停 / 继续",false);
         ps_button(fb,224,160,160,54,"切换速度",false);
         ps_button(fb,224,224,160,54,"重新开始",false);
@@ -995,7 +998,7 @@ static void pa_poll_duo(void)
         int input=pga_duo_recv();if(input<0)break;
         if(input<=3){
             if(a_paused&&!a_save.snake_over){a_paused=false;ps_dirty();}
-            pa_direction(input);
+            if(a_kind==PA_2048)pa_shift(input);else pa_direction(input);
         }
         else if(input==PGA_DUO_PAUSE&&a_kind==PA_SNAKE&&!a_save.snake_over){a_paused=!a_paused;pa_clear_input();a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();ps_dirty();}
         else if(input==PGA_DUO_SPEED&&a_kind==PA_SNAKE){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();ps_dirty();}
@@ -1005,7 +1008,7 @@ static void pa_poll_duo(void)
 }
 static void pa_draw(uint8_t *fb){
     a_duo_role=pa_duo_role_now();
-    if(a_duo_role==PGA_DUO_CONTROLLER&&a_kind==PA_SNAKE){pa_draw_controller(fb);return;}
+    if(a_duo_role==PGA_DUO_CONTROLLER&&(a_kind==PA_SNAKE||a_kind==PA_2048)){pa_draw_controller(fb,a_kind);return;}
     ps_view_t v=ps_view();char b[80];
     bool remote=a_kind==PA_SNAKE&&a_duo_role==PGA_DUO_SCREEN;
     bool snake_single=a_kind==PA_SNAKE&&!remote&&v.landscape;
@@ -1067,7 +1070,7 @@ static bool pa_event(const ps_event_t *e){
     if(e->type==PS_CANCEL){a_swipe_tracking=a_contact_handled=false;return true;}
 #ifdef PICO_GAME_MODULE
     a_duo_role=pa_duo_role_now();
-    if(a_duo_role==PGA_DUO_CONTROLLER&&a_kind==PA_SNAKE){
+    if(a_duo_role==PGA_DUO_CONTROLLER&&(a_kind==PA_SNAKE||a_kind==PA_2048)){
         if(e->type==PS_SWIPE_U||e->type==PS_SWIPE_R||e->type==PS_SWIPE_D||e->type==PS_SWIPE_L){
             int d=e->type==PS_SWIPE_U?0:e->type==PS_SWIPE_R?1:e->type==PS_SWIPE_D?2:3;
             pga_duo_send((uint8_t)d);return true;
@@ -1077,7 +1080,10 @@ static bool pa_event(const ps_event_t *e){
             // Send on press, not on release-generated TAP; that was the main direction latency.
             for(int d=0;d<4;d++){int x,y,w,h;pa_controller_rect(d,&x,&y,&w,&h);if(ps_hit(e->x,e->y,x,y,w,h)){pga_duo_send((uint8_t)d);return true;}}
             ps_view_t v=ps_view();
-            if(v.landscape){
+            if(a_kind==PA_2048){
+                if(v.landscape&&ps_hit(e->x,e->y,224,160,160,54)){pga_duo_send(PGA_DUO_RESTART);return true;}
+                if(!v.landscape&&ps_hit(e->x,e->y,40,390,260,52)){pga_duo_send(PGA_DUO_RESTART);return true;}
+            }else if(v.landscape){
                 if(ps_hit(e->x,e->y,224,96,160,54)){pga_duo_send(PGA_DUO_PAUSE);return true;}
                 if(ps_hit(e->x,e->y,224,160,160,54)){pga_duo_send(PGA_DUO_SPEED);return true;}
                 if(ps_hit(e->x,e->y,224,224,160,54)){pga_duo_send(PGA_DUO_RESTART);return true;}
@@ -1291,6 +1297,7 @@ static void pg_duo_send_action(uint8_t code)
 }
 static uint8_t pg_duo_capture[2][8];
 static bool pg_duo_capture_ready;
+static uint32_t pg_duo_peer_generation,pg_duo_peer_moves;
 enum { PG_DUO_UNDO=10, PG_DUO_RESTART=11, PG_DUO_RULES=12 };
 
 static void pg_capture_counts(int side,int out[8])
@@ -1306,6 +1313,7 @@ static void pg_capture_counts(int side,int out[8])
 static int64_t pg_duo_last_send_ms;
 static uint32_t pg_duo_last_signature=UINT32_MAX;
 
+#ifdef PICO_GAME_MODULE
 static uint32_t pg_duo_pack_board(uint8_t *p)
 {
     uint32_t moves=g_pos.moves;
@@ -1319,6 +1327,7 @@ static uint32_t pg_duo_pack_board(uint8_t *p)
     p[28]=g_save.active?1:0;
     return moves^pg_duo_generation^(uint32_t)g_pos.result<<16^(uint32_t)g_pos.turn<<20^(uint32_t)g_save.active<<24;
 }
+#endif
 
 static void pg_duo_poll(void)
 {
@@ -1344,15 +1353,25 @@ static void pg_duo_poll(void)
         uint8_t packet[29];
         int n=(int)pga_duo_packet_recv(packet,sizeof(packet));
         if(n>=29&&packet[0]<PG_TYPES){
-            if(!g_save.active||g_pos.type!=packet[0]){
-                g_save.active=1;g_save.type=packet[0];g_save.level=packet[1];
-                pg_initial(&g_pos,packet[0],g_save.level);g_selected=-1;g_modal=0;g_feedback[0]=0;
+            uint32_t generation=(uint32_t)packet[8]|(uint32_t)packet[9]<<8|
+                (uint32_t)packet[10]<<16|(uint32_t)packet[11]<<24;
+            uint32_t moves=(uint32_t)packet[4]|(uint32_t)packet[5]<<8|
+                (uint32_t)packet[6]<<16|(uint32_t)packet[7]<<24;
+            bool stale=pg_duo_capture_ready&&g_pos.type==packet[0]&&
+                ((int32_t)(generation-pg_duo_peer_generation)<0||
+                 (generation==pg_duo_peer_generation&&moves<pg_duo_peer_moves));
+            if(!stale){
+                if(!g_save.active||g_pos.type!=packet[0]){
+                    g_save.active=1;g_save.type=packet[0];g_save.level=packet[1];
+                    pg_initial(&g_pos,packet[0],g_save.level);g_selected=-1;g_modal=0;g_feedback[0]=0;
+                }
+                g_pos.type=packet[0];g_pos.level=packet[1];g_pos.turn=(int8_t)packet[2]-1;g_pos.result=(int8_t)packet[3]-1;
+                g_pos.moves=(uint16_t)moves;
+                g_save.active=packet[28]&1;
+                for(int i=0;i<8;i++){pg_duo_capture[0][i]=packet[12+i];pg_duo_capture[1][i]=packet[20+i];}
+                pg_duo_peer_generation=generation;pg_duo_peer_moves=moves;
+                pg_duo_capture_ready=true;ps_dirty();
             }
-            g_pos.type=packet[0];g_pos.level=packet[1];g_pos.turn=(int8_t)packet[2]-1;g_pos.result=(int8_t)packet[3]-1;
-            g_pos.moves=(uint16_t)(packet[4]|packet[5]<<8|packet[6]<<16|packet[7]<<24);
-            g_save.active=packet[28]&1;
-            for(int i=0;i<8;i++){pg_duo_capture[0][i]=packet[12+i];pg_duo_capture[1][i]=packet[20+i];}
-            pg_duo_capture_ready=true;ps_dirty();
         }
     }
 #endif

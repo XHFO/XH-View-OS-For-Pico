@@ -53,6 +53,7 @@ typedef struct {
     uint32_t base_seq; ///< 基准版本，用于只应用一次。/ Baseline revision, applied once.
     bool calibration_request; ///< 从机请求主机重新校准。/ Secondary asks the primary to calibrate.
     bool peer_reading; ///< 对端当前是否仍在阅读页。/ Whether the peer is still on the reading page.
+    bool remote_open; ///< 主机收到任意一端的显式开书请求，可越过本机 away 锁。/ Primary accepted an explicit open request and may override local away.
     bool annotation_valid; ///< 是否收到划词/批注事件。/ Whether a selection/annotation event is available.
     uint32_t annotation_seq, annotation_chapter, annotation_start, annotation_end;
     uint8_t annotation_type;
@@ -67,6 +68,9 @@ void dl_status(const dual_link_t* link, dl_status_t* out);
 bool dl_open_path(dual_link_t* link, const char* path);
 /// 原子打开目标书的目标页组；同书等同跳页。/ Atomically open a book at its target spread; the same book seeks instead.
 bool dl_open_at(dual_link_t* link, const char* path, uint32_t page);
+/// 从书架显式续读：同书保留共享位置，不同书使用本机目标页作为初始页。
+/// Explicit shelf resume: retain a shared position for the current book, or use the local target page for another book.
+bool dl_open_resume_at(dual_link_t* link, const char* path, uint32_t page);
 bool dl_turn(dual_link_t* link, int direction);
 /// 请求包含目标页的双页组；两端均须连接，页码从 1 开始。/ Request the spread containing a one-based page; both devices must be connected.
 bool dl_seek(dual_link_t* link, uint32_t page);
@@ -79,6 +83,12 @@ bool dl_reflow_failed(dual_link_t* link, uint32_t revision);
 /// UI 确认主机该版本实际推屏成功，旧版本确认不会放行。/ Confirm successful primary presentation; stale revisions cannot release the secondary.
 bool dl_presented(dual_link_t* link, uint32_t revision);
 void dl_total(dual_link_t* link, uint32_t total);
+/// 标记一次显式开书意图，使被动 away 状态不会阻止本次远端合流。
+/// Mark an explicit open intent so passive away state cannot block this rejoin.
+void dl_remote_open_mark(dual_link_t* link);
+/// 主机已把显式远端开书应用完毕后清除，避免后续被动状态继续越过 away 锁。
+/// Clear after the primary applies an explicit remote open, so passive state cannot keep overriding away.
+void dl_remote_open_clear(dual_link_t* link);
 const char* dl_reading_path(const dual_link_t* link);
 const char* dl_font_path(const dual_link_t* link);
 /// 只读已校验目录条目；序号不接受外部路径。/ Read a verified catalog entry by index, never an external path.
@@ -117,15 +127,24 @@ bool dl_annotation(dual_link_t* link, uint8_t type, uint32_t chapter, uint32_t s
 /// Dual-game controller input: controller submits, screen consumes; carried by BLE control.
 bool dl_game_input(dual_link_t* link, uint8_t input);
 bool dl_game_take(dual_link_t* link, uint8_t* input);
-/// 主机请求从机同步打开同一游戏。 / Primary asks the secondary to open the same game.
+/// 任一端请求对端同步打开同一游戏；请求在断线后保留，收到 ACK 前重试。
+/// Either role may request the peer to open the same game; retain and retry until ACK.
 bool dl_game_open(dual_link_t* link, uint8_t kind);
-bool dl_game_open_take(dual_link_t* link, uint8_t* kind);
+/// 取出待应用的游戏打开请求；完成后必须调用 open_finish 发送 ACK/NACK。
+/// Take an incoming game-open request; finish_open must send its ACK/NACK.
+bool dl_game_open_take(dual_link_t* link, uint8_t* kind, uint32_t* session, uint32_t* request);
+void dl_game_open_finish(dual_link_t* link, uint32_t request, uint32_t session, bool accepted);
+/// 发起端读取本端请求结果；accepted=false 表示对端无法启动同一游戏。
+/// Initiator takes the final result; accepted=false means the peer could not start it.
+bool dl_game_open_result_take(dual_link_t* link, uint32_t* request, bool* accepted);
 /// 棋类吃子状态小包；主发从收。 / Captured-state packet; primary to secondary.
 bool dl_game_packet(dual_link_t* link, const void* data, size_t bytes);
 size_t dl_game_packet_take(dual_link_t* link, void* data, size_t capacity);
-/// 任一端退出游戏时通知对端一起退出。 / Either side can request the peer to leave the game.
+/// 任一端退出游戏时通知对端一起退出；同样等待 ACK。
+/// Either side may request the peer to leave the game; close is also ACKed.
 bool dl_game_close(dual_link_t* link);
-bool dl_game_close_take(dual_link_t* link);
+bool dl_game_close_take(dual_link_t* link, uint32_t* session, uint32_t* request);
+void dl_game_close_finish(dual_link_t* link, uint32_t request, bool accepted);
 
 /// BLE 已加密且认证后才交付控制帧；这些接口只从 UI 线程调用。
 /// Deliver control frames only after BLE encryption/authentication; UI-thread only.

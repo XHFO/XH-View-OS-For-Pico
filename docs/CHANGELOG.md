@@ -1,3 +1,11 @@
+## 0.40.0-dual73（独立双机实验版）
+
+- 游戏打开改为双向请求；加入 session、request ID、ACK/NACK、断线重连重声明和关闭确认，修复从机发起后主机不接力。
+- 双机开书不再把临时第 1 页立即写成阅读进度；从书架续读会把本机实际页作为新书位置提示。
+- 两端都持久化最后共享阅读快照；阅读活跃状态进入周期快照，划词批注增加确认重发。
+- 2048 进入双机主屏/从控输入模式；棋类吃子包校验 generation，拒绝旧局迟到状态。
+- Bidirectional game handoff with session/request IDs, ACK/NACK, reconnect reassertion and acknowledged close; prevent opening placeholders from overwriting reading progress; persist the shared snapshot on both readers; repeat reading/annotation state; add 2048 controller mode and reject stale board generations. Bump to dual73.
+
 ## 0.40.0-dual72（独立双机实验版）
 
 - 任一端发起游戏时重发打开请求，解决副机发起丢包/不联动。

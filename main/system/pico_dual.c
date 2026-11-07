@@ -57,6 +57,7 @@ static uint32_t base_applied;
 static bool reading_active = true;
 static bool reading_known;
 static bool local_away;
+static bool open_intent;
 static bool contact_latched;
 static uint32_t annotation_applied;
 static int64_t contact_same_since;
@@ -185,6 +186,7 @@ void ps_dual_suspend(void) {
         dual_session = NULL;
     }
     memset(&status, 0, sizeof(status));
+    open_intent = false;
     applied = presented = stored = content_revision = 0;
 }
 bool ps_dual_configure(int role, const char* host, const char* code) {
@@ -208,6 +210,10 @@ bool ps_dual_configure(int role, const char* host, const char* code) {
     }
     ps_dual_suspend();
     settings = next;
+    local_away = false;
+    open_intent = false;
+    reading_known = false;
+    reading_active = false;
     ps_dual_rotation_changed();
     ps_dirty();
     return true;
@@ -247,17 +253,15 @@ static bool start(void) {
     dl_orientation_restore(dual_session, &orientation);
     if (!guard_enabled) (void)dl_guard(dual_session, false);
     dl_reading_t saved = { 0 };
-    if (settings.role == 1) {
-        // 旧记录是新结构的76字节前缀；保留原书和页码，并使用原固定48字号。
-        // The old record is the 76-byte prefix; retain its book/spread with the former fixed size of 48.
-        bool restored = ps_load("dualreading2", &saved, sizeof(saved));
-        if (!restored) {
-            memset(&saved, 0, sizeof(saved));
-            restored = ps_load("dualreading1", &saved, offsetof(dl_reading_t, font_px));
-            saved.font_px = DL_FONT_DEFAULT;
-        }
-        if (restored) dl_restore(dual_session, &saved);
+    // 两端都保存最后共享位置；主机离线时从机仍可先恢复，重连后由主机快照收敛。
+    // Both roles persist the last shared position; the primary snapshot wins after reconnect.
+    bool restored = ps_load("dualreading2", &saved, sizeof(saved));
+    if (!restored) {
+        memset(&saved, 0, sizeof(saved));
+        restored = ps_load("dualreading1", &saved, offsetof(dl_reading_t, font_px));
+        saved.font_px = DL_FONT_DEFAULT;
     }
+    if (restored) dl_restore(dual_session, &saved);
     library_revision = book_store_revision();
     return true;
 }
@@ -388,19 +392,30 @@ int ps_dual_game_recv(void) {
     return dual_session && dl_game_take(dual_session, &input) ? (int)input : -1;
 }
 bool ps_dual_game_open(uint8_t kind) {
-    return dual_session && dl_game_open(dual_session, kind);
+    if (!ps_dual_enabled()) return false;
+    if (!dual_session && !start()) return false;
+    return dl_game_open(dual_session, kind);
 }
-bool ps_dual_game_open_take(uint8_t* kind) {
-    return dual_session && dl_game_open_take(dual_session, kind);
+bool ps_dual_game_open_take(uint8_t* kind, uint32_t* session, uint32_t* request) {
+    return dual_session && dl_game_open_take(dual_session, kind, session, request);
+}
+void ps_dual_game_open_finish(uint32_t request, uint32_t session, bool accepted) {
+    if (dual_session) dl_game_open_finish(dual_session, request, session, accepted);
+}
+bool ps_dual_game_open_result_take(uint32_t* request, bool* accepted) {
+    return dual_session && dl_game_open_result_take(dual_session, request, accepted);
 }
 bool ps_dual_game_packet_send(const void* data,size_t bytes) {
     return dual_session && dl_game_packet(dual_session, data, bytes);
 }
 bool ps_dual_game_close(void) {
-    return dual_session && dl_game_close(dual_session);
+    return ps_dual_enabled() && dual_session && dl_game_close(dual_session);
 }
-bool ps_dual_game_close_take(void) {
-    return dual_session && dl_game_close_take(dual_session);
+bool ps_dual_game_close_take(uint32_t* session, uint32_t* request) {
+    return dual_session && dl_game_close_take(dual_session, session, request);
+}
+void ps_dual_game_close_finish(uint32_t request, bool accepted) {
+    if (dual_session) dl_game_close_finish(dual_session, request, accepted);
 }
 size_t ps_dual_game_packet_recv(void* data,size_t capacity) {
     return dual_session ? dl_game_packet_take(dual_session, data, capacity) : 0;
@@ -489,8 +504,12 @@ bool ps_dual_orient(int rotation) {
     orientation_update();
     return true;
 }
-static bool open_request(const char* path, uint32_t page) {
-    if (!dual_session || !(page ? dl_open_at(dual_session, path, page) : dl_open_path(dual_session, path))) {
+static bool open_request(const char* path, uint32_t page, bool resume) {
+    bool opened = dual_session &&
+        (resume ? dl_open_resume_at(dual_session, path, page || 1)
+                : page ? dl_open_at(dual_session, path, page)
+                       : dl_open_path(dual_session, path));
+    if (!opened) {
         ps_toast("请等待双机连接和书库同步完成");
         return false;
     }
@@ -503,10 +522,20 @@ static bool open_request(const char* path, uint32_t page) {
     return true;
 }
 bool ps_dual_open(const char* path) {
-    return !ps_dual_enabled() || open_request(path, 0);
+    if (!ps_dual_enabled()) return true;
+    bool ok=open_request(path, 0, false);
+    if (ok) { local_away=false; open_intent=true; dl_remote_open_mark(dual_session); }
+    return ok;
 }
 bool ps_dual_open_at(const char* path, uint32_t page) {
-    return ps_dual_enabled() && page && open_request(path, page);
+    bool ok=ps_dual_enabled() && page && open_request(path, page, false);
+    if (ok) { local_away=false; open_intent=true; dl_remote_open_mark(dual_session); }
+    return ok;
+}
+bool ps_dual_open_resume(const char* path, uint32_t page) {
+    bool ok=ps_dual_enabled() && path && page && open_request(path, page, true);
+    if (ok) { local_away=false; open_intent=true; dl_remote_open_mark(dual_session); }
+    return ok;
 }
 bool ps_dual_turn(int direction) {
     if (!ps_dual_enabled()) return false;
@@ -616,6 +645,8 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         reading_known = true;
         reading_active = true;
         local_away = false;
+        open_intent = false;
+        dl_remote_open_clear(dual_session);
         (void)dl_reading_active(dual_session, true);
         ps_dirty();
     } else if (!active && reading_known && reading_active) {
@@ -688,17 +719,20 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
          (status.expected && (uint64_t)before.received * 20 / status.expected !=
                                  (uint64_t)status.received * 20 / status.expected)))
         ps_dirty();
-    if (settings.role == 1 && !status.reading.reflow_pending && status.reading.revision != stored && dl_reading_path(dual_session)) {
+    if (!status.reading.reflow_pending && status.reading.revision != stored && dl_reading_path(dual_session)) {
         if (ps_store("dualreading2", &status.reading, sizeof(status.reading)))
             stored = status.reading.revision;
     }
     const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
-    if (ui_idle && status.connected && status.synced && !local_away &&
+    bool role_may_apply = settings.role == 1 || status.left_ready;
+    bool explicit_open = open_intent || status.remote_open;
+    if (ui_idle && status.connected && status.synced && role_may_apply && (!local_away || explicit_open) &&
         path && font && status.reading.revision != applied &&
         (app == &app_book || (app->product_shell && idle_reading_route()))) {
         if (app_book_dual_apply(path, font, status.reading.spread + (settings.role == 2 ? 2 : 1),
                 status.reading.font_px, status.reading.reflow_pending, status.reading.revision)) {
             applied = status.reading.revision;
+            local_away = false;
             ps_power_activity(ctx->now_ms);
             if (app != &app_book) ps_legacy(&app_book);
         }
@@ -1121,10 +1155,35 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     bool guard = !strncmp(line, "RPICO DUAL GUARD ", 17);
     bool calibrate = !strcmp(line, "RPICO DUAL CALIBRATE");
     bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
-    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !guard && !calibrate && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
+    bool game_item = !strncmp(line, "RPICO DUAL GAME ITEM ", 21);
+    bool game_open = !strncmp(line, "RPICO DUAL GAME OPEN ", 21);
+    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock &&
+        !guard && !calibrate && !font && !game_item && !game_open && strcmp(line, "RPICO DUAL STATUS")) return false;
     load();
     bool accepted = true;
-    if (item || open) {
+    if (game_item || game_open) {
+        const char* digits=line+21;
+        unsigned index=0;
+        accepted=*digits!=0&&strlen(digits)<=3;
+        for(const char* c=digits;accepted&&*c;++c){
+            if(*c<'0'||*c>'9')accepted=false;
+            else index=index*10+(unsigned)(*c-'0');
+        }
+        const char* id=NULL;const char* title=NULL;
+        ps_games_rescan();
+        accepted=accepted&&ps_games_item(index,&id,&title);
+        if(game_item){
+            snprintf(out,capacity,
+                "{\"dual_game\":true,\"accepted\":%s,\"index\":%u,\"id\":\"%s\",\"title\":\"%s\"}",
+                accepted?"true":"false",index,id?id:"",title?title:"");
+            return true;
+        }
+        if(accepted){
+            ps_navigate(PS_GAMES);
+            accepted=ps_games_open_id(id);
+            if(!accepted&&out[0]==0)snprintf(out,capacity,"{\"dual_game\":true,\"accepted\":false}");
+        }
+    } else if (item || open) {
         const char* digits = line + 16;
         unsigned index = 0;
         accepted = *digits != 0 && strlen(digits) <= 3;
@@ -1208,7 +1267,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
         "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
         "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
-        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"base_valid\":%s,\"cal_request\":%s,\"peer_reading\":%s,\"orientation\":%u,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"base_valid\":%s,\"cal_request\":%s,\"peer_reading\":%s,\"remote_open\":%s,\"orientation\":%u,"
         "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
         accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
         state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
@@ -1221,7 +1280,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         state.listed?"true":"false",state.peer_listed?"true":"false",
         state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
         (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
-        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,status.base_valid?"true":"false",status.calibration_request?"true":"false",status.peer_reading?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
+        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,status.base_valid?"true":"false",status.calibration_request?"true":"false",status.peer_reading?"true":"false",status.remote_open?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
         book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
     return true;

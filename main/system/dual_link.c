@@ -82,7 +82,7 @@ static void random_bytes(void* p, size_t n) {
 #define CHUNK 4096u
 #define WIRE_MAX (CHUNK + 64u)
 #define PROTOCOL 3
-#define CONTROL_VERSION 4
+#define CONTROL_VERSION 5
 enum {
     CHALLENGE = 1,
     PROOF,
@@ -154,8 +154,12 @@ struct dual_link {
     uint32_t base_seq;
     bool calibration_request;
     bool reading_active, peer_reading, reading_dirty;
+    bool remote_open;
     bool annotation_dirty, annotation_valid;
+    bool annotation_ack_pending;
     uint32_t annotation_seq;
+    uint32_t annotation_ack_seq;
+    int64_t annotation_sent;
     uint8_t annotation_type;
     uint32_t annotation_chapter, annotation_start, annotation_end;
     char annotation_text[80];
@@ -163,12 +167,23 @@ struct dual_link {
     bool orientation_dirty, orientation_seen, control_compatible, orientation_last;
     uint8_t orientation_request;
     uint8_t game_input;
-    bool game_pending, game_ready, game_open_pending, game_open_ready;
+    bool game_pending, game_ready;
+    bool game_active, game_open_pending, game_open_ready;
     uint8_t game_open_kind;
-    int64_t game_open_sent, game_open_until;
+    uint32_t game_kind, game_session, game_open_request;
+    int64_t game_open_sent;
+    uint32_t game_ready_session, game_ready_request;
+    bool game_result_ready, game_result_accepted;
+    uint32_t game_result_request;
+    bool game_ack_pending, game_ack_accepted;
+    uint32_t game_ack_request, game_ack_session;
     uint8_t game_payload[32], game_payload_n;
     bool game_payload_pending, game_payload_ready;
-    bool game_close_pending, game_close_ready;
+    bool game_close_pending, game_close_ready, game_close_ack_pending, game_close_ack_accepted;
+    uint32_t game_close_request;
+    int64_t game_close_sent;
+    uint32_t game_close_ready_session, game_close_ready_request;
+    uint32_t game_close_ack_request;
     bool control_seen, control_connected, catalog_valid, catalog_dirty, peer_catalog_valid;
     uint8_t catalog[32], peer_catalog[32];
     unsigned catalog_count;
@@ -1009,13 +1024,26 @@ void dl_control_connected(dual_link_t* d, bool connected) {
     d->orientation_dirty = true; d->orientation_last = false;
     d->request_pending = false; d->request_at = 0;
     d->game_pending = d->game_ready = false;
-    d->game_open_pending = d->game_open_ready = false; d->game_open_sent = d->game_open_until = 0;
     d->game_payload_pending = d->game_payload_ready = false;
-    d->game_close_pending = d->game_close_ready = false;
+    d->game_open_ready = d->game_close_ready = false;
+    d->game_ack_pending = d->game_close_ack_pending = false;
+    d->game_open_sent = d->game_close_sent = 0;
+    d->annotation_sent = 0;
+    d->peer_reading = false;
+    d->reading_dirty = true;
+    if (connected) {
+        // 已确认的游戏会话在重连后重新声明；对端可按 session 幂等确认。
+        // Reassert an accepted game session after reconnect; the peer can ACK it idempotently.
+        if (d->game_active && d->game_session) {
+            if (++d->game_open_request == 0) d->game_open_request = 1;
+            d->game_open_pending = true;
+            d->game_open_sent = 0;
+        }
+        if (d->game_close_pending) d->game_close_sent = 0;
+    }
     d->left_ready = false;
     d->request_sequence = d->peer_sequence = 0;
     d->face_sent = false;
-    d->reading_dirty = !d->reading_active;
     d->catalog_dirty = d->state_dirty = true; d->control_sent = 0;
 }
 size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
@@ -1026,24 +1054,39 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         (d->cfg.role == 1 || d->orientation_request);
     // 先排空待发状态再发周期心跳，慢速tick不能被心跳反复插队。
     // Drain queued updates before periodic heartbeats so slow ticks cannot starve them.
-    if (d->game_close_pending && d->control_connected) {
-        d->game_open_pending = false;
-        p[0] = 23; d->game_close_pending = false; return 1;
+    if (d->game_close_ack_pending && d->control_connected) {
+        p[0] = 25; p[1] = d->game_close_ack_accepted; put32(p + 2, d->game_close_ack_request);
+        d->game_close_ack_pending = false; return 6;
+    }
+    if (d->annotation_ack_pending && d->control_connected) {
+        p[0] = 16; put32(p + 1, d->annotation_ack_seq);
+        d->annotation_ack_pending = false; return 5;
+    }
+    if (d->game_ack_pending && d->control_connected) {
+        p[0] = 24; p[1] = d->game_ack_accepted;
+        put32(p + 2, d->game_ack_request); put32(p + 6, d->game_ack_session);
+        d->game_ack_pending = false; return 10;
+    }
+    if (d->game_close_pending && d->control_connected &&
+        (!d->game_close_sent || d->now - d->game_close_sent >= 500)) {
+        p[0] = 23; put32(p + 1, d->game_session); put32(p + 5, d->game_close_request);
+        d->game_close_sent = d->now; return 9;
     }
     if (d->game_open_pending && d->control_connected &&
         (!d->game_open_sent || d->now - d->game_open_sent >= 500)) {
         p[0] = 21; p[1] = d->game_open_kind;
-        d->game_open_sent = d->now;
-        if (d->now >= d->game_open_until) d->game_open_pending = false;
-        return 2;
+        put32(p + 2, d->game_session); put32(p + 6, d->game_open_request);
+        p[10] = (uint8_t)d->cfg.role;
+        d->game_open_sent = d->now; return 11;
     }
     if (d->game_payload_pending && d->control_connected) {
-        p[0] = 22; p[1] = d->game_payload_n; memcpy(p + 2, d->game_payload, d->game_payload_n);
-        d->game_payload_pending = false; return 2 + d->game_payload_n;
+        p[0] = 22; put32(p + 1, d->game_session); p[5] = d->game_payload_n;
+        memcpy(p + 6, d->game_payload, d->game_payload_n);
+        d->game_payload_pending = false; return 6 + d->game_payload_n;
     }
     if (d->cfg.role == 2 && d->game_pending && d->control_connected) {
-        p[0] = 20; p[1] = d->game_input; d->game_pending = false;
-        return 2;
+        p[0] = 20; put32(p + 1, d->game_session); p[5] = d->game_input;
+        d->game_pending = false; return 6;
     }
     if (d->catalog_dirty || (d->now - d->control_sent >= 1500 && !reading_pending && !orientation_pending)) {
         p[0] = 1; p[1] = d->catalog_valid;
@@ -1051,7 +1094,7 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         d->catalog_dirty = false; d->control_sent = d->now;
         // 周期校验后重发最终状态，覆盖通知丢失，重复帧不重复翻页。
         // Refresh authoritative state after the heartbeat; duplicates never advance twice.
-        d->state_dirty = d->orientation_dirty = true;
+        d->state_dirty = d->orientation_dirty = d->guard_dirty = d->reading_dirty = true;
         return 35;
     }
     if (orientation_pending && (!reading_pending || !d->orientation_last)) {
@@ -1066,13 +1109,14 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
             d->orientation_dirty = false; return 6;
         }
     }
-    if (d->annotation_dirty && d->control_compatible) {
+    if (d->annotation_dirty && d->control_compatible &&
+        (!d->annotation_sent || d->now - d->annotation_sent >= 500)) {
         size_t len = strnlen(d->annotation_text, DL_CONTROL_MAX - 19);
         p[0] = 15; p[1] = d->annotation_type;
         put32(p + 2, d->annotation_seq); put32(p + 6, d->annotation_chapter);
         put32(p + 10, d->annotation_start); put32(p + 14, d->annotation_end);
         p[18] = (uint8_t)len; memcpy(p + 19, d->annotation_text, len);
-        d->annotation_dirty = false;
+        d->annotation_sent = d->now;
         return 19 + len;
     }
     if (!control_ready(d)) return 0;
@@ -1082,7 +1126,9 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         put32(p + 41, d->reading.total); memcpy(p + 45, d->reading.font, 32);
         put32(p + 77, d->peer_sequence); p[81] = d->left_ready;
         p[82] = d->reading.font_px; p[83] = d->reading.reflow_pending; p[84] = d->reading.reflow_from_px;
-        d->state_dirty = false; d->orientation_last = false; return 85;
+        p[85] = d->reading_active;
+        p[86] = d->remote_open;
+        d->state_dirty = false; d->orientation_last = false; return 87;
     }
     if (d->guard_dirty && d->control_compatible) {
         p[0] = d->cfg.role == 1 ? 9 : 10;
@@ -1133,6 +1179,11 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         d->peer_catalog_valid = p[1]; memcpy(d->peer_catalog, p + 2, 32);
         return true;
     }
+    if (p[0] == 16) {
+        if (n != 5 || !get32(p + 1)) return false;
+        if (get32(p + 1) == d->annotation_seq) d->annotation_dirty = false;
+        return true;
+    }
     if (p[0] == 15) {
         if (n < 19 || p[18] > n - 19 || p[18] > sizeof(d->annotation_text) - 1) return false;
         d->annotation_seq = get32(p + 2);
@@ -1143,6 +1194,8 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         memcpy(d->annotation_text, p + 19, p[18]);
         d->annotation_text[p[18]] = 0;
         d->annotation_valid = true;
+        d->annotation_ack_seq = d->annotation_seq;
+        d->annotation_ack_pending = true;
         return true;
     }
     if (p[0] == 14) {
@@ -1196,28 +1249,84 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         }
         return true;
     }
+    if (p[0] == 25) {
+        if (n != 6 || p[1] > 1 || !get32(p + 2)) return false;
+        if (d->game_close_pending && get32(p + 2) == d->game_close_request) {
+            if (!p[1]) return true;
+            d->game_close_pending = false;
+            d->game_session = 0;
+        }
+        return true;
+    }
+    if (p[0] == 24) {
+        if (n != 10 || p[1] > 1 || !get32(p + 2) || !get32(p + 6) ||
+            get32(p + 2) != d->game_open_request) return true;
+        d->game_open_pending = false;
+        d->game_result_ready = true;
+        d->game_result_request = get32(p + 2);
+        d->game_result_accepted = p[1] != 0;
+        if (d->game_result_accepted) {
+            d->game_active = true;
+            d->game_session = get32(p + 6);
+        } else {
+            d->game_active = false;
+            d->game_session = 0;
+        }
+        return true;
+    }
     if (p[0] == 23) {
-        if (n != 1) return false;
-        d->game_close_ready = true; return true;
+        if (n != 9 || !get32(p + 1) || !get32(p + 5)) return false;
+        uint32_t session = get32(p + 1);
+        if (d->game_session && session != d->game_session && d->game_active) {
+            d->game_close_ack_request = get32(p + 5);
+            d->game_close_ack_accepted = false;
+            d->game_close_ack_pending = true;
+            return true;
+        }
+        d->game_close_ready = true;
+        d->game_close_ready_session = session;
+        d->game_close_ready_request = get32(p + 5);
+        return true;
     }
     if (p[0] == 22) {
-        if (d->cfg.role != 2 || n < 3 || p[1] > n - 2 || p[1] > sizeof(d->game_payload)) return false;
-        memcpy(d->game_payload, p + 2, p[1]); d->game_payload_n = p[1]; d->game_payload_ready = true;
+        if (d->cfg.role != 2 || n < 6 || !get32(p + 1) || p[5] > n - 6 ||
+            p[5] > sizeof(d->game_payload)) return false;
+        if (!d->game_active || get32(p + 1) != d->game_session) return true;
+        memcpy(d->game_payload, p + 6, p[5]); d->game_payload_n = p[5]; d->game_payload_ready = true;
         return true;
     }
-    if (p[0] == 21 && n == 2) {
-        if (d->cfg.role != 2) return false;
+    if (p[0] == 21) {
+        if (n != 11 || p[10] < 1 || p[10] > 2 || p[10] == d->cfg.role ||
+            !get32(p + 2) || !get32(p + 6)) return false;
+        uint32_t session = get32(p + 2);
+        uint32_t request = get32(p + 6);
+        if (d->game_active && d->game_session == session) {
+            d->game_ack_request = request; d->game_ack_session = session;
+            d->game_ack_accepted = true; d->game_ack_pending = true;
+            return true;
+        }
+        // 主机已建立的会话优先；从机不能打断主机的活动会话。
+        // The primary's established session wins; a secondary cannot interrupt it.
+        if (d->cfg.role == 1 && d->game_active && d->game_session) {
+            d->game_ack_request = request; d->game_ack_session = session;
+            d->game_ack_accepted = false; d->game_ack_pending = true;
+            return true;
+        }
         d->game_open_kind = p[1]; d->game_open_ready = true;
+        d->game_ready_session = session;
+        d->game_ready_request = request;
         return true;
     }
-    if (p[0] == 20 && n == 2) {
-        if (d->cfg.role != 1) return false;
-        d->game_input = p[1]; d->game_ready = true;
+    if (p[0] == 20) {
+        if (d->cfg.role != 1 || n != 6 || !get32(p + 1)) return false;
+        if (!d->game_active || get32(p + 1) != d->game_session) return true;
+        d->game_input = p[5]; d->game_ready = true;
         return true;
     }
     if (!control_ready(d)) return false;
     if (p[0] == 2 && d->cfg.role == 2) {
-        if (n != 85 || p[81] > 1 || !valid_px(p[82]) || p[83] > 1 || (p[81] && p[83]) ||
+        if (n != 87 || p[81] > 1 || !valid_px(p[82]) || p[83] > 1 || (p[81] && p[83]) ||
+            p[85] > 1 || p[86] > 1 ||
             (p[83] && !valid_px(p[84])) ||
             !get32(p + 33) || get32(p + 37) % 2 ||
             find_id(d, p + 1) < 0 || (nonzero(p + 45) && find_id(d, p + 45) < 0)) return false;
@@ -1232,6 +1341,8 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         d->reading.revision = revision; d->reading.spread = get32(p + 37);
         d->reading.total = get32(p + 41);
         d->reading.font_px = p[82]; d->reading.reflow_pending = p[83]; d->reading.reflow_from_px = p[84];
+        d->peer_reading = p[85] != 0;
+        d->remote_open = p[86] != 0;
         if (get32(p + 77) >= d->request_sequence) d->request_pending = false;
         return true;
     }
@@ -1247,6 +1358,7 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
     d->peer_sequence = seq;
     if (get32(p + 1) == d->reading.revision) {
         if (p[0] == 3) {
+            d->remote_open = true;
             bool current = same(d->reading.book, p + 9, 32);
             uint32_t spread = (get32(p + 41) - 1) & ~1u;
             if (!current || (!d->reading.reflow_pending && !d->sending && !d->receiving &&
@@ -1296,6 +1408,7 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->base_seq = d->base_seq;
     out->calibration_request = d->calibration_request;
     out->peer_reading = d->peer_reading;
+    out->remote_open = d->remote_open;
     out->annotation_valid = d->annotation_valid;
     out->annotation_seq = d->annotation_seq;
     out->annotation_type = d->annotation_type;
@@ -1358,26 +1471,50 @@ bool dl_open_path(dual_link_t* d, const char* path) {
 bool dl_open_at(dual_link_t* d, const char* path, uint32_t page) {
     return open_request(d, path, page, false);
 }
-bool dl_game_close(dual_link_t* d) {
-    if (!d || !d->control_connected) return false;
-    d->game_close_pending = true; return true;
+bool dl_open_resume_at(dual_link_t* d, const char* path, uint32_t page) {
+    return open_request(d, path, page, true);
 }
-bool dl_game_close_take(dual_link_t* d) {
-    if (!d || !d->game_close_ready) return false;
-    d->game_close_ready = false; return true;
+bool dl_game_close(dual_link_t* d) {
+    if (!d) return false;
+    if (++d->game_close_request == 0) d->game_close_request = 1;
+    d->game_close_pending = true;
+    d->game_close_sent = 0;
+    d->game_open_pending = false;
+    d->game_pending = d->game_ready = false;
+    d->game_payload_pending = d->game_payload_ready = false;
+    d->game_active = false;
+    return true;
+}
+bool dl_game_close_take(dual_link_t* d, uint32_t* session, uint32_t* request) {
+    if (!d || !session || !request || !d->game_close_ready) return false;
+    *session = d->game_close_ready_session;
+    *request = d->game_close_ready_request;
+    d->game_close_ready = false;
+    return true;
+}
+void dl_game_close_finish(dual_link_t* d, uint32_t request, bool accepted) {
+    if (!d || !request) return;
+    d->game_close_ack_request = request;
+    d->game_close_ack_accepted = accepted;
+    d->game_close_ack_pending = true;
+    if (accepted && d->game_session == d->game_close_ready_session) {
+        d->game_active = false;
+    }
 }
 bool dl_game_packet(dual_link_t* d, const void* data, size_t bytes) {
-    if (!d || !data || !bytes || bytes > sizeof(d->game_payload) || d->cfg.role != 1 || !d->control_connected) return false;
+    if (!d || !data || !bytes || bytes > sizeof(d->game_payload) || d->cfg.role != 1 ||
+        !d->game_active || !d->game_session) return false;
     memcpy(d->game_payload, data, bytes); d->game_payload_n = (uint8_t)bytes; d->game_payload_pending = true;
     return true;
 }
 size_t dl_game_packet_take(dual_link_t* d, void* data, size_t capacity) {
-    if (!d || !data || d->cfg.role != 2 || !d->game_payload_ready || d->game_payload_n > capacity) return 0;
+    if (!d || !data || d->cfg.role != 2 || !d->game_active || !d->game_payload_ready ||
+        d->game_payload_n > capacity) return 0;
     memcpy(data, d->game_payload, d->game_payload_n); d->game_payload_ready = false;
     return d->game_payload_n;
 }
 bool dl_game_input(dual_link_t* d, uint8_t input) {
-    if (!d || d->cfg.role != 2 || !d->control_connected) return false;
+    if (!d || d->cfg.role != 2 || !d->game_active || !d->game_session) return false;
     d->game_input = input; d->game_pending = true;
     return true;
 }
@@ -1387,14 +1524,52 @@ bool dl_game_take(dual_link_t* d, uint8_t* input) {
     return true;
 }
 bool dl_game_open(dual_link_t* d, uint8_t kind) {
-    if (!d || !d->control_connected) return false;
-    d->game_open_kind = kind; d->game_open_pending = true;
-    d->game_open_sent = 0; d->game_open_until = d->now + 3000;
+    if (!d) return false;
+    if (!d->game_active || !d->game_session) {
+        random_bytes(&d->game_session, sizeof(d->game_session));
+        if (!d->game_session) d->game_session = 1;
+    }
+    if (++d->game_open_request == 0) d->game_open_request = 1;
+    d->game_kind = kind;
+    d->game_open_kind = kind;
+    d->game_active = true;
+    d->game_open_pending = true;
+    d->game_open_sent = 0;
+    d->game_result_ready = false;
+    d->game_close_pending = false;
+    d->game_pending = d->game_ready = false;
+    d->game_payload_pending = d->game_payload_ready = false;
     return true;
 }
-bool dl_game_open_take(dual_link_t* d, uint8_t* kind) {
-    if (!d || !kind || !d->game_open_ready) return false;
-    *kind = d->game_open_kind; d->game_open_ready = false;
+bool dl_game_open_take(dual_link_t* d, uint8_t* kind, uint32_t* session, uint32_t* request) {
+    if (!d || !kind || !session || !request || !d->game_open_ready) return false;
+    *kind = d->game_open_kind;
+    *session = d->game_ready_session;
+    *request = d->game_ready_request;
+    d->game_open_ready = false;
+    return true;
+}
+void dl_game_open_finish(dual_link_t* d, uint32_t request, uint32_t session, bool accepted) {
+    if (!d || !request || !session) return;
+    d->game_ack_request = request;
+    d->game_ack_session = session;
+    d->game_ack_accepted = accepted;
+    d->game_ack_pending = true;
+    if (accepted) {
+        d->game_active = true;
+        d->game_session = session;
+        d->game_kind = d->game_open_kind;
+        d->game_open_pending = false;
+    } else {
+        d->game_active = false;
+        d->game_session = 0;
+    }
+}
+bool dl_game_open_result_take(dual_link_t* d, uint32_t* request, bool* accepted) {
+    if (!d || !request || !accepted || !d->game_result_ready) return false;
+    *request = d->game_result_request;
+    *accepted = d->game_result_accepted;
+    d->game_result_ready = false;
     return true;
 }
 bool dl_turn(dual_link_t* d, int direction) {
@@ -1477,6 +1652,16 @@ void dl_total(dual_link_t* d, uint32_t total) {
     if (d->reading.spread >= total) d->reading.spread = (total - 1) & ~1u;
     publish(d, NULL, 0);
 }
+void dl_remote_open_clear(dual_link_t* d) {
+    if (!d || !d->remote_open) return;
+    d->remote_open = false;
+    d->state_dirty = true;
+}
+void dl_remote_open_mark(dual_link_t* d) {
+    if (!d) return;
+    d->remote_open = true;
+    d->state_dirty = true;
+}
 const char* dl_reading_path(const dual_link_t* d) {
     if (!d) return NULL;
     int i = find_id(d, d->reading.book);
@@ -1511,7 +1696,7 @@ void dl_rescan(dual_link_t* d) {
     d->retry_at = 0;
 }
 void dl_restore(dual_link_t* d, const dl_reading_t* s) {
-    if (d && s && d->cfg.role == 1 && s->revision && s->spread % 2 == 0 && !s->reflow_pending) {
+    if (d && s && s->revision && s->spread % 2 == 0 && !s->reflow_pending) {
         d->reading = *s;
         if (!valid_px(d->reading.font_px)) d->reading.font_px = DL_FONT_DEFAULT;
         d->reading.reflow_pending = false;
