@@ -2,8 +2,11 @@
  * SPDX-FileCopyrightText: 2026 mindreset
  * SPDX-License-Identifier: Apache-2.0
  *
- * 基于 MindReset Read Pico 官方 E0470 波形与刷新路径实现。
- * Built on the MindReset Read Pico E0470 waveform and refresh path.
+ * 错相揭页实现源自 Kiiko 厂长（kiikoread / Pico Reader），并基于 MindReset
+ * Read Pico 的 E0470 波形与刷新路径适配。
+ * The staggered page-turn implementation originates from Kiiko (kiikoread /
+ * Pico Reader) and is adapted onto the MindReset Read Pico E0470 waveform and
+ * refresh path.
  * 错相揭页引擎。应用只依赖本公开接口，不依赖条带或 LUT 的内部布局。
  * Staggered page-turn engine. Applications depend on this public API, not the internal band or LUT layout.
  * 用户最新指定阅读与主页均用8带、11090us节拍；保留各自灰阶序列，原错开启动接口仍可用。
@@ -28,7 +31,8 @@ typedef enum {
 } e0470_turn_dir_t;
 
 #define E0470_TURN_DEFAULT_TICK_US 12000
-// PR17快档只缩短软件补等，不改变单次扫描或每像素相位。/ PR17 fast pacing changes only software padding, never a scan or a pixel's phases.
+// 快档只缩短软件补等，不改变单次扫描或每像素相位。
+// Fast pacing changes only software padding, never a scan or a pixel's phases.
 #define E0470_TURN_FAST_TICK_US 11090
 #define E0470_TURN_FAST_BANDS 8
 

@@ -206,6 +206,12 @@ AP 与已有 WiFi 均提供传书网页二维码；热点页可切换连接 WiFi
 - [epdiy](https://github.com/vroland/epdiy)：墨水屏时序与渲染。本仓库为按本板
   LCD 路径裁剪的 fork，LGPL-3.0-or-later，改动清单见
   [components/epdiy/LICENSE](components/epdiy/LICENSE)。
+- 翻页波形与错相揭页实现来自 Kiiko 厂长维护的
+  [kiikoread / Pico Reader](https://github.com/wegooo-cell/read-pico-reader)。
+  MindReset 官方文档列有该社区固件及下载入口：
+  [Read Pico 系统列表](https://dot.mindreset.tech/docs/read_0/start/kiikoread)。本仓库按双机阅读、
+  E0470 波形和 `epdiy` 刷新路径适配，说明见
+  [components/e0470_page_turn](components/e0470_page_turn/README.md)。
 - 使用 MiSans 字体。默认 TF 完整字库为未经修改的官方 MiSans 可变字体，作为软件组件随附；适用 [MiSans 许可](licenses/misans/LICENSE.zh-CN.txt) 及 [官方协议原件](licenses/misans/MiSans-License.pdf)，详见 [部署说明](sdcard/README.md)。
 - [stb_truetype](https://github.com/nothings/stb)：字形光栅化，公共领域。
 - [pwm_audio](https://github.com/espressif/esp-iot-solution/tree/master/components/audio/pwm_audio)：

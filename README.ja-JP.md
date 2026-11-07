@@ -210,6 +210,13 @@ AP と既存 WiFi の両モードで転送ページの QR コードを表示し�
 - [epdiy](https://github.com/vroland/epdiy)：電子ペーパーのタイミング制御と描画。
   本ボードの LCD 経路に合わせて機能を絞ったフォークです。LGPL-3.0-or-later。
   変更内容は [components/epdiy/LICENSE](components/epdiy/LICENSE) に記載しています。
+- E0470 のページめくり波形とスタガード方式のページめくり実装は、Kiiko 氏が運営する
+  [kiikoread / Pico Reader](https://github.com/wegooo-cell/read-pico-reader) に由来します。
+  MindReset 公式ドキュメントにも
+  [コミュニティファームウェアの案内](https://dot.mindreset.tech/docs/read_0/start/kiikoread)
+  が掲載されています。本リポジトリではデュアルリーダー、E0470 波形、`epdiy` の
+  描画経路向けに調整しています。詳細は
+  [components/e0470_page_turn](components/e0470_page_turn/README.md) を参照してください。
 - MiSans を使用しています。既定の完全な TF フォントは公式の未変更 MiSans 可変フォントです。ソフトウェアの構成要素として [MiSans ライセンス](licenses/misans/LICENSE.zh-CN.txt) と [公式契約原本](licenses/misans/MiSans-License.pdf)に従って同梱します。[配置説明](sdcard/README.md)を参照してください。
 - [stb_truetype](https://github.com/nothings/stb)：グリフのラスタライズ。パブリックドメイン。
 - [pwm_audio](https://github.com/espressif/esp-iot-solution/tree/master/components/audio/pwm_audio)：
