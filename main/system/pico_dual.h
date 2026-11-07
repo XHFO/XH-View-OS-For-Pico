@@ -38,6 +38,16 @@ int ps_dual_peer_face(void);
 /// Whether the primary confirmed this revision's presentation; the secondary may then paint.
 bool ps_dual_left_ready(void);
 bool ps_dual_peer_reading(void);
+/// 双机游戏：1 屏幕机，2 手柄机，0 单机/未连接。 / Dual game: 1 screen, 2 controller, 0 standalone/offline.
+uint8_t ps_dual_game_role(void);
+bool ps_dual_game_send(uint8_t input);
+int ps_dual_game_recv(void);
+bool ps_dual_game_open(uint8_t kind);
+bool ps_dual_game_open_take(uint8_t* kind);
+bool ps_dual_game_packet_send(const void* data,size_t bytes);
+bool ps_dual_game_close(void);
+bool ps_dual_game_close_take(void);
+size_t ps_dual_game_packet_recv(void* data,size_t capacity);
 void ps_dual_set_local_away(bool away);
 /// 取一次“手动翻转待应用”标记，避免从机锁定阻止手动翻转。
 /// Take the one-shot manual-flip marker so a locked secondary still applies its own flip.

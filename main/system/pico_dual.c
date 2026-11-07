@@ -375,6 +375,36 @@ int ps_dual_peer_face(void) {
 bool ps_dual_left_ready(void) {
     return status.left_ready;
 }
+uint8_t ps_dual_game_role(void) {
+    load();
+    if (!settings.role || !dual_session || !status.connected) return 0;
+    return settings.role == 1 ? 1 : 2;
+}
+bool ps_dual_game_send(uint8_t input) {
+    return dual_session && dl_game_input(dual_session, input);
+}
+int ps_dual_game_recv(void) {
+    uint8_t input;
+    return dual_session && dl_game_take(dual_session, &input) ? (int)input : -1;
+}
+bool ps_dual_game_open(uint8_t kind) {
+    return dual_session && dl_game_open(dual_session, kind);
+}
+bool ps_dual_game_open_take(uint8_t* kind) {
+    return dual_session && dl_game_open_take(dual_session, kind);
+}
+bool ps_dual_game_packet_send(const void* data,size_t bytes) {
+    return dual_session && dl_game_packet(dual_session, data, bytes);
+}
+bool ps_dual_game_close(void) {
+    return dual_session && dl_game_close(dual_session);
+}
+bool ps_dual_game_close_take(void) {
+    return dual_session && dl_game_close_take(dual_session);
+}
+size_t ps_dual_game_packet_recv(void* data,size_t capacity) {
+    return dual_session ? dl_game_packet_take(dual_session, data, capacity) : 0;
+}
 bool ps_dual_peer_reading(void) {
     return status.peer_reading;
 }
@@ -562,7 +592,10 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     // 浮层只延后切换正文，不能停止通信心跳；触摸/笔迹仍让路。
     // Overlays defer opening the reader, not link servicing; active touch and ink still take priority.
     bool ui_idle = ps_background_io_allowed();
-    if ((ctx->touch && ctx->touch->touched) || ps_reader_editor_ink_active() || ps_ink_pending())
+    // 手柄机触摸按住时仍必须服务 BLE，否则方向要等抬手后才发出，形成约一秒延迟。
+    // Keep servicing BLE while the controller is touched; otherwise the direction waits for lift-off and adds about a second.
+    bool game_pad = ps_dual_game_role() == 2;
+    if (!game_pad && ((ctx->touch && ctx->touch->touched) || ps_reader_editor_ink_active() || ps_ink_pending()))
         return false;
     if (!dual_session && !start()) return false;
     dl_status_t before = status;

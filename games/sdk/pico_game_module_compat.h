@@ -52,6 +52,13 @@ static bool ps_hit(int x,int y,int left,int top,int w,int h){return x>=left&&y>=
 #define ps_wrap pga_host->wrap
 #define ps_button pga_host->button
 #define ps_heading pga_host->heading
+// 兼容旧六包前缀；新包读取尾部双机接口。
+// Preserve the legacy prefix; new packages read the dual-game tail.
+static int32_t pga_duo_role(void){return pga_host->bytes>=offsetof(pico_app_host_t,duo_role)&&pga_host->duo_role?pga_host->duo_role():PGA_DUO_NONE;}
+static bool pga_duo_send(uint8_t input){return pga_host->bytes>=offsetof(pico_app_host_t,duo_role)&&pga_host->duo_input_send&&pga_host->duo_input_send(input);}
+static int32_t pga_duo_recv(void){return pga_host->bytes>=offsetof(pico_app_host_t,duo_role)&&pga_host->duo_input_recv?pga_host->duo_input_recv():-1;}
+static bool pga_duo_packet_send(const void *data,size_t bytes){return pga_host->bytes>=offsetof(pico_app_host_t,duo_packet_send)&&pga_host->duo_packet_send&&pga_host->duo_packet_send(data,bytes);}
+static int32_t pga_duo_packet_recv(void *data,size_t capacity){return pga_host->bytes>=offsetof(pico_app_host_t,duo_packet_send)&&pga_host->duo_packet_recv?pga_host->duo_packet_recv(data,capacity):-1;}
 #define snprintf pga_host->format
 
 // 编译器生成的结构体复制也必须走宿主，避免隐式libc导入。/ Compiler-generated copies also use the host, avoiding implicit libc imports.

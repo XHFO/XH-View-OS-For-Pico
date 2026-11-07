@@ -162,6 +162,13 @@ struct dual_link {
     uint32_t orientation_revision, orientation_sequence;
     bool orientation_dirty, orientation_seen, control_compatible, orientation_last;
     uint8_t orientation_request;
+    uint8_t game_input;
+    bool game_pending, game_ready, game_open_pending, game_open_ready;
+    uint8_t game_open_kind;
+    int64_t game_open_sent, game_open_until;
+    uint8_t game_payload[32], game_payload_n;
+    bool game_payload_pending, game_payload_ready;
+    bool game_close_pending, game_close_ready;
     bool control_seen, control_connected, catalog_valid, catalog_dirty, peer_catalog_valid;
     uint8_t catalog[32], peer_catalog[32];
     unsigned catalog_count;
@@ -1001,6 +1008,10 @@ void dl_control_connected(dual_link_t* d, bool connected) {
     d->orientation_sequence = d->orientation_request = 0;
     d->orientation_dirty = true; d->orientation_last = false;
     d->request_pending = false; d->request_at = 0;
+    d->game_pending = d->game_ready = false;
+    d->game_open_pending = d->game_open_ready = false; d->game_open_sent = d->game_open_until = 0;
+    d->game_payload_pending = d->game_payload_ready = false;
+    d->game_close_pending = d->game_close_ready = false;
     d->left_ready = false;
     d->request_sequence = d->peer_sequence = 0;
     d->face_sent = false;
@@ -1015,6 +1026,25 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         (d->cfg.role == 1 || d->orientation_request);
     // 先排空待发状态再发周期心跳，慢速tick不能被心跳反复插队。
     // Drain queued updates before periodic heartbeats so slow ticks cannot starve them.
+    if (d->game_close_pending && d->control_connected) {
+        d->game_open_pending = false;
+        p[0] = 23; d->game_close_pending = false; return 1;
+    }
+    if (d->game_open_pending && d->control_connected &&
+        (!d->game_open_sent || d->now - d->game_open_sent >= 500)) {
+        p[0] = 21; p[1] = d->game_open_kind;
+        d->game_open_sent = d->now;
+        if (d->now >= d->game_open_until) d->game_open_pending = false;
+        return 2;
+    }
+    if (d->game_payload_pending && d->control_connected) {
+        p[0] = 22; p[1] = d->game_payload_n; memcpy(p + 2, d->game_payload, d->game_payload_n);
+        d->game_payload_pending = false; return 2 + d->game_payload_n;
+    }
+    if (d->cfg.role == 2 && d->game_pending && d->control_connected) {
+        p[0] = 20; p[1] = d->game_input; d->game_pending = false;
+        return 2;
+    }
     if (d->catalog_dirty || (d->now - d->control_sent >= 1500 && !reading_pending && !orientation_pending)) {
         p[0] = 1; p[1] = d->catalog_valid;
         memcpy(p + 2, d->catalog, 32); p[34] = CONTROL_VERSION;
@@ -1166,6 +1196,25 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         }
         return true;
     }
+    if (p[0] == 23) {
+        if (n != 1) return false;
+        d->game_close_ready = true; return true;
+    }
+    if (p[0] == 22) {
+        if (d->cfg.role != 2 || n < 3 || p[1] > n - 2 || p[1] > sizeof(d->game_payload)) return false;
+        memcpy(d->game_payload, p + 2, p[1]); d->game_payload_n = p[1]; d->game_payload_ready = true;
+        return true;
+    }
+    if (p[0] == 21 && n == 2) {
+        if (d->cfg.role != 2) return false;
+        d->game_open_kind = p[1]; d->game_open_ready = true;
+        return true;
+    }
+    if (p[0] == 20 && n == 2) {
+        if (d->cfg.role != 1) return false;
+        d->game_input = p[1]; d->game_ready = true;
+        return true;
+    }
     if (!control_ready(d)) return false;
     if (p[0] == 2 && d->cfg.role == 2) {
         if (n != 85 || p[81] > 1 || !valid_px(p[82]) || p[83] > 1 || (p[81] && p[83]) ||
@@ -1309,7 +1358,51 @@ bool dl_open_path(dual_link_t* d, const char* path) {
 bool dl_open_at(dual_link_t* d, const char* path, uint32_t page) {
     return open_request(d, path, page, false);
 }
+bool dl_game_close(dual_link_t* d) {
+    if (!d || !d->control_connected) return false;
+    d->game_close_pending = true; return true;
+}
+bool dl_game_close_take(dual_link_t* d) {
+    if (!d || !d->game_close_ready) return false;
+    d->game_close_ready = false; return true;
+}
+bool dl_game_packet(dual_link_t* d, const void* data, size_t bytes) {
+    if (!d || !data || !bytes || bytes > sizeof(d->game_payload) || d->cfg.role != 1 || !d->control_connected) return false;
+    memcpy(d->game_payload, data, bytes); d->game_payload_n = (uint8_t)bytes; d->game_payload_pending = true;
+    return true;
+}
+size_t dl_game_packet_take(dual_link_t* d, void* data, size_t capacity) {
+    if (!d || !data || d->cfg.role != 2 || !d->game_payload_ready || d->game_payload_n > capacity) return 0;
+    memcpy(data, d->game_payload, d->game_payload_n); d->game_payload_ready = false;
+    return d->game_payload_n;
+}
+bool dl_game_input(dual_link_t* d, uint8_t input) {
+    if (!d || d->cfg.role != 2 || !d->control_connected) return false;
+    d->game_input = input; d->game_pending = true;
+    return true;
+}
+bool dl_game_take(dual_link_t* d, uint8_t* input) {
+    if (!d || !input || d->cfg.role != 1 || !d->game_ready) return false;
+    *input = d->game_input; d->game_ready = false;
+    return true;
+}
+bool dl_game_open(dual_link_t* d, uint8_t kind) {
+    if (!d || !d->control_connected) return false;
+    d->game_open_kind = kind; d->game_open_pending = true;
+    d->game_open_sent = 0; d->game_open_until = d->now + 3000;
+    return true;
+}
+bool dl_game_open_take(dual_link_t* d, uint8_t* kind) {
+    if (!d || !kind || !d->game_open_ready) return false;
+    *kind = d->game_open_kind; d->game_open_ready = false;
+    return true;
+}
 bool dl_turn(dual_link_t* d, int direction) {
+    // 旧请求在章末/丢包时可能长期占住 request_pending；超过 1.5 秒允许新翻页重试。
+    // A stale request at a chapter boundary or lost packet otherwise blocks every turn
+    // for the full timeout; let a new turn retry after 1.5 seconds.
+    if (d && d->request_pending && d->request_started && d->now - d->request_started > 1500)
+        d->request_pending = false;
     if (!d || (direction != -1 && direction != 1) || !control_ready(d) ||
         !nonzero(d->reading.book) || d->request_pending || !d->left_ready || !d->peer_reading)
         return false;
@@ -1329,6 +1422,11 @@ bool dl_turn(dual_link_t* d, int direction) {
     return true;
 }
 bool dl_seek(dual_link_t* d, uint32_t page) {
+    // 旧请求在章末/丢包时可能长期占住 request_pending；超过 1.5 秒允许新翻页重试。
+    // A stale request at a chapter boundary or lost packet otherwise blocks every turn
+    // for the full timeout; let a new turn retry after 1.5 seconds.
+    if (d && d->request_pending && d->request_started && d->now - d->request_started > 1500)
+        d->request_pending = false;
     if (!d || !page || page == UINT32_MAX || !control_ready(d) || !d->left_ready || !d->peer_reading ||
         !nonzero(d->reading.book) || d->request_pending || (d->reading.total && page > d->reading.total))
         return false;

@@ -1,0 +1,103 @@
+{
+  "id": "snake-controller",
+  "name": "贪吃蛇 · 副机手柄",
+  "background": "assets/snake-controller-landscape.png",
+  "elements": [
+    {
+      "id": "back",
+      "type": "button",
+      "x": 12,
+      "y": 34,
+      "w": 62,
+      "h": 26,
+      "label": "‹ 返回"
+    },
+    {
+      "id": "title",
+      "type": "text",
+      "x": 84,
+      "y": 39,
+      "w": 190,
+      "h": 24,
+      "label": "贪吃蛇 · 控制"
+    },
+    {
+      "id": "status",
+      "type": "text",
+      "x": 516,
+      "y": 36,
+      "w": 110,
+      "h": 20,
+      "label": "蓝牙已连接",
+      "color": 4
+    },
+    {
+      "id": "up",
+      "type": "button",
+      "x": 34,
+      "y": 92,
+      "w": 155,
+      "h": 88,
+      "label": "↑"
+    },
+    {
+      "id": "down",
+      "type": "button",
+      "x": 34,
+      "y": 202,
+      "w": 155,
+      "h": 88,
+      "label": "↓"
+    },
+    {
+      "id": "left",
+      "type": "button",
+      "x": 416,
+      "y": 128,
+      "w": 82,
+      "h": 124,
+      "label": "←"
+    },
+    {
+      "id": "right",
+      "type": "button",
+      "x": 512,
+      "y": 128,
+      "w": 82,
+      "h": 124,
+      "label": "→"
+    },
+    {
+      "id": "pause",
+      "type": "button",
+      "x": 224,
+      "y": 96,
+      "w": 160,
+      "h": 54,
+      "label": "暂停 / 继续"
+    },
+    {
+      "id": "speed",
+      "type": "button",
+      "x": 224,
+      "y": 160,
+      "w": 160,
+      "h": 54,
+      "label": "切换速度"
+    },
+    {
+      "id": "restart",
+      "type": "button",
+      "x": 224,
+      "y": 224,
+      "w": 160,
+      "h": 54,
+      "label": "重新开始"
+    }
+  ],
+  "view": {
+    "w": 640,
+    "h": 360
+  },
+  "grid": 8
+}

@@ -52,9 +52,9 @@ int main(int argc,char **argv)
     if(argc!=3||!pico_fb_init(argv[1]))return 1;ps_games_init();const char *names[]={"gomoku","go","xiangqi","chess"};
     for(int landscape=0;landscape<2;landscape++){
         host_view=(ps_view_t){landscape?640:360,landscape?360:640,landscape};host_route=PS_GAMES;g_save.active=0;frame(argv[2],"lobby");
-        for(int type=0;type<PG_TYPES;type++){seed_game(type);frame(argv[2],names[type]);
+        for(int type=0;type<PG_TYPES;type++){seed_game(type);char n[64];snprintf(n,sizeof(n),"%s-screen",names[type]);pg_test_duo_role=PGA_DUO_SCREEN;frame(argv[2],n);snprintf(n,sizeof(n),"%s-captures",names[type]);pg_test_duo_role=PGA_DUO_CONTROLLER;frame(argv[2],n);pg_test_duo_role=PGA_DUO_NONE;frame(argv[2],names[type]);
             if(type==PG_GO){pg_commit(pg_point(-1));pg_commit(pg_point(-1));pg_mark_dead(40);frame(argv[2],"go-score");}}
-        ps_games_action(0);pa_reset();memset(a_save.board,0,sizeof(a_save.board));a_save.board[0]=1024;a_save.board[1]=2048;a_save.board[2]=4096;a_save.board[3]=8192;a_save.board[4]=128;a_save.board[5]=64;a_save.score=4096;frame(argv[2],"arcade-2048");ps_games_action(1);pa_reset();frame(argv[2],"arcade-snake");host_route=PS_GAMES;frame(argv[2],"lobby-resume");host_route=PS_PLAYGAME;g_modal=2;frame(argv[2],"chess-rules");g_modal=0;
+        ps_games_action(0);pa_reset();memset(a_save.board,0,sizeof(a_save.board));a_save.board[0]=1024;a_save.board[1]=2048;a_save.board[2]=4096;a_save.board[3]=8192;a_save.board[4]=128;a_save.board[5]=64;a_save.score=4096;frame(argv[2],"arcade-2048");ps_games_action(1);pa_reset();frame(argv[2],"arcade-snake");pga_test_duo_role=PGA_DUO_CONTROLLER;frame(argv[2],"snake-controller");pga_test_duo_role=PGA_DUO_SCREEN;frame(argv[2],"snake-screen");pga_test_duo_role=PGA_DUO_NONE;host_route=PS_GAMES;frame(argv[2],"lobby-resume");host_route=PS_PLAYGAME;g_modal=2;frame(argv[2],"chess-rules");g_modal=0;
         memset(g_pos.board,0,sizeof(g_pos.board));g_pos.board[60]=6;g_pos.board[7]=-6;g_pos.board[8]=1;g_selected=8;g_promotion_to=0;g_modal=3;frame(argv[2],"chess-promotion");g_modal=0;
     }
     pico_fb_close();return 0;

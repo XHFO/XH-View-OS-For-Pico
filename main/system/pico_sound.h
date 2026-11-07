@@ -14,7 +14,7 @@ enum {
     PS_SOUND_ENABLED = 1, PS_SOUND_TOUCH = 2, PS_SOUND_CHARGING = 4,
     PS_SOUND_ERROR = 8, PS_SOUND_ALL = 15
 };
-typedef enum { PS_SOUND_NONE, PS_SOUND_TAP, PS_SOUND_CHARGE, PS_SOUND_FAILURE } ps_sound_event_t;
+typedef enum { PS_SOUND_NONE, PS_SOUND_TAP, PS_SOUND_CHARGE, PS_SOUND_FAILURE, PS_SOUND_GUARD } ps_sound_event_t;
 typedef struct {
     uint8_t options, last_event;
     bool available, simulated, suspended, busy;
@@ -33,6 +33,8 @@ void ps_sound_key(void);
 /// 充电状态1未接入、2充电、3推定充满；首次有效值只建基线。/ Charge states: 1 absent, 2 charging, 3 inferred full; the first valid value only establishes a baseline.
 void ps_sound_charge_sample(bool valid,unsigned charge_state,int64_t now_ms);
 void ps_sound_error(void);
+/// 解除贴合防误触锁定的专用短鸣，与触摸/充电/错误音区分。/ Dedicated unlock cue, distinct from touch/charge/error.
+void ps_sound_guard(void);
 /// 非阻塞停收/清队列；quiet前不得进入睡眠，以免短音任务额外唤醒CPU。/ Stop admission/clear pending feedback without waiting; sleep requires quiet to avoid audio task wakeups.
 void ps_sound_pause(void);
 bool ps_sound_quiet(void);

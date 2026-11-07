@@ -77,6 +77,10 @@
 
 static int64_t s_lock_ignore_until_ms;
 static uint32_t s_font_media_revision;
+// 双击电源后进入待解锁窗口；窗口内长按解除贴合锁定。
+// Double-click arms a short window; a long press in that window releases the contact latch.
+static int64_t s_guard_tap_at, s_guard_armed_until;
+static uint8_t s_guard_taps;
 
 void app_lock_ignore_for(int64_t ms) {
     s_lock_ignore_until_ms = esp_timer_get_time() / 1000 + ms;
@@ -330,6 +334,37 @@ static void product_lock_cancel(app_ctx_t* ctx, const app_desc_t* current,
     ctx->consumed = true;
 }
 
+// 防误触解除优先于 TF/USB 管理和 app 的 PMU 所有权；否则托管 TF 时电源键先被存储层拿走。
+// Guard release has priority over TF/USB management and app PMU ownership; storage must not consume the key first.
+static bool guard_unlock_power_priority(int64_t now_ms) {
+    if (!app_touch_guard_blocked() || !read_pico_pmu_ready()) return false;
+    pmu_product_key_action_t key = read_pico_pmu_take_product_key();
+    if (key == PMU_PRODUCT_KEY_NONE) return false;
+    if (key == PMU_PRODUCT_KEY_SHORT) {
+        if (now_ms - s_guard_tap_at > 700) s_guard_taps = 1;
+        else if (s_guard_taps < 2) s_guard_taps++;
+        s_guard_tap_at = now_ms;
+        if (s_guard_taps >= 2) {
+            s_guard_armed_until = now_ms + 5000;
+            ps_notice("已就绪：长按电源键解除防误触");
+        } else {
+            ps_notice("再按一次电源键，然后长按解除防误触");
+        }
+        return true;
+    }
+    if (key == PMU_PRODUCT_KEY_LONG) {
+        if (now_ms < s_guard_armed_until) {
+            app_touch_guard_force_release(now_ms);
+            ps_sound_guard();
+            ps_notice("贴合防误触锁定已解除");
+            s_guard_taps = 0;
+            s_guard_armed_until = 0;
+        }
+        return true;
+    }
+    return true;
+}
+
 void app_loop_run(const app_loop_config_t* config) {
     const app_desc_t* current = config->first_app != NULL
         ? config->first_app
@@ -389,6 +424,10 @@ void app_loop_run(const app_loop_config_t* config) {
         // Gestures, keys, menus and BLE cannot cross the product power boundary; do not exit the real reading engine.
         ctx.now_ms = esp_timer_get_time() / 1000;
         if (product_origin) {
+            if (guard_unlock_power_priority(ctx.now_ms)) {
+                last_input_ms = ctx.now_ms;
+                last_lock_poll_ms = ctx.now_ms;
+            }
             ps_power_poll(&ctx,current);
             if(ps_power_pending()){
                 app_touch_buffer_enable(config->tp,false,epd_get_rotation());
@@ -622,7 +661,16 @@ void app_loop_run(const app_loop_config_t* config) {
                 ? read_pico_pmu_take_product_key()
                 : (read_pico_pmu_take_key_short() ? PMU_PRODUCT_KEY_SHORT : PMU_PRODUCT_KEY_NONE);
             if (power_key == PMU_PRODUCT_KEY_LONG) {
-                if (ctx.now_ms >= s_lock_ignore_until_ms) {
+                if (app_touch_guard_blocked() && ctx.now_ms < s_guard_armed_until) {
+                    // 双击已就绪：长按只解除防误触，不打开电源菜单。
+                    // Double-click armed: long press only releases the guard, never opens the power menu.
+                    app_touch_guard_force_release(ctx.now_ms);
+                    ps_sound_guard();
+                    ps_notice("贴合防误触锁定已解除");
+                    s_guard_taps = 0;
+                    s_guard_armed_until = 0;
+                    last_input_ms = ctx.now_ms;
+                } else if (ctx.now_ms >= s_lock_ignore_until_ms) {
                     product_lock_cancel(&ctx, current, &gesture, &held_key,
                                         &menu_pressed, &feedback, &menu_open);
                     discard_wake_contact = true;
@@ -632,6 +680,19 @@ void app_loop_run(const app_loop_config_t* config) {
             } else if (power_key == PMU_PRODUCT_KEY_SHORT) {
                 if (ctx.now_ms < s_lock_ignore_until_ms) {
                     ESP_LOGI(TAG, "ignore boot KEY_SHORT");
+                } else if (app_touch_guard_blocked()) {
+                    // 第一击准备，第二击进入待解锁；不执行普通电源短按。
+                    // First tap prepares, second arms the unlock; normal short-power action is suppressed.
+                    if (ctx.now_ms - s_guard_tap_at > 700) s_guard_taps = 1;
+                    else if (s_guard_taps < 2) s_guard_taps++;
+                    s_guard_tap_at = ctx.now_ms;
+                    if (s_guard_taps >= 2) {
+                        s_guard_armed_until = ctx.now_ms + 5000;
+                        ps_notice("已就绪：长按电源键解除防误触");
+                    } else {
+                        ps_notice("再按一次电源键，然后长按解除防误触");
+                    }
+                    last_input_ms = ctx.now_ms;
                 } else {
                     if (product_origin && ps_power_toggle(&ctx, current)) {
                         product_lock_cancel(&ctx, current, &gesture, &held_key,

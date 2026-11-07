@@ -1892,6 +1892,12 @@ static app_redraw_t progress_contact_release(app_ctx_t* ctx, const ui_gesture_ev
     return APP_REDRAW_NONE;
 }
 static bool open_book(app_ctx_t* ctx, const char* path) {
+    // 书架上残留的游戏模块可能仍占用应用/存储状态；开书前强制收尾。
+    // A leftover game module can still own app/storage state; close it before opening a book.
+    if (!ps_games_prepare_storage()) {
+        copy_text(s_message, sizeof(s_message), "游戏尚未保存，请稍后重试打开图书");
+        return false;
+    }
     if (!strncmp(path, "/sdcard/", 8)) {
         read_pico_sd_info_t sd = {0};
         read_pico_sd_get_info(&sd);

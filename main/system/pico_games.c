@@ -15,6 +15,8 @@
 #include "pico_weread_cover.h"
 #include "pico_home_pga.h"
 #include "pico_home_portal.h"
+#include "pico_dual.h"
+#include "epdiy.h"
 #include "ui_wifi_qr.h"
 #include "pico_app_sdk.h"
 #include "pico_app_package.h"
@@ -60,6 +62,7 @@ static int s_pending_route=-1;
 static char s_pending_id[32];
 static bool s_pending_tool;
 static int s_remove=-1,s_nav=-1;
+static bool s_dual_game_applying;
 static char s_error[160];
 static pico_app_package_t s_active_info;
 static const pico_app_exports_t *s_app;
@@ -84,6 +87,8 @@ bool ps_games_item(unsigned index,const char **id,const char **title) {
 }
 static bool game_route(ps_route_t r) { return r==PS_PLAYGAME||r==PS_ARCADEGAME||r==PS_APPLICATION; }
 static ps_route_t app_route(uint32_t kind) { return kind>=128?PS_APPLICATION:kind>=PGA_2048?PS_ARCADEGAME:PS_PLAYGAME; }
+static void game_rotation(void);
+static void portrait_rotation(void);
 static bool storage_held(void) { return ps_storage_busy()||ps_transfer_prepared()||ps_usb_held(); }
 static bool ready(void) { read_pico_sd_info_t info={0};return !storage_held()&&read_pico_sd_get_info(&info)==ESP_OK&&info.mounted; }
 static bool directory(void) {
@@ -347,6 +352,11 @@ static void weread_child_clear(void){
     home_portal_dismiss();
     s_weread_edit=s_weread_input_ready=s_weread_link=false;memset(s_weread_input,0,sizeof(s_weread_input));s_home_edit=false;ps_home_pga_input(PGA_HOME_INPUT_CANCEL,NULL,0);
 }
+static int32_t host_duo_role(void){return (int32_t)ps_dual_game_role();}
+static bool host_duo_send(uint8_t input){return ps_dual_game_send(input);}
+static int32_t host_duo_recv(void){return ps_dual_game_recv();}
+static bool host_duo_packet_send(const void *data,size_t bytes){return ps_dual_game_packet_send(data,bytes);}
+static int32_t host_duo_packet_recv(void *data,size_t capacity){return (int32_t)ps_dual_game_packet_recv(data,capacity);}
 static const pico_app_host_t s_host={
     .abi=PICO_APP_ABI,.bytes=sizeof(pico_app_host_t),.view=host_view,.page=host_page,.navigate=host_navigate,
     .dirty=ps_dirty,.toast=ps_toast,.load=host_load,.store=host_store,.legacy_load=host_legacy,.time_us=esp_timer_get_time,.random=esp_random,
@@ -357,7 +367,9 @@ static const pico_app_host_t s_host={
     .weread_cover=host_weread_cover,
     .home_link=host_home_link,.home_link_config=host_home_link_config,.home_link_entity=host_home_link_entity,
     .home_link_printer=host_home_link_printer,.home_link_control=host_home_link_control,.home_link_input=host_home_link_input,
-    .tr=ps_tr
+    .tr=ps_tr,
+    .duo_role=host_duo_role,.duo_input_send=host_duo_send,.duo_input_recv=host_duo_recv,
+    .duo_packet_send=host_duo_packet_send,.duo_packet_recv=host_duo_packet_recv
 };
 static bool close_active(void) {
     if(!s_app)return true;
@@ -430,6 +442,14 @@ static bool open_package(pico_app_package_t info,const char *path) {
     /* start() already applied a deep link. Drop a leftover so an older package cannot apply it on a later tick. */
     s_home_entry=0xff;
     s_in_call=false;s_nav=-1;
+    if(info.kind<128){
+        // 游戏统一横屏；主设备同时通知从设备打开同一个游戏。
+        // 街机横屏；棋类严格保持双机纵向排布。
+        // Arcade is landscape; board games stay in the dual portrait arrangement.
+        if(info.kind==PGA_SNAKE)game_rotation();
+        else portrait_rotation();
+        if(!s_dual_game_applying)(void)ps_dual_game_open((uint8_t)info.kind);
+    }
     s_origin=ps_route()==PS_APPS?PS_APPS:info.kind>=128?PS_SHELF:PS_GAMES;
     ps_navigate(app_route(info.kind));return true;
 }
@@ -613,6 +633,12 @@ static void resolve_recovery(bool discard) {
     ps_navigate(route>=0?(ps_route_t)route:utility?PS_SHELF:PS_GAMES);
 }
 void ps_games_init(void) { s_catalog_dirty=true;s_scanned=false;s_tool_count=0; }
+static void game_rotation(void) {
+    epd_set_rotation(ps_dual_role()==2?EPD_ROT_INVERTED_LANDSCAPE:EPD_ROT_LANDSCAPE);
+}
+static void portrait_rotation(void) {
+    epd_set_rotation(ps_dual_enabled()?(enum EpdRotation)ps_dual_rotation():EPD_ROT_INVERTED_PORTRAIT);
+}
 void ps_games_enter(ps_route_t route) {
     if(s_in_call)return;
     if(s_home_hold){
@@ -625,8 +651,12 @@ void ps_games_enter(ps_route_t route) {
     // WeRead setup temporarily opens a child page while retaining the active shelf and reading position.
     if(s_weread_setup&&s_app&&!strcmp(s_active_info.id,"weread")&&(route==PS_WIRELESS_MANAGE||route==PS_WIFI||route==PS_EDITOR))return;
     if(s_weread_edit&&weread_active()&&route==PS_EDITOR)return;
-    if(game_route(route))s_weread_edit=false;
-    if(game_route(route))s_weread_setup=false;
+    if(!game_route(route)&&s_app&&s_active_info.kind<128&&!s_dual_game_applying)(void)ps_dual_game_close();
+    if(game_route(route)){
+        s_weread_edit=false;s_weread_setup=false;
+        if(route==PS_ARCADEGAME&&s_app&&s_active_info.kind==PGA_SNAKE)game_rotation();
+        else if(route==PS_ARCADEGAME||route==PS_PLAYGAME)portrait_rotation();
+    }
     if(!game_route(route)&&s_app&&!close_active()){
         clear_pending();s_pending_route=route<PS_ROUTE_COUNT?route:-1;
         recover_active();return;
@@ -733,6 +763,21 @@ bool ps_games_key(int key) {
     s_in_call=true;bool changed=s_app->key(key);finish_call();return changed;
 }
 bool ps_games_tick(void) {
+    if(ps_dual_game_close_take()){
+        s_dual_game_applying=true;
+        if(game_route(ps_route()))ps_navigate(PS_GAMES);
+        s_dual_game_applying=false;
+        return true;
+    }
+    uint8_t open_kind=0;
+    if(ps_dual_game_open_take(&open_kind)){
+        for(unsigned i=0;i<s_count;i++)if(s_items[i].info.kind==open_kind){
+            s_dual_game_applying=true;
+            if(!open_item(i))ps_toast(s_error);
+            s_dual_game_applying=false;
+            return true;
+        }
+    }
     if(s_catalog_dirty&&!storage_held()&&ps_background_io_allowed()){ps_games_rescan();return true;}
     if(s_home_portal)return ps_home_portal_tick();
     if(!s_app||!game_route(ps_route())||s_pinned||s_discard||s_power_paused||s_weread_link||!same_card())return false;

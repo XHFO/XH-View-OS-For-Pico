@@ -1,0 +1,94 @@
+{
+  "id": "chess-single",
+  "name": "国际象棋 · 单机横屏",
+  "view": {
+    "w": 640,
+    "h": 360
+  },
+  "grid": 8,
+  "background": "assets/chess-landscape.png",
+  "elements": [
+    {
+      "id": "title",
+      "type": "text",
+      "x": 40,
+      "y": 32,
+      "w": 80,
+      "h": 24,
+      "label": "国际象棋"
+    },
+    {
+      "id": "room",
+      "type": "button",
+      "x": 528,
+      "y": 24,
+      "w": 62,
+      "h": 28,
+      "label": "棋室"
+    },
+    {
+      "id": "status",
+      "type": "text",
+      "x": 456,
+      "y": 96,
+      "w": 136,
+      "h": 32,
+      "label": "轮到你 · 黑棋",
+      "font": 20
+    },
+    {
+      "id": "meta",
+      "type": "text",
+      "x": 456,
+      "y": 64,
+      "w": 136,
+      "h": 32,
+      "label": "入门 · 第 7 手"
+    },
+    {
+      "id": "undo",
+      "type": "button",
+      "x": 456,
+      "y": 136,
+      "w": 136,
+      "h": 40,
+      "label": "悔棋"
+    },
+    {
+      "id": "restart",
+      "type": "button",
+      "x": 456,
+      "y": 184,
+      "w": 136,
+      "h": 40,
+      "label": "重开"
+    },
+    {
+      "id": "rules",
+      "type": "button",
+      "x": 456,
+      "y": 232,
+      "w": 136,
+      "h": 40,
+      "label": "规则与提示"
+    },
+    {
+      "id": "footer",
+      "type": "text",
+      "x": 456,
+      "y": 280,
+      "w": 136,
+      "h": 56,
+      "label": "自动保存 · 中键返回"
+    },
+    {
+      "id": "board",
+      "type": "board",
+      "x": 128,
+      "y": 24,
+      "w": 304,
+      "h": 328,
+      "label": "棋盘"
+    }
+  ]
+}

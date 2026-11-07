@@ -95,7 +95,7 @@
 #include "ui_kit.h"
 #include "settings.h"
 
-#define PS_VERSION "0.40.0-dual52"
+#define PS_VERSION "0.40.0-dual72"
 #define PS_OS_NAME "XH View OS For Pico"
 #define PS_RELEASE_LABEL "双机阅读实验版"
 const char *ps_version(void){return PS_VERSION;}
@@ -131,7 +131,7 @@ typedef struct {
     uint8_t slots[FAN_SLOTS],count,ids[40];
 } quick_saved_v5_40_t;
 static uint8_t s_quick_slots[FAN_SLOTS];
-static const uint8_t s_quick_defaults[FAN_SLOTS]={0,4,11,15,31,3,17,30,9,7,8,40,22,14};
+static const uint8_t s_quick_defaults[FAN_SLOTS]={0,4,11,15,31,3,17,30,9,7,8,33,22,14};
 static struct {
     uint8_t slots[FAN_SLOTS],undo[FAN_SLOTS];
     int selected,source,target,side;
@@ -452,7 +452,7 @@ PICO_STORE_COLD bool ps_store_exists_at(const char *root,const char *key,bool *e
 static void save_config(void) {
     ps_store("system_v1", &s_config, sizeof(s_config));
 }
-static int quick_canonical(int id) { return id==38?17:id==39?18:id; }
+static int quick_canonical(int id) { return id==38?17:id==39?18:id==40?33:id; }
 static int quick_catalog(int out[QUICK_COUNT]) {
     int n=0;for(int id=0;id<QUICK_COUNT;id++)if(quick_canonical(id)==id)out[n++]=id;
     return n;
@@ -1130,6 +1130,9 @@ bool ps_contact_vector(int16_t* x, int16_t* y, int16_t* z) {
 }
 
 void ps_dual_rotation_changed(void) {
+    // 游戏页固定横屏，不被双机阅读方向覆盖；离开游戏后自动恢复。
+    // Game pages own a fixed landscape rotation; leaving the game restores dual-reading rotation.
+    if (s_route == PS_ARCADEGAME || s_route == PS_APPLICATION) return;
     bool manual = ps_dual_take_manual_rotation();
     // 从机锁定后不再跟随主机基准；本机手动翻转仍通过一次性标记放行。
     // A locked secondary stops following the primary base; its own manual flip passes once.
@@ -1592,9 +1595,7 @@ static bool fan_present(app_ctx_t *ctx) {
         fan_add_area(areas,&count,fan_cursor_area(s_fan_paint.selected));
         fan_add_area(areas,&count,fan_cursor_area(selected));
         ps_view_t v=ps_view();int ix=fan_prompt_x();
-        int prompt_width=v.w-ix;
-        if(prompt_width>340)prompt_width=340;
-        fan_add_area(areas,&count,(EpdRect){ix-2,100,prompt_width+4,42});
+        fan_add_area(areas,&count,(EpdRect){ix-2,100,v.w-ix,42});
         for(int i=0;i<count;i++)fan_area_pixels(ctx->fb,s_fan_paint.base,areas[i],false);
     }else {
         // 基底只在打开或明确改变布局时生成；暂不把后台提示覆盖到滑动菜单上。
@@ -1609,14 +1610,12 @@ static bool fan_present(app_ctx_t *ctx) {
     render_fan_cursor(ctx->fb);
     enum EpdDrawError error=EPD_DRAW_SUCCESS;
     if(partial) {
-        // 每个小区域单独推一相 DU；不能把新旧两个圆合并成一个大矩形，
-        // 否则滑动时会触发大面积刷新并闪烁。
-        // Push each small area separately with DU; never union old/new markers into
-        // one large rectangle, which caused the sliding flicker.
-        for(int i=0;i<count;i++) {
-            enum EpdDrawError e=update_display_area_with(ctx->hl,&E0470_WAVEFORM,MODE_DU,areas[i]);
-            if(e!=EPD_DRAW_SUCCESS)error=e;
-        }
+        // 非 duo 主线做法：先合并新旧光圈和提示区，再做一次局部 GL16。
+        // 分开做 DU 会留下未覆盖的光圈边缘，也会让滑动过程断续闪烁。
+        // Non-duo behavior: union old/new halos and prompt, then one local GL16.
+        // 合并后的单区域只用一次 DU，避免 GL16 在滑动过程中反复闪屏。
+        // One unioned DU scan per move; GL16 caused repeated flashing while sliding.
+        error=update_display_area_with(ctx->hl,&E0470_WAVEFORM,MODE_DU,fast_damage_pixels(areas,count));
     }else error=update_display_with(ctx->hl,&E0470_WAVEFORM,MODE_GL16);
     int fallback=-1;if(error!=EPD_DRAW_SUCCESS)fallback=update_display_full(ctx->hl);
     s_fan_paint.owner=ctx->hl;s_fan_paint.key=key;s_fan_paint.rotation=rotation;s_fan_paint.selected=selected;
@@ -1847,7 +1846,9 @@ static bool dual_resume_visible(void) {
 }
 static EpdRect dual_resume_rect(void) {
     ps_view_t v = ps_view();
-    return (EpdRect){v.w - 178, v.h - 68, 158, 38};
+    // 避开左下/右下 48px 扇形起手区，避免悬浮按钮拦住角落滑动。
+    // Keep clear of the 48px bottom-corner fan gesture zones.
+    return (EpdRect){v.w - 178, v.h - 116, 158, 38};
 }
 static void render(app_ctx_t* ctx, uint8_t* fb) {
     (void)ctx;
@@ -1900,7 +1901,10 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     if(frozen&&!s_panel&&!s_fan)ps_heading(fb,"TF 卡正由电脑管理","可继续使用设置和蓝牙，图书与应用暂停");
     if(!frozen&&!s_panel&&!s_fan&&ps_home_launcher_visible())ps_tabs(fb,s_section);
     bool fullscreen_app=s_route==PS_CLOUDFLARE&&ps_desktop_app_available(true)&&!frozen&&!s_panel&&!s_fan;
-    if (!standby && !fullscreen_app && !fan_editor_active()) {
+    // 游戏页面占满屏幕，不绘制顶部系统状态栏，避免遮住棋盘/游戏区域。
+    // Game pages own the whole screen; skip the system status bar so it cannot cover the board.
+    bool game_fullscreen=s_route==PS_PLAYGAME||s_route==PS_ARCADEGAME||s_route==PS_APPLICATION;
+    if (!standby && !fullscreen_app && !fan_editor_active() && !game_fullscreen) {
         ps_fill(fb, 0, 0, v.w, 24, 15);
         ps_text(fb, 12, 7, 10, ps_usb_background()?"USB 文件管理":ps_home_connection_label(), 5);
         char battery[24];
@@ -1915,7 +1919,7 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     if (s_fan) render_fan(fb);
     if(ps_usb_background()&&!s_panel&&!s_fan&&(frozen||s_route==PS_CANVAS||s_route==PS_CLOUDFLARE))ps_usb_background_render(fb);
     if (!standby) ps_corner_controls(fb);
-    if (dual_resume_visible() && !s_panel && !s_fan)
+    if (dual_resume_visible() && !s_panel && !s_fan && !s_fan_candidate)
         ps_button(fb, dual_resume_rect().x, dual_resume_rect().y, dual_resume_rect().width,
                   dual_resume_rect().height, "回到双机阅读", true);
     if (!fan_frame_active() && s_toast[0] && ps_now() < s_toast_until) {

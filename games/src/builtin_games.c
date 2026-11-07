@@ -39,6 +39,17 @@
 #include <time.h>
 #endif
 
+// 兼容非模块构建；模块构建从SDK尾部读取同值定义。
+// Fallbacks for non-module builds; module builds use the SDK tail values.
+#ifndef PGA_DUO_NONE
+#define PGA_DUO_NONE 0
+#define PGA_DUO_SCREEN 1
+#define PGA_DUO_CONTROLLER 2
+#define PGA_DUO_PAUSE 4
+#define PGA_DUO_SPEED 5
+#define PGA_DUO_RESTART 6
+#endif
+
 /* ---- 规则与存档 / Rules and records ---- */
 
 enum { PG_GOMOKU, PG_GO, PG_XIANGQI, PG_CHESS, PG_TYPES };
@@ -531,6 +542,7 @@ static const char *const g_rules[]={
 
 static pg_save_t g_save;
 static pg_pos_t g_pos;
+static uint32_t pg_duo_generation;
 static uint64_t g_keys[PG_LOG_MAX+3];
 static int g_key_count,g_selected=-1,g_modal,g_promotion_to=-1,g_lobby_selected;
 static bool g_unsaved,g_busy,g_ai_error;
@@ -593,7 +605,7 @@ static void pg_start_game(int type)
 #ifdef PICO_GAME_MODULE
     if(PICO_GAME_KIND>=PG_TYPES||type!=PICO_GAME_KIND)return;
 #endif
-    pg_cancel_task();g_save.active=1;g_save.type=type;g_save.level=g_save.progress[type].level;
+    pg_cancel_task();g_save.active=1;g_save.type=type;g_save.level=g_save.progress[type].level;pg_duo_generation++;
     g_save.count=0;g_save.recorded=0;g_save.final_result=0;memset(g_save.dead,0,sizeof(g_save.dead));
     pg_initial(&g_pos,type,g_save.level);g_keys[0]=pg_key(&g_pos);g_key_count=1;
     g_selected=-1;g_modal=0;g_promotion_to=-1;g_feedback[0]=0;g_ai_error=false;
@@ -682,10 +694,25 @@ static void pg_request_ai(void)
 
 static pg_board_rect_t pg_board_rect(void)
 {
-    ps_view_t view=ps_view();pg_board_rect_t r={.x=16,.y=96,.w=view.w-32,.pad=14};
-    r.cols=g_pos.type==PG_GOMOKU?15:g_pos.type==PG_CHESS?8:9;r.rows=g_pos.type==PG_XIANGQI?10:r.cols;
-    if(view.landscape){r.y=76;r.h=view.h-116;r.w=g_pos.type==PG_XIANGQI?r.h*8/9:r.h;r.x=20;r.pad=12;}
-    else{r.h=g_pos.type==PG_XIANGQI?r.w*9/8:r.w;if(r.h>364)r.h=364;}
+    ps_view_t view=ps_view();
+    // 小屏优先：棋盘尽量贴近左右边缘，横屏把侧栏压到右侧剩余空间。
+    // Small-screen first: keep the board close to both side edges and let the
+    // landscape side panel use only the remaining right-hand space.
+    pg_board_rect_t r={.x=8,.y=82,.w=view.w-16,.pad=14};
+    r.cols=g_pos.type==PG_GOMOKU?15:g_pos.type==PG_CHESS?8:9;
+    r.rows=g_pos.type==PG_XIANGQI?10:r.cols;
+    if(view.landscape){
+        // 棋类统一布局：棋盘居中，左右留出操作/状态栏。
+        // Unified board layout: centered board with action and status rails.
+        r.x=168;r.y=64;r.h=288;
+        r.w=g_pos.type==PG_XIANGQI?r.h*9/10:r.h;
+        r.pad=10;
+    } else {
+        r.w=view.w-16;
+        r.h=g_pos.type==PG_XIANGQI?r.w*10/9:r.w;
+        // 9x10 象棋盘保持真实格形；竖屏最多留出顶部栏和底部操作区。
+        if(r.h>view.h-150)r.h=view.h-150;
+    }
     if(g_pos.type==PG_CHESS)r.pad=0;
     return r;
 }
@@ -740,6 +767,9 @@ static void pg_chess_piece(uint8_t *fb,int x,int y,int size,int piece)
 static void pg_draw_board(uint8_t *fb)
 {
     pg_board_rect_t r=pg_board_rect();int count=pg_count(&g_pos),step=g_pos.type==PG_CHESS?r.w/8:(r.w-2*r.pad)/(r.cols-1);
+    // 先铺白底，避免标题栏分隔线从棋盘格缝中透出。
+    // Fill a white base so the title-bar divider cannot show through board gaps.
+    if(g_pos.type==PG_CHESS)ps_fill(fb,r.x,r.y,r.w,r.h,15);
     ps_box(fb,r.x,r.y,r.w,r.h,4,0,false);
     if(g_pos.type==PG_CHESS){for(int i=0;i<64;i++){
         int x=r.x+(i%8)*r.w/8,y=r.y+(i/8)*r.h/8;
@@ -789,6 +819,8 @@ typedef struct {
 } pa_save_t;
 static pa_save_t a_save;
 static int a_kind,a_dir,a_next,a_follow=-1;
+static int a_duo_role;
+static int pa_duo_role_now(void);
 static bool a_paused=true,a_turned,a_unsaved,a_was_active,a_swipe_tracking,a_contact_handled;
 static int64_t a_due;
 static uint32_t a_rng=0x45a109e7u;
@@ -814,7 +846,7 @@ static void pa_reset(void){
     else{a_save.length=4;for(int i=0;i<4;i++)a_save.snake[i]=(uint16_t)(10*20+8-i);a_save.snake_score=a_save.snake_moves=0;a_save.snake_over=0;a_save.snake_initialized=1;a_dir=a_next=1;a_follow=-1;a_paused=true;a_turned=false;a_swipe_tracking=a_contact_handled=false;pa_food();}
     pa_persist();ps_dirty();
 }
-static int pa_delay(void){return a_save.speed==0?750:a_save.speed==1?550:400;}
+static int pa_delay(void){return a_save.speed==0?450:a_save.speed==1?300:180;}
 // 两个转向依次执行；按键与滑动不改变走格时钟，暂停丢弃尚未执行的输入。
 // Apply two queued turns in order; input never changes the movement clock and pausing discards pending turns.
 static void pa_clear_input(void){a_next=a_dir;a_follow=-1;a_turned=false;a_swipe_tracking=a_contact_handled=false;}
@@ -826,6 +858,9 @@ static bool pa_direction(int direction){
     if(!a_turned){a_next=direction;a_turned=true;}
     else if(a_follow<0)a_follow=direction;
     else return false;
+    // 方向确认后立即推进一格，避免等下一次自动 tick 才响应。
+    // Step immediately after a direction is accepted instead of waiting for the next auto tick.
+    a_due=pg_millis();
     return true;
 }
 static bool pa_step(void){
@@ -865,7 +900,7 @@ static void pa_open(int kind){
 #ifdef PICO_GAME_MODULE
     if(PICO_GAME_KIND<PG_TYPES||kind!=PICO_GAME_KIND-PG_TYPES)return;
 #endif
-    a_kind=kind;a_paused=true;pa_clear_input();if(kind==PA_2048?!a_save.initialized:!a_save.snake_initialized)pa_reset();ps_navigate(PS_ARCADEGAME);}
+    a_duo_role=pa_duo_role_now();a_kind=kind;a_paused=true;pa_clear_input();if(kind==PA_2048?!a_save.initialized:!a_save.snake_initialized)pa_reset();ps_navigate(PS_ARCADEGAME);}
 bool ps_games_is_arcade(void){return ps_route()==PS_ARCADEGAME;}
 bool ps_games_is_snake(void){return ps_route()==PS_ARCADEGAME&&a_kind==PA_SNAKE;}
 bool ps_games_paused(void){return a_kind==PA_SNAKE&&a_paused;}
@@ -880,24 +915,226 @@ void ps_games_action(int action){
     else if(action==3)pa_reset();
     else if(action==4)ps_toast(a_kind==PA_2048?"左右上下滑动合并数字，目标2048":"先点开始，再滑动或点方向；撞墙或自己结束");
 }
-static void pa_board(int *x,int *y,int *size){ps_view_t v=ps_view();*size=v.landscape?208:276;*x=v.landscape?34:(v.w-*size)/2;*y=v.landscape?84:104;}
-static void pa_direction_rect(int direction,int *x,int *y){ps_view_t v=ps_view();int left=v.landscape?350:(v.w-142)/2,top=v.landscape?103:402;*x=left+(direction==3?0:direction==1?2:1)*49;*y=top+(direction==0?0:49);}
+static void pa_board(int *x,int *y,int *size){ps_view_t v=ps_view();*size=v.landscape?252:276;*x=v.landscape?30:(v.w-*size)/2;*y=v.landscape?84:104;}
+static void pa_direction_rect(int direction,int *x,int *y){
+    ps_view_t v=ps_view();
+    // 单机横屏：右侧局部十字键；棋盘扩大后仍保持间距。
+    // Single-device landscape: compact D-pad on the right, clear of the larger board.
+    if(v.landscape){
+        *x=383+(direction==3?-50:direction==1?50:0);
+        *y=80+(direction==0?0:direction==2?92:46);
+        return;
+    }
+    int cx=v.w/2,cy=404;
+    *x=cx+(direction==3?-70:direction==1?26:-22);
+    *y=cy+(direction==0?-22:direction==2?74:26);
+}
+#ifdef PICO_GAMES_UI_HOST
+static int pga_test_duo_role;
+#endif
+static int pa_duo_role_now(void)
+{
+#ifdef PICO_GAMES_UI_HOST
+    return pga_test_duo_role;
+#elif defined(PICO_GAME_MODULE)
+    return pga_duo_role();
+#else
+    return PGA_DUO_NONE;
+#endif
+}
+static void pa_controller_rect(int direction,int *x,int *y,int *w,int *h)
+{
+    ps_view_t v=ps_view();
+    if(v.landscape){
+        // 左侧独立上下，右侧独立左右，中间留给功能键。
+        // Separate up/down on the left, left/right on the right, with function keys between them.
+        if(direction==0){*x=34;*y=92;*w=155;*h=88;}
+        else if(direction==2){*x=34;*y=202;*w=155;*h=88;}
+        else if(direction==3){*x=416;*y=128;*w=82;*h=124;}
+        else {*x=512;*y=128;*w=82;*h=124;}
+    }else{
+        if(direction==0){*x=30;*y=160;*w=120;*h=80;}
+        else if(direction==2){*x=30;*y=260;*w=120;*h=80;}
+        else if(direction==3){*x=200;*y=190;*w=60;*h=100;}
+        else {*x=270;*y=190;*w=60;*h=100;}
+    }
+}
+static void pa_snake_single_rect(int direction,int *x,int *y,int *w,int *h)
+{
+    if(direction==0){*x=48;*y=112;*w=64;*h=40;}
+    else if(direction==2){*x=48;*y=176;*w=64;*h=40;}
+    else if(direction==3){*x=488;*y=144;*w=48;*h=72;}
+    else {*x=560;*y=144;*w=48;*h=72;}
+}
+static void pa_draw_controller(uint8_t *fb)
+{
+    ps_view_t v=ps_view();
+    // 说明并入右侧连接状态，避免副标题占用控制区顶部。
+    // The subtitle is folded into the right-side status to keep the control area clear.
+    ps_heading(fb,"贪吃蛇 · 控制",NULL);
+    // 连接状态放标题栏右侧，避开系统状态栏和中间功能键。
+    // Put connection status at the right of the title bar, clear of the OS status bar and center controls.
+    ps_text(fb,v.w-124,36,11,"蓝牙已连接",4);
+    const char *arrows[]={"↑","→","↓","←"};
+    for(int d=0;d<4;d++){int x,y,w,h;pa_controller_rect(d,&x,&y,&w,&h);ps_button(fb,x,y,w,h,arrows[d],false);}
+    if(v.landscape){
+        ps_button(fb,224,96,160,54,"暂停 / 继续",false);
+        ps_button(fb,224,160,160,54,"切换速度",false);
+        ps_button(fb,224,224,160,54,"重新开始",false);
+    }else{
+        ps_button(fb,40,390,120,52,"暂停 / 继续",false);
+        ps_button(fb,180,390,120,52,"切换速度",false);
+        ps_button(fb,40,456,260,52,"重新开始",false);
+    }
+}
+static void pa_poll_duo(void)
+{
+#ifdef PICO_GAME_MODULE
+    if(a_duo_role!=PGA_DUO_SCREEN)return;
+    for(int i=0;i<4;i++){
+        int input=pga_duo_recv();if(input<0)break;
+        if(input<=3){
+            if(a_paused&&!a_save.snake_over){a_paused=false;ps_dirty();}
+            pa_direction(input);
+        }
+        else if(input==PGA_DUO_PAUSE&&a_kind==PA_SNAKE&&!a_save.snake_over){a_paused=!a_paused;pa_clear_input();a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();ps_dirty();}
+        else if(input==PGA_DUO_SPEED&&a_kind==PA_SNAKE){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();ps_dirty();}
+        else if(input==PGA_DUO_RESTART){pa_reset();}
+    }
+#endif
+}
 static void pa_draw(uint8_t *fb){
-    ps_view_t v=ps_view();char b[80];ps_heading(fb,a_kind==PA_2048?"2048":"贪吃蛇",NULL);
+    a_duo_role=pa_duo_role_now();
+    if(a_duo_role==PGA_DUO_CONTROLLER&&a_kind==PA_SNAKE){pa_draw_controller(fb);return;}
+    ps_view_t v=ps_view();char b[80];
+    bool remote=a_kind==PA_SNAKE&&a_duo_role==PGA_DUO_SCREEN;
+    bool snake_single=a_kind==PA_SNAKE&&!remote&&v.landscape;
+    if(snake_single){
+        ps_button(fb,10,30,28,26,"‹",false);
+        ps_text(fb,48,32,18,"贪吃蛇",0);
+    } else if(!remote)ps_heading(fb,a_kind==PA_2048?"2048":"贪吃蛇",NULL);
     unsigned score=a_kind==PA_2048?a_save.score:a_save.snake_score,best=a_kind==PA_2048?a_save.best:a_save.snake_best;
-    snprintf(b,sizeof(b),"得分 %u    最高 %u",score,best);ps_text(fb,v.landscape?290:20,76,13,b,2);
-    int x,y,size;pa_board(&x,&y,&size);ps_box(fb,x,y,size,size,5,0,false);
+    snprintf(b,sizeof(b),"得分 %u    最高 %u",score,best);
+    if(!remote)ps_text(fb,snake_single?488:(v.landscape?306:20),snake_single?32:(v.landscape?38:76),snake_single?12:13,b,2);
+    int x,y,size,bw=0,bh=0;
+    if(remote){
+        // 副机手柄在线时只留一条窄标题栏，棋盘下移并略微右偏，避开顶部设备状态栏。
+        // Keep only a slim header, move the board below the status bar and nudge it right to look centered.
+        bw=v.landscape?312:300;
+        bh=v.landscape?336:300;
+        x=v.landscape?192:20;
+        y=v.landscape?16:104;
+    } else if(snake_single){bw=296;bh=288;x=168;y=64;size=bw;}
+    else { pa_board(&x,&y,&size); bw=bh=size; }
+    ps_box(fb,x,y,bw,bh,5,0,false);
     if(a_kind==PA_2048){int cell=(size-12)/4;for(int i=0;i<16;i++){int xx=x+6+(i%4)*cell,yy=y+6+(i/4)*cell;uint32_t value=a_save.board[i];int gray=value>=128?2:value>=16?10:14;ps_box(fb,xx+2,yy+2,cell-4,cell-4,4,gray,true);if(value){snprintf(b,sizeof(b),"%u",(unsigned)value);ps_center(fb,xx+cell/2,yy+(cell-23)/2,value>=10000?14:value>=1000?18:25,b,value>=128?15:0);}}}
-    else{int cell=(size-8)/20;int pad=(size-cell*20)/2;for(int i=0;i<a_save.length;i++){int p=a_save.snake[i];ps_fill(fb,x+pad+(p%20)*cell,y+pad+(p/20)*cell,cell-1,cell-1,i?3:0);}if(a_save.food<PA_CELLS){int p=a_save.food;ps_box(fb,x+pad+(p%20)*cell,y+pad+(p/20)*cell,cell-1,cell-1,2,0,false);}if(a_paused||a_save.snake_over){int bw=size-30;ps_box(fb,x+15,y+size/2-22,bw,44,5,15,true);ps_box(fb,x+15,y+size/2-22,bw,44,5,0,false);ps_center(fb,x+size/2,y+size/2-9,15,a_save.snake_over?"本局结束":a_save.snake_moves?"已暂停 · 点继续":"点击开始游戏",0);}}
+    else{int cw=(bw-8)/20,ch=(bh-8)/20,px=(bw-cw*20)/2,py=(bh-ch*20)/2;for(int i=0;i<a_save.length;i++){int p=a_save.snake[i];ps_fill(fb,x+px+(p%20)*cw,y+py+(p/20)*ch,cw-1,ch-1,i?3:0);}if(a_save.food<PA_CELLS){int p=a_save.food;ps_box(fb,x+px+(p%20)*cw,y+py+(p/20)*ch,cw-1,ch-1,2,0,false);}if(a_paused||a_save.snake_over){int ow=bw-30;ps_box(fb,x+15,y+bh/2-22,ow,44,5,15,true);ps_box(fb,x+15,y+bh/2-22,ow,44,5,0,false);ps_center(fb,x+bw/2,y+bh/2-9,15,a_save.snake_over?"本局结束":a_save.snake_moves?"已暂停 · 点继续":"点击开始游戏",0);}}
     if(a_kind==PA_2048&&(a_save.over||(a_save.won&&!a_save.keep_playing))){ps_box(fb,x+12,y+size/2-30,size-24,60,5,15,true);ps_box(fb,x+12,y+size/2-30,size-24,60,5,0,false);ps_center(fb,x+size/2,y+size/2-16,20,a_save.over?"本局结束":"达成2048",0);ps_center(fb,x+size/2,y+size/2+9,12,a_save.over?"点重开再试一次":"点棋盘继续挑战",3);}
-    const char *arrows[]={"↑","→","↓","←"};for(int d=0;d<4;d++){int xx,yy;pa_direction_rect(d,&xx,&yy);ps_button(fb,xx,yy,44,44,arrows[d],a_kind==PA_SNAKE&&!a_paused&&!a_save.snake_over&&d==(a_follow>=0?a_follow:a_next));}
-    int bx=v.landscape?296:62,by=v.landscape?218:508,bw=v.landscape?142:114;ps_button(fb,bx,by,bw,40,"重新开始",false);ps_button(fb,bx+bw+8,by,bw,40,"返回小游戏",false);
-    if(a_kind==PA_SNAKE){int sy=v.landscape?266:556,sw=v.landscape?142:114;const char *speeds[]={"速度 · 慢","速度 · 中","速度 · 快"};ps_button(fb,bx,sy,sw,40,speeds[a_save.speed],false);ps_button(fb,bx+sw+8,sy,sw,40,a_save.snake_over?"本局结束":a_paused?(a_save.snake_moves?"继续":"开始"):"暂停",!a_paused);}
-    else ps_center(fb,v.landscape?440:v.w/2,v.landscape?279:566,12,a_save.over?"尝试不同的合并顺序":"滑动棋盘或点击方向",5);
+    if(!remote&&snake_single){
+        const char *arrows[]={"↑","→","↓","←"};
+        for(int d=0;d<4;d++){int xx,yy,ww,hh;pa_snake_single_rect(d,&xx,&yy,&ww,&hh);ps_button(fb,xx,yy,ww,hh,arrows[d],false);}
+        ps_button(fb,24,264,112,40,a_save.speed==0?"速度 · 慢":a_save.speed==1?"速度 · 中":"速度 · 快",false);
+        ps_button(fb,24,312,112,40,"重新开始",false);
+        ps_button(fb,488,312,120,40,a_save.snake_over?"本局结束":a_paused?(a_save.snake_moves?"继续":"开始"):"暂停",!a_paused);
+    } else if(!remote){
+        const char *arrows[]={"↑","→","↓","←"};for(int d=0;d<4;d++){int xx,yy;pa_direction_rect(d,&xx,&yy);ps_button(fb,xx,yy,44,44,arrows[d],a_kind==PA_SNAKE&&!a_paused&&!a_save.snake_over&&d==(a_follow>=0?a_follow:a_next));}
+        int bx=v.landscape?306:62,by=v.landscape?240:530,bw=v.landscape?146:114;
+        ps_button(fb,bx,by,bw,v.landscape?40:40,"重新开始",false);ps_button(fb,bx+bw+8,by,bw,v.landscape?40:40,"返回小游戏",false);
+        if(a_kind==PA_SNAKE){int sy=v.landscape?286:580,sw=v.landscape?146:114;const char *speeds[]={"速度 · 慢","速度 · 中","速度 · 快"};ps_button(fb,bx,sy,sw,v.landscape?40:40,speeds[a_save.speed],false);ps_button(fb,bx+sw+8,sy,sw,v.landscape?40:40,a_save.snake_over?"本局结束":a_paused?(a_save.snake_moves?"继续":"开始"):"暂停",!a_paused);}
+        else ps_center(fb,v.landscape?455:v.w/2,v.landscape?340:590,11,a_save.over?"尝试不同的合并顺序":"滑动棋盘或点击方向",5);
+    } else {
+        if(v.landscape){
+            ps_button(fb,10,34,62,26,"‹ 返回",false);
+            ps_text(fb,80,32,18,"贪吃蛇",0);
+            ps_text(fb,18,86,12,"得分",5);
+            snprintf(b,sizeof(b),"%u",score);ps_text(fb,18,104,30,b,0);
+            ps_text(fb,18,148,12,"最高",5);
+            snprintf(b,sizeof(b),"%u",best);ps_text(fb,18,166,19,b,3);
+            // 副机状态与操作提示统一放左侧信息栏，不再占用棋盘上方。
+            // Keep the peer status and controls hint in the left column, never above the board.
+            ps_text(fb,18,204,10,"控制机在线",4);
+            ps_text(fb,18,220,10,"方向 / 暂停 / 速度",5);
+            ps_text(fb,18,234,10,"重开由控制机操作",5);
+        } else {
+            ps_text(fb,20,84,12,"得分",5);snprintf(b,sizeof(b),"%u",score);ps_text(fb,20,102,26,b,0);
+            ps_text(fb,180,84,12,"最高",5);snprintf(b,sizeof(b),"%u",best);ps_text(fb,180,102,18,b,3);
+            ps_text(fb,20,v.h-24,11,"副机手柄在线 · 由副机操作方向 / 暂停 / 速度 / 重开",4);
+        }
+    }
     if(a_unsaved)ps_center(fb,v.w/2,v.h-30,11,"游戏未保存，请检查存储空间",0);
 }
 static bool pa_event(const ps_event_t *e){
     if(e->type==PS_CANCEL){a_swipe_tracking=a_contact_handled=false;return true;}
+#ifdef PICO_GAME_MODULE
+    a_duo_role=pa_duo_role_now();
+    if(a_duo_role==PGA_DUO_CONTROLLER&&a_kind==PA_SNAKE){
+        if(e->type==PS_SWIPE_U||e->type==PS_SWIPE_R||e->type==PS_SWIPE_D||e->type==PS_SWIPE_L){
+            int d=e->type==PS_SWIPE_U?0:e->type==PS_SWIPE_R?1:e->type==PS_SWIPE_D?2:3;
+            pga_duo_send((uint8_t)d);return true;
+        }
+        if(e->type==PS_PRESS){
+            // 按下即发送，不再等抬手后的 TAP；这是方向延迟最大的来源。
+            // Send on press, not on release-generated TAP; that was the main direction latency.
+            for(int d=0;d<4;d++){int x,y,w,h;pa_controller_rect(d,&x,&y,&w,&h);if(ps_hit(e->x,e->y,x,y,w,h)){pga_duo_send((uint8_t)d);return true;}}
+            ps_view_t v=ps_view();
+            if(v.landscape){
+                if(ps_hit(e->x,e->y,224,96,160,54)){pga_duo_send(PGA_DUO_PAUSE);return true;}
+                if(ps_hit(e->x,e->y,224,160,160,54)){pga_duo_send(PGA_DUO_SPEED);return true;}
+                if(ps_hit(e->x,e->y,224,224,160,54)){pga_duo_send(PGA_DUO_RESTART);return true;}
+            }else{
+                if(ps_hit(e->x,e->y,40,390,120,52)){pga_duo_send(PGA_DUO_PAUSE);return true;}
+                if(ps_hit(e->x,e->y,180,390,120,52)){pga_duo_send(PGA_DUO_SPEED);return true;}
+                if(ps_hit(e->x,e->y,40,456,260,52)){pga_duo_send(PGA_DUO_RESTART);return true;}
+            }
+        }
+        if(e->type==PS_TAP)return true;
+        return e->type==PS_PRESS||e->type==PS_RELEASE||e->type==PS_MOVE;
+    }
+#endif
+    if(a_kind==PA_2048){
+        // 2048 只用手指滑动棋盘，不绘制也不响应十字键。
+        // 2048 is swipe-only: no D-pad is drawn or handled.
+        if(e->type==PS_PRESS){
+            a_swipe_tracking=a_contact_handled=false;
+            int x,y,size;pa_board(&x,&y,&size);
+            a_swipe_tracking=ps_hit(e->x,e->y,x,y,size,size);
+            return false;
+        }
+        if(e->type==PS_MOVE&&a_swipe_tracking&&!a_contact_handled){
+            int dx=e->x-e->x0,dy=e->y-e->y0,ax=abs(dx),ay=abs(dy);
+            if(pg_max(ax,ay)>=24&&pg_max(ax,ay)*4>=pg_min(ax,ay)*5){pa_shift(ax>ay?(dx>0?1:3):(dy>0?2:0));a_contact_handled=true;return true;}
+            return false;
+        }
+        if(e->type==PS_RELEASE){a_swipe_tracking=false;return false;}
+    }
+    if(a_kind==PA_SNAKE&&a_duo_role==PGA_DUO_SCREEN){
+        ps_view_t v=ps_view();
+        if(e->type==PS_TAP&&v.landscape&&ps_hit(e->x,e->y,10,34,62,26)){pa_pause();ps_navigate(PS_GAMES);return true;}
+        return false;
+    }
+    if(a_kind==PA_SNAKE&&a_duo_role!=PGA_DUO_SCREEN&&ps_view().landscape){
+        // 单机横屏贪吃蛇：导出布局的独立按键区。
+        // Single-device snake: the exported standalone control layout.
+        if(e->type==PS_PRESS){
+            if(ps_hit(e->x,e->y,10,30,28,26)){pa_pause();ps_navigate(PS_GAMES);return true;}
+            a_swipe_tracking=a_contact_handled=false;
+            for(int d=0;d<4;d++){int x,y,w,h;pa_snake_single_rect(d,&x,&y,&w,&h);if(ps_hit(e->x,e->y,x,y,w,h)){pa_direction(d);a_contact_handled=true;return true;}}
+            a_swipe_tracking=!a_paused&&!a_save.snake_over&&ps_hit(e->x,e->y,168,64,296,288);
+            return false;
+        }
+        if(e->type==PS_MOVE&&a_swipe_tracking&&!a_contact_handled){
+            int dx=e->x-e->x0,dy=e->y-e->y0,ax=abs(dx),ay=abs(dy);
+            if(pg_max(ax,ay)>=34&&pg_max(ax,ay)*4>=pg_min(ax,ay)*5){pa_direction(ax>ay?(dx>0?1:3):(dy>0?2:0));a_contact_handled=true;return true;}
+            return false;
+        }
+        if(e->type==PS_RELEASE){a_swipe_tracking=false;return false;}
+        if(e->type==PS_TAP){
+            if(ps_hit(e->x,e->y,24,264,112,40)){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();return true;}
+            if(ps_hit(e->x,e->y,24,312,112,40)){pa_reset();return true;}
+            if(ps_hit(e->x,e->y,488,312,120,40)){a_paused=!a_paused;a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();return true;}
+        }
+        return false;
+    }
     if(a_kind==PA_SNAKE){
         // 方向键按下即响应；棋盘滑动达到阈值后只消费一次，松手合成事件不重复转向。
         // Respond on direction-key press; consume a thresholded board swipe once, never again on release synthesis.
@@ -922,14 +1159,18 @@ static bool pa_event(const ps_event_t *e){
             a_contact_handled=false;return true;
         }
     }
-    if(e->type==PS_SWIPE_U||e->type==PS_SWIPE_R||e->type==PS_SWIPE_D||e->type==PS_SWIPE_L){int d=e->type==PS_SWIPE_U?0:e->type==PS_SWIPE_R?1:e->type==PS_SWIPE_D?2:3;if(a_kind==PA_2048)pa_shift(d);else pa_direction(d);return true;}
+    if(e->type==PS_SWIPE_U||e->type==PS_SWIPE_R||e->type==PS_SWIPE_D||e->type==PS_SWIPE_L){
+        if(a_kind==PA_2048&&a_contact_handled){a_contact_handled=false;return true;}
+        int d=e->type==PS_SWIPE_U?0:e->type==PS_SWIPE_R?1:e->type==PS_SWIPE_D?2:3;
+        if(a_kind==PA_2048)pa_shift(d);else pa_direction(d);return true;
+    }
     if(e->type!=PS_TAP)return false;
     ps_view_t v=ps_view();
     for(int d=0;d<4;d++){int x,y;pa_direction_rect(d,&x,&y);if(ps_hit(e->x,e->y,x,y,44,44)){if(a_kind==PA_2048)pa_shift(d);else pa_direction(d);return true;}}
-    int bx=v.landscape?296:62,by=v.landscape?218:508,bw=v.landscape?142:114;
+    int bx=v.landscape?306:62,by=v.landscape?240:530,bw=v.landscape?146:114;
     if(ps_hit(e->x,e->y,bx,by,bw,40)){pa_reset();return true;}
     if(ps_hit(e->x,e->y,bx+bw+8,by,bw,40)){pa_pause();ps_navigate(PS_GAMES);return true;}
-    if(a_kind==PA_SNAKE){int sy=v.landscape?266:556;if(ps_hit(e->x,e->y,bx,sy,bw,40)){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();return true;}if(ps_hit(e->x,e->y,bx+bw+8,sy,bw,40)){ps_games_action(2);return true;}}
+    if(a_kind==PA_SNAKE){int sy=v.landscape?286:580;if(ps_hit(e->x,e->y,bx,sy,bw,40)){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();return true;}if(ps_hit(e->x,e->y,bx+bw+8,sy,bw,40)){ps_games_action(2);return true;}}
     int x,y,size;pa_board(&x,&y,&size);if(a_kind==PA_2048&&a_save.won&&!a_save.keep_playing&&ps_hit(e->x,e->y,x,y,size,size)){a_save.keep_playing=1;pa_persist();return true;}
     return false;
 }
@@ -1003,7 +1244,7 @@ static const char *pg_status(void)
 static void pg_side_rect(int *x,int *y,int *w)
 {
     ps_view_t view=ps_view();pg_board_rect_t board=pg_board_rect();
-    *x=view.landscape?292:16;*y=view.landscape?100:board.y+board.h+14;*w=view.landscape?view.w-308:view.w-32;
+    *x=view.landscape?296:8;*y=view.landscape?100:board.y+board.h+10;*w=view.landscape?view.w-304:view.w-16;
 }
 
 static void pg_draw_modal(uint8_t *fb)
@@ -1026,10 +1267,192 @@ static void pg_draw_modal(uint8_t *fb)
     }
 }
 
+#ifdef PICO_GAMES_UI_HOST
+static int pg_test_duo_role;
+#endif
+static int pg_duo_role_now(void)
+{
+#ifdef PICO_GAMES_UI_HOST
+    return pg_test_duo_role;
+#elif defined(PICO_GAME_MODULE)
+    return pga_duo_role();
+#else
+    return PGA_DUO_NONE;
+#endif
+}
+
+static void pg_duo_send_action(uint8_t code)
+{
+#ifdef PICO_GAME_MODULE
+    pga_duo_send(code);
+#else
+    (void)code;
+#endif
+}
+static uint8_t pg_duo_capture[2][8];
+static bool pg_duo_capture_ready;
+enum { PG_DUO_UNDO=10, PG_DUO_RESTART=11, PG_DUO_RULES=12 };
+
+static void pg_capture_counts(int side,int out[8])
+{
+    memset(out,0,8*sizeof(int));
+    pg_pos_t initial;pg_initial(&initial,g_pos.type,g_pos.level);
+    for(int i=0;i<pg_count(&g_pos);i++){
+        int a=initial.board[i],b=g_pos.board[i];
+        if(!a||pg_sign(a)!=side)continue;
+        if(!b||pg_sign(b)!=side)out[abs(a)]++;
+    }
+}
+static int64_t pg_duo_last_send_ms;
+static uint32_t pg_duo_last_signature=UINT32_MAX;
+
+static uint32_t pg_duo_pack_board(uint8_t *p)
+{
+    uint32_t moves=g_pos.moves;
+    p[0]=(uint8_t)g_pos.type;p[1]=(uint8_t)g_pos.level;p[2]=(uint8_t)(g_pos.turn+1);
+    p[3]=(uint8_t)(g_pos.result+1);
+    p[4]=(uint8_t)moves;p[5]=(uint8_t)(moves>>8);p[6]=(uint8_t)(moves>>16);p[7]=(uint8_t)(moves>>24);
+    p[8]=(uint8_t)pg_duo_generation;p[9]=(uint8_t)(pg_duo_generation>>8);
+    p[10]=(uint8_t)(pg_duo_generation>>16);p[11]=(uint8_t)(pg_duo_generation>>24);
+    int w[8],b[8];pg_capture_counts(1,w);pg_capture_counts(-1,b);
+    for(int i=0;i<8;i++){p[12+i]=(uint8_t)w[i];p[20+i]=(uint8_t)b[i];}
+    p[28]=g_save.active?1:0;
+    return moves^pg_duo_generation^(uint32_t)g_pos.result<<16^(uint32_t)g_pos.turn<<20^(uint32_t)g_save.active<<24;
+}
+
+static void pg_duo_poll(void)
+{
+    int role=pg_duo_role_now();
+    if(!role)return;
+#ifdef PICO_GAME_MODULE
+    int64_t now=pg_millis();
+    if(role==PGA_DUO_SCREEN){
+        for(int i=0;i<4;i++){
+            int action=pga_duo_recv();if(action<0)break;
+            if(action==PG_DUO_UNDO)pg_undo();
+            else if(action==PG_DUO_RESTART)pg_start_game(g_pos.type);
+            else if(action==PG_DUO_RULES)g_modal=2;
+            ps_dirty();
+        }
+        uint8_t packet[29];uint32_t signature=pg_duo_pack_board(packet);
+        // 变化立即发送，另外每 700ms 重发一次，丢一包也能在下一拍恢复。
+        // Send on change and repeat every 700 ms so one lost BLE packet self-heals.
+        if(signature!=pg_duo_last_signature||now-pg_duo_last_send_ms>=700){
+            if(pga_duo_packet_send(packet,sizeof(packet))){pg_duo_last_signature=signature;pg_duo_last_send_ms=now;}
+        }
+    }else if(role==PGA_DUO_CONTROLLER){
+        uint8_t packet[29];
+        int n=(int)pga_duo_packet_recv(packet,sizeof(packet));
+        if(n>=29&&packet[0]<PG_TYPES){
+            if(!g_save.active||g_pos.type!=packet[0]){
+                g_save.active=1;g_save.type=packet[0];g_save.level=packet[1];
+                pg_initial(&g_pos,packet[0],g_save.level);g_selected=-1;g_modal=0;g_feedback[0]=0;
+            }
+            g_pos.type=packet[0];g_pos.level=packet[1];g_pos.turn=(int8_t)packet[2]-1;g_pos.result=(int8_t)packet[3]-1;
+            g_pos.moves=(uint16_t)(packet[4]|packet[5]<<8|packet[6]<<16|packet[7]<<24);
+            g_save.active=packet[28]&1;
+            for(int i=0;i<8;i++){pg_duo_capture[0][i]=packet[12+i];pg_duo_capture[1][i]=packet[20+i];}
+            pg_duo_capture_ready=true;ps_dirty();
+        }
+    }
+#endif
+}
+
+static void pg_draw_captured_side(uint8_t *fb,int side,int x,int y)
+{
+    int missing[8]={0};
+    if(pg_duo_capture_ready){
+        for(int i=0;i<8;i++)missing[i]=pg_duo_capture[side>0?0:1][i];
+    }else pg_capture_counts(side,missing);
+    const char *names[8]={"","兵","车","马","象","后","王","炮"};
+    if(g_pos.type==PG_CHESS){const int order[]={5,2,4,3,6};int cx=x,cy=y;
+        for(unsigned k=0;k<sizeof(order)/sizeof(*order);k++)for(int n=0;n<missing[order[k]];n++){
+            if(cx+34>x+190){cx=x;cy+=38;}pg_chess_piece(fb,cx+17,cy+17,32,side>0?order[k]:-order[k]);cx+=38;
+        }
+    }else if(g_pos.type==PG_XIANGQI){
+        int cx=x,cy=y;
+        for(int p=1;p<=7;p++)for(int n=0;n<missing[p];n++){
+            if(cx+34>x+190){cx=x;cy+=38;}
+            pg_circle(fb,cx+17,cy+17,15,side>0?15:0);
+            ps_center(fb,cx+17,cy+7,17,names[p],side>0?0:15);cx+=38;
+        }
+    }
+}
+
+static void pg_draw_dual_captures(uint8_t *fb)
+{
+    ps_button(fb,10,30,28,26,"‹",false);
+    ps_text(fb,48,32,20,"被吃掉的子",0);
+    ps_text(fb,20,82,13,g_titles[g_pos.type],5);
+    ps_wrap(fb,20,100,320,10,1,pg_status(),4);
+    if(g_pos.type==PG_CHESS||g_pos.type==PG_XIANGQI){
+        ps_text(fb,20,112,12,g_pos.type==PG_CHESS?"白方损失":"红方损失",4);
+        pg_draw_captured_side(fb,1,20,138);
+        ps_text(fb,20,292,12,"黑方损失",4);
+        pg_draw_captured_side(fb,-1,20,318);
+    }else{
+        ps_text(fb,20,150,16,g_pos.type==PG_GO?"围棋没有单子吃子记录":"五子棋没有吃子",0);
+        ps_text(fb,20,184,12,"主设备负责棋盘和对局",5);
+    }
+    ps_button(fb,20,486,150,40,"悔棋",false);
+    ps_button(fb,190,486,150,40,"重开",false);
+    ps_button(fb,20,540,150,40,"规则与提示",false);
+    ps_button(fb,190,540,150,40,"棋室",false);
+    ps_text(fb,20,600,10,"本机仅显示菜单和吃子",6);
+}
+
+static void pg_draw_dual_board(uint8_t *fb)
+{
+    ps_view_t v=ps_view();
+    ps_button(fb,10,30,28,26,"‹",false);
+    ps_text(fb,48,32,20,g_titles[g_pos.type],0);
+    ps_button(fb,v.w-100,32,80,28,"棋室",false);
+    pg_draw_board(fb);
+    pg_board_rect_t r=pg_board_rect();
+    ps_wrap(fb,20,r.y+r.h+8,v.w-40,13,2,pg_status(),0);
+}
+
 static void pg_draw_play(uint8_t *fb)
 {
     ps_view_t view=ps_view();char subtitle[96];
     snprintf(subtitle,sizeof(subtitle),"%s · 第 %u 手%s",g_levels[g_pos.level-1],g_pos.moves+1,g_unsaved?" · 未保存":"");
+    int duo=pg_duo_role_now();
+    if(duo==PGA_DUO_CONTROLLER){pg_draw_dual_captures(fb);return;}
+    if(duo==PGA_DUO_SCREEN){pg_draw_dual_board(fb);return;}
+    if(view.landscape){
+        // 棋类统一布局：标题左上、状态右上、操作左栏、棋盘居中。
+        // Unified landscape board layout: title left, status right, actions left, board centered.
+        ps_button(fb,10,30,28,26,"‹",false);
+        ps_text(fb,48,32,18,g_titles[g_pos.type],0);
+        ps_button(fb,488,32,120,28,"棋室",false);
+        ps_wrap(fb,488,72,128,14,2,pg_status(),0);
+        ps_text(fb,488,118,10,subtitle,5);
+        pg_draw_board(fb);
+        if(g_pos.type==PG_GO&&g_pos.result){pg_score_t score=pg_score_current();char score_text[80];
+            snprintf(score_text,sizeof(score_text),"黑 %d%s · 白 %d%s（含贴子）",score.black2/2,score.black2%2?".5":"",score.white2/2,score.white2%2?".5":"");
+            ps_wrap(fb,488,148,128,10,3,score_text,0);}
+        if(g_feedback[0])ps_wrap(fb,488,148,128,10,2,g_feedback,4);
+        if(g_pos.result==PG_SCORE){
+            ps_button(fb,24,112,112,40,"确认结果",true);
+            ps_button(fb,24,176,112,40,"继续对局",false);
+            ps_button(fb,24,240,112,40,"规则与提示",false);
+        }else if(g_pos.type==PG_GO){
+            ps_button(fb,24,104,112,40,"悔棋",false);
+            ps_button(fb,24,152,112,40,"停一手",false);
+            ps_button(fb,24,200,112,40,"重开",false);
+            ps_button(fb,24,248,112,40,"规则与提示",false);
+        }else{
+            ps_button(fb,24,112,112,40,"悔棋",false);
+            ps_button(fb,24,176,112,40,"重开",false);
+            if(g_ai_error){
+                ps_button(fb,24,240,112,34,"重试对手",true);
+                ps_button(fb,24,286,112,30,"规则",false);
+            }else ps_button(fb,24,240,112,40,"规则与提示",false);
+        }
+        ps_wrap(fb,488,300,128,10,3,"自动保存 · 中键返回 · 双击切换主页",6);
+        if(g_modal)pg_draw_modal(fb);
+        return;
+    }
     ps_heading(fb,g_titles[g_pos.type],view.landscape?NULL:subtitle);
     if(view.landscape)ps_text(fb,292,77,11,subtitle,5);
     ps_button(fb,view.w-78,32,62,28,"棋室",false);pg_draw_board(fb);
@@ -1103,6 +1526,56 @@ static bool pg_lobby_tap(int tx,int ty)
 static bool pg_play_tap(int tx,int ty)
 {
     ps_view_t view=ps_view();if(g_modal)return pg_modal_tap(tx,ty);
+    if(pg_duo_role_now()==PGA_DUO_CONTROLLER){
+        if(ps_hit(tx,ty,10,30,28,26)){pg_cancel_task();ps_navigate(PS_GAMES);return true;}
+        if(ps_hit(tx,ty,20,486,150,40)){pg_duo_send_action(PG_DUO_UNDO);return true;}
+        if(ps_hit(tx,ty,190,486,150,40)){pg_duo_send_action(PG_DUO_RESTART);return true;}
+        if(ps_hit(tx,ty,20,540,150,40)){pg_duo_send_action(PG_DUO_RULES);return true;}
+        if(ps_hit(tx,ty,190,540,150,40)){pg_cancel_task();ps_navigate(PS_GAMES);return true;}
+        return false;
+    }
+    if(pg_duo_role_now()==PGA_DUO_SCREEN){
+        if(ps_hit(tx,ty,10,30,28,26)||ps_hit(tx,ty,ps_view().w-100,32,80,28)){pg_cancel_task();ps_navigate(PS_GAMES);return true;}
+        int point=pg_board_hit(tx,ty);if(point<0)return false;
+        if(g_pos.turn!=1||g_pos.result)return true;
+        if(g_pos.type==PG_GOMOKU||g_pos.type==PG_GO){pg_commit(pg_point(point));return true;}
+        if(g_pos.board[point]>0){g_selected=g_selected==point?-1:point;g_feedback[0]=0;return true;}
+        if(g_selected<0){snprintf(g_feedback,sizeof(g_feedback),"先选择一枚%s棋子",g_pos.type==PG_CHESS?"白方":"红方");return true;}
+        pg_move_t move={(uint8_t)g_selected,(uint8_t)point,0};
+        if(g_pos.type==PG_CHESS&&g_pos.board[g_selected]==1&&point<8)move.promotion=5;
+        pg_commit(move);return true;
+    }
+    if(view.landscape){
+        if(ps_hit(tx,ty,10,30,28,26)||ps_hit(tx,ty,488,32,120,28)){pg_cancel_task();ps_navigate(PS_GAMES);return true;}
+        if(g_pos.result==PG_SCORE){
+            if(ps_hit(tx,ty,24,112,112,40)){pg_finish_score();return true;}
+            if(ps_hit(tx,ty,24,176,112,40)){pg_continue_go();return true;}
+            if(ps_hit(tx,ty,24,240,112,40)){g_modal=2;return true;}
+            int point=pg_board_hit(tx,ty);if(point>=0)pg_mark_dead(point);
+            return point>=0;
+        }
+        if(g_pos.type==PG_GO){
+            if(ps_hit(tx,ty,24,104,112,40)){pg_undo();return true;}
+            if(ps_hit(tx,ty,24,152,112,40)){if(g_pos.turn==1&&!g_pos.result)pg_commit(pg_point(-1));return true;}
+            if(ps_hit(tx,ty,24,200,112,40)){g_modal=1;return true;}
+            if(ps_hit(tx,ty,24,248,112,40)){g_modal=2;return true;}
+        }else{
+            if(ps_hit(tx,ty,24,112,112,40)){pg_undo();return true;}
+            if(ps_hit(tx,ty,24,176,112,40)){g_modal=1;return true;}
+            if(g_ai_error){
+                if(ps_hit(tx,ty,24,240,112,34)){g_ai_error=false;g_feedback[0]=0;pg_request_ai();return true;}
+                if(ps_hit(tx,ty,24,286,112,30)){g_modal=2;return true;}
+            }else if(ps_hit(tx,ty,24,240,112,40)){g_modal=2;return true;}
+        }
+        int point=pg_board_hit(tx,ty);if(point<0)return false;
+        if(g_pos.turn!=1||g_pos.result)return true;
+        if(g_pos.type==PG_GOMOKU||g_pos.type==PG_GO){pg_commit(pg_point(point));return true;}
+        if(g_pos.board[point]>0){g_selected=g_selected==point?-1:point;g_feedback[0]=0;return true;}
+        if(g_selected<0){snprintf(g_feedback,sizeof(g_feedback),"先选择一枚%s棋子",g_pos.type==PG_CHESS?"白方":"红方");return true;}
+        pg_move_t move={(uint8_t)g_selected,(uint8_t)point,0};
+        if(g_pos.type==PG_CHESS&&g_pos.board[g_selected]==1&&point<8){move.promotion=5;}
+        pg_commit(move);return true;
+    }
     if(ps_hit(tx,ty,view.w-78,32,62,28)){pg_cancel_task();ps_navigate(PS_GAMES);return true;}
     int x,y,w;pg_side_rect(&x,&y,&w);
     if(g_pos.result==PG_SCORE){
@@ -1177,13 +1650,23 @@ void ps_games_enter(ps_route_t route)
 {
     if(route!=PS_ARCADEGAME){if(a_was_active)pa_pause();a_was_active=false;}else a_was_active=true;
     if(route!=PS_PLAYGAME){pg_cancel_task();g_modal=0;g_selected=-1;}
-    else if(!g_save.active){ps_navigate(PS_GAMES);return;}
-    if(route==PS_PLAYGAME){g_ai_error=false;pg_request_ai();}
+    // 棋类包进入即开局：主机直接显示棋盘，副机等待主机的吃子状态。
+    // Entering a board package starts immediately on the primary; the secondary waits for capture state.
+    if(route==PS_PLAYGAME&&!g_save.active&&pg_duo_role_now()!=PGA_DUO_CONTROLLER){
+#ifdef PICO_GAME_MODULE
+        pg_start_game(PICO_GAME_KIND);
+#else
+        pg_start_game(g_save.type<PG_TYPES?g_save.type:0);
+#endif
+    }
+    if(route==PS_PLAYGAME&&g_save.active){g_ai_error=false;pg_request_ai();}
 }
 
 void ps_games_render(uint8_t *fb)
 {
-    if(ps_route()==PS_ARCADEGAME)pa_draw(fb);else if(ps_route()==PS_PLAYGAME&&g_save.active)pg_draw_play(fb);else pg_draw_lobby(fb);
+    if(ps_route()==PS_ARCADEGAME)pa_draw(fb);
+    else if(ps_route()==PS_PLAYGAME&&(g_save.active||pg_duo_role_now()==PGA_DUO_CONTROLLER))pg_draw_play(fb);
+    else pg_draw_lobby(fb);
 }
 
 bool ps_games_event(const ps_event_t *event)
@@ -1191,7 +1674,9 @@ bool ps_games_event(const ps_event_t *event)
     if(ps_route()==PS_ARCADEGAME){bool handled=pa_event(event);if(handled)ps_dirty();return handled;}
     if(ps_route()!=PS_GAMES&&ps_route()!=PS_PLAYGAME)return false;
     if(event->type!=PS_TAP)return g_modal!=0;
-    bool handled=ps_route()==PS_GAMES?pg_lobby_tap(event->x,event->y):pg_play_tap(event->x,event->y);
+    bool controller=pg_duo_role_now()==PGA_DUO_CONTROLLER;
+    bool lobby=ps_route()==PS_GAMES||(!g_save.active&&!controller);
+    bool handled=lobby?pg_lobby_tap(event->x,event->y):pg_play_tap(event->x,event->y);
     if(handled)ps_dirty();
     return handled;
 }
@@ -1212,6 +1697,7 @@ bool ps_games_key(int key)
 bool ps_games_tick(void)
 {
     bool changed=false;
+    if(ps_route()==PS_PLAYGAME)pg_duo_poll();
     if(g_busy&&atomic_load_explicit(&g_job.done,memory_order_acquire)){
         // WithCaps外部删除等待工作任务停止后才回收其TCB和栈。/ External WithCaps deletion stops the worker before reclaiming its TCB and stack.
         vTaskDeleteWithCaps(g_task);g_task=NULL;
@@ -1222,7 +1708,7 @@ bool ps_games_tick(void)
             if(g_job.success){if(!pg_commit(g_job.answer)){g_ai_error=true;snprintf(g_feedback,sizeof(g_feedback),"对手无法完成落子，请点击重试");}}
             else{g_ai_error=true;snprintf(g_feedback,sizeof(g_feedback),"对手计算中断，请点击重试");}changed=true;}
     }
-    if(ps_route()==PS_ARCADEGAME){if(a_kind==PA_SNAKE&&!a_paused&&!a_save.snake_over&&pg_millis()>=a_due){a_due=pg_millis()+pa_delay();return pa_step();}return changed;}
+    if(ps_route()==PS_ARCADEGAME){pa_poll_duo();if(a_kind==PA_SNAKE&&!a_paused&&!a_save.snake_over&&pg_millis()>=a_due){a_due=pg_millis()+pa_delay();return pa_step();}return changed;}
     if(ps_route()==PS_PLAYGAME&&g_save.active&&g_pos.turn==-1&&!g_pos.result&&!g_busy&&!g_ai_error){pg_request_ai();changed=true;}
     return changed;
 }

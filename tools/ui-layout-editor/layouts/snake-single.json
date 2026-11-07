@@ -1,0 +1,102 @@
+{
+  "id": "snake-single",
+  "name": "贪吃蛇 · 单机横屏",
+  "background": "assets/arcade-snake-landscape.png",
+  "elements": [
+    {
+      "id": "title",
+      "type": "text",
+      "x": 48,
+      "y": 32,
+      "w": 150,
+      "h": 24,
+      "label": "贪吃蛇"
+    },
+    {
+      "id": "score",
+      "type": "text",
+      "x": 488,
+      "y": 32,
+      "w": 128,
+      "h": 32,
+      "label": "得分 0    最高 0"
+    },
+    {
+      "id": "board",
+      "type": "board",
+      "x": 168,
+      "y": 64,
+      "w": 296,
+      "h": 288,
+      "label": "游戏棋盘"
+    },
+    {
+      "id": "up",
+      "type": "button",
+      "x": 48,
+      "y": 112,
+      "w": 64,
+      "h": 40,
+      "label": "↑"
+    },
+    {
+      "id": "left",
+      "type": "button",
+      "x": 488,
+      "y": 144,
+      "w": 48,
+      "h": 72,
+      "label": "←"
+    },
+    {
+      "id": "right",
+      "type": "button",
+      "x": 560,
+      "y": 144,
+      "w": 48,
+      "h": 72,
+      "label": "→"
+    },
+    {
+      "id": "down",
+      "type": "button",
+      "x": 48,
+      "y": 176,
+      "w": 64,
+      "h": 40,
+      "label": "↓"
+    },
+    {
+      "id": "restart",
+      "type": "button",
+      "x": 24,
+      "y": 312,
+      "w": 112,
+      "h": 40,
+      "label": "重新开始"
+    },
+    {
+      "id": "speed",
+      "type": "button",
+      "x": 24,
+      "y": 264,
+      "w": 112,
+      "h": 40,
+      "label": "速度 · 中"
+    },
+    {
+      "id": "pause",
+      "type": "button",
+      "x": 488,
+      "y": 312,
+      "w": 120,
+      "h": 40,
+      "label": "开始"
+    }
+  ],
+  "view": {
+    "w": 640,
+    "h": 360
+  },
+  "grid": 8
+}

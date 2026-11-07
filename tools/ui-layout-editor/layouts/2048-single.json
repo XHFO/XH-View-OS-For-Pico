@@ -1,0 +1,102 @@
+{
+  "id": "2048-single",
+  "name": "2048 · 单机横屏",
+  "background": "assets/arcade-2048-landscape.png",
+  "elements": [
+    {
+      "id": "title",
+      "type": "text",
+      "x": 84,
+      "y": 39,
+      "w": 150,
+      "h": 24,
+      "label": "2048"
+    },
+    {
+      "id": "score",
+      "type": "text",
+      "x": 306,
+      "y": 38,
+      "w": 230,
+      "h": 20,
+      "label": "得分 4096    最高 0"
+    },
+    {
+      "id": "board",
+      "type": "board",
+      "x": 30,
+      "y": 84,
+      "w": 252,
+      "h": 252,
+      "label": "2048 棋盘"
+    },
+    {
+      "id": "up",
+      "type": "button",
+      "x": 383,
+      "y": 80,
+      "w": 44,
+      "h": 44,
+      "label": "↑"
+    },
+    {
+      "id": "left",
+      "type": "button",
+      "x": 333,
+      "y": 126,
+      "w": 44,
+      "h": 44,
+      "label": "←"
+    },
+    {
+      "id": "right",
+      "type": "button",
+      "x": 433,
+      "y": 126,
+      "w": 44,
+      "h": 44,
+      "label": "→"
+    },
+    {
+      "id": "down",
+      "type": "button",
+      "x": 383,
+      "y": 172,
+      "w": 44,
+      "h": 44,
+      "label": "↓"
+    },
+    {
+      "id": "restart",
+      "type": "button",
+      "x": 306,
+      "y": 240,
+      "w": 146,
+      "h": 40,
+      "label": "重新开始"
+    },
+    {
+      "id": "back",
+      "type": "button",
+      "x": 460,
+      "y": 240,
+      "w": 146,
+      "h": 40,
+      "label": "返回小游戏"
+    },
+    {
+      "id": "hint",
+      "type": "text",
+      "x": 380,
+      "y": 340,
+      "w": 220,
+      "h": 18,
+      "label": "滑动棋盘或点击方向"
+    }
+  ],
+  "view": {
+    "w": 640,
+    "h": 360
+  },
+  "grid": 8
+}

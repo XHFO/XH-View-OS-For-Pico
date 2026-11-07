@@ -22,9 +22,14 @@ static TaskHandle_t sound_worker;
 #endif
 
 typedef struct { uint16_t hz,ms,gap; } sound_note_t;
-static const sound_note_t touch_notes[]={{2400,22,0}};
+// 触摸音降低一档频率并缩短，避免高频尖锐和过响。
+// Lower and shorten the touch cue to avoid a sharp, loud high note.
+static const sound_note_t touch_notes[]={{1300,16,0}};
 static const sound_note_t charge_notes[]={{1450,38,35},{2200,38,0}};
 static const sound_note_t error_notes[]={{900,35,30},{700,55,0}};
+// 单声低鸣，明显区别于触摸、充电双音和错误双低音。
+// One low beep, distinct from touch, the two-note charge cue and the low error pair.
+static const sound_note_t guard_notes[]={{1050,60,0}};
 static atomic_uint pending,last_event,played;
 static atomic_bool paused,active,available;
 static bool initialized,contact_down,charge_known,external_power;
@@ -34,12 +39,16 @@ static int64_t touch_at,error_at;
 static bool permitted(unsigned event) {
     unsigned value=app_settings_sound_flags(),bit=event==PS_SOUND_TAP?PS_SOUND_TOUCH:
         event==PS_SOUND_CHARGE?PS_SOUND_CHARGING:event==PS_SOUND_FAILURE?PS_SOUND_ERROR:0;
+    // 解除防误触属于安全反馈，只受总开关控制，不受触摸音开关影响。
+    // Guard release is safety feedback: master switch only, independent of the touch cue switch.
+    if(event==PS_SOUND_GUARD) return !atomic_load(&paused)&&(value&PS_SOUND_ENABLED);
     return !atomic_load(&paused)&&(value&PS_SOUND_ENABLED)&&(value&bit);
 }
 #if PS_SOUND_HARDWARE
 static const sound_note_t *notes_for(unsigned event,unsigned *count) {
     if(event==PS_SOUND_TAP){*count=sizeof(touch_notes)/sizeof(*touch_notes);return touch_notes;}
     if(event==PS_SOUND_CHARGE){*count=sizeof(charge_notes)/sizeof(*charge_notes);return charge_notes;}
+    if(event==PS_SOUND_GUARD){*count=sizeof(guard_notes)/sizeof(*guard_notes);return guard_notes;}
     *count=sizeof(error_notes)/sizeof(*error_notes);return error_notes;
 }
 static void sound_task(void *arg) {
@@ -123,6 +132,7 @@ void ps_sound_error(void) {
     if(error_clock&&now_ms>=error_at&&now_ms-error_at<600)return;
     error_clock=true;error_at=now_ms;submit(PS_SOUND_FAILURE);
 }
+void ps_sound_guard(void) { submit(PS_SOUND_GUARD); }
 void ps_sound_pause(void) {
     atomic_store(&paused,true);atomic_store(&pending,PS_SOUND_NONE);notify_worker();
 }
@@ -135,7 +145,7 @@ void ps_sound_snapshot(ps_sound_snapshot_t *out) {
 }
 void ps_sound_render(uint8_t *fb) {
     ps_view_t v=ps_view();uint8_t flags=ps_sound_options();bool enabled=flags&PS_SOUND_ENABLED;
-    ps_heading(fb,"提示音","操作短音 · 充电升调 · 错误低双音");
+    ps_heading(fb,"提示音","低短操作音 · 充电升调 · 错误低双音");
     int top=v.landscape?88:112,rh=v.landscape?44:56,gap=v.landscape?7:12;
     const char *names[]={"提示音","按键与触摸","充电接入","错误提醒"};
     for(unsigned i=0;i<4;i++) {

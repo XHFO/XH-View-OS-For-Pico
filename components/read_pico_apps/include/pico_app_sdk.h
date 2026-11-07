@@ -19,6 +19,10 @@ enum { PGA_PRESS, PGA_MOVE, PGA_RELEASE, PGA_TAP, PGA_LONG, PGA_SWIPE_L,
        PGA_SWIPE_R, PGA_SWIPE_U, PGA_SWIPE_D, PGA_CANCEL };
 enum { PGA_STATUS_ARCADE=1u, PGA_STATUS_SNAKE=2u, PGA_STATUS_PAUSED=4u,
        PGA_STATUS_BUSY=8u, PGA_STATUS_UNSAVED=16u, PGA_STATUS_INK=32u };
+/// 双机游戏角色 / Dual-game role
+typedef enum { PGA_DUO_NONE, PGA_DUO_SCREEN, PGA_DUO_CONTROLLER } pico_app_duo_role_t;
+/// 方向 0..3；4 暂停；5 速度；6 重开 / Directions 0..3; 4 pause; 5 speed; 6 restart
+enum { PGA_DUO_PAUSE=4, PGA_DUO_SPEED=5, PGA_DUO_RESTART=6 };
 typedef struct { int32_t w,h; bool landscape; } pico_app_view_t;
 typedef struct { int32_t type,x0,y0,x,y; int64_t ms; } pico_app_event_t;
 
@@ -137,6 +141,15 @@ typedef struct {
     bool (*home_link_input)(uint32_t command,char *value,size_t capacity);
     /// 可选文案查询；先检查 bytes。未知键可返回键名。/ Optional copy lookup; check bytes first. Unknown keys may return the key.
     const char *(*tr)(const char *key);
+    /// 双机游戏扩展：屏幕机/手柄机角色与控制输入；先检查 bytes。
+    /// Dual-game tail: screen/controller role and control input; check bytes first.
+    int32_t (*duo_role)(void);
+    bool (*duo_input_send)(uint8_t input);
+    int32_t (*duo_input_recv)(void);
+    /// 双机棋类状态小包（最多 32 字节）；主发从收。
+    /// Small dual-game state packet (up to 32 bytes), primary to secondary.
+    bool (*duo_packet_send)(const void *data, size_t bytes);
+    int32_t (*duo_packet_recv)(void *data, size_t capacity);
 } pico_app_host_t;
 
 /// 旧八款应用所需的原始宿主前缀；追加能力不得改变ABI1。/ Original host prefix for the eight existing apps; optional additions preserve ABI1.

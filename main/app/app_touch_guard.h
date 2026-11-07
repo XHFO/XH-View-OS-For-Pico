@@ -19,6 +19,9 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
 
 /// 当前是否处于贴合误触屏蔽窗口。/ Whether the contact-guard window is currently blocking input.
 bool app_touch_guard_blocked(void);
+/// 用户确认解除贴合锁定：结束屏蔽并给出短暂放行窗口。
+/// User-confirmed release of the contact latch: end the shield and allow a short separation window.
+void app_touch_guard_force_release(int64_t now_ms);
 
 /// 取一次状态变化事件：1=开始屏蔽，2=恢复触摸，0=无。用于一次性提示。
 /// Take a one-shot transition: 1=blocked, 2=released, 0=none. Used for a single toast.

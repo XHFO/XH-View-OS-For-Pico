@@ -1,3 +1,119 @@
+## 0.40.0-dual72（独立双机实验版）
+
+- 任一端发起游戏时重发打开请求，解决副机发起丢包/不联动。
+- 打开图书前强制结束残留游戏模块，修复偶发书架打不开书。
+- Retry peer game-open requests and close residual game modules before opening books. Bump to dual72.
+
+## 0.40.0-dual71（独立双机实验版）
+
+- 防误触解除优先于 TF/USB 管理占用电源键，双击后长按始终可解锁。
+- Guard unlock now takes priority over TF/USB management consuming the power key. Bump to dual71.
+
+## 0.40.0-dual70（独立双机实验版）
+
+- 双机打开/退出游戏双向同步，任一端操作都会通知对端。
+- 退出游戏后主动关闭活动游戏模块，避免书架无法打开图书。
+- Bidirectional game open/close sync and explicit game teardown on exit. Bump to dual70.
+
+## 0.40.0-dual69（独立双机实验版）
+
+- 2048 固定竖屏，只用棋盘上下左右滑动，不显示也不响应十字键。
+- 2048 is portrait-only and swipe-only, with no D-pad. Bump to dual69.
+
+## 0.40.0-dual68（独立双机实验版）
+
+- 棋类进入即开局，主机不再先停在包大厅；副机进入等待吃子页。
+- 棋类严格纵向，只有街机强制横屏。
+- Auto-start board games on the primary, keep the secondary on the capture page, and keep board games strictly portrait. Bump to dual68.
+
+## 0.40.0-dual67（独立双机实验版）
+
+- 棋类包大厅保持在游戏路由，不再退回竖屏书架路由；进入游戏即横屏。
+- 副机显示吃子页，主机继续棋盘。
+- Keep board-package lobby on the landscape game route, and show captured pieces on the secondary. Bump to dual67.
+
+## 0.40.0-dual66（独立双机实验版）
+
+- 棋类双机分工：主机显示棋盘，副机显示被吃掉的棋子。
+- 新增 BLE 棋类吃子状态小包，主机每次落子后同步给副机。
+- Split board games across dual screens and sync captured-piece counts over BLE. Bump to dual66.
+
+## 0.40.0-dual65（独立双机实验版）
+
+- 游戏页隐藏顶部系统状态栏，棋盘/游戏画面可以使用整屏高度。
+- 棋类统一布局与单机贪吃蛇横屏布局；修正竖屏棋盘边距。
+- Hide the system status bar on game pages; unify board and single-device snake landscape layouts. Bump to dual65.
+
+## 0.40.0-dual64（独立双机实验版）
+
+- 副机手柄改为分离式：左侧上下、右侧左右、中间三个功能键。
+- 手柄按住触摸时仍持续服务 BLE，方向不再等抬手才发送。
+- Split the controller into left up/down, right left/right and center function keys; keep BLE serviced while touching. Bump to dual64.
+
+## 0.40.0-dual63（独立双机实验版）
+
+- 副机手柄改为左手上下、右手左右，标题栏合并连接提示。
+- 主机恢复窄标题栏返回键，棋盘缩小下移并右偏，避开顶部状态栏。
+- Split controller controls into left up/down and right left/right; add a compact screen header/back and shrink/offset the board. Bump to dual63.
+
+## 0.40.0-dual62（独立双机实验版）
+
+- 主机副机手柄在线时取消顶部标签栏，得分/最高移到左侧，棋盘放大到右侧。
+- 副机方向改为按下即发送，不再等抬手 TAP，降低转向延迟。
+- Remove the screen-unit header and put score/best on the left; send controller directions on press. Bump to dual62.
+
+## 0.40.0-dual61（独立双机实验版）
+
+- 双机手柄在线时主机隐藏方向键和功能键，棋盘居中放大。
+- 主机左横屏、从机倒置横屏，修正两侧 180° 物理差异。
+- Primary hides duplicate controls and centers the board when the peer controller is online; use role-specific landscape rotation. Bump to dual61.
+
+## 0.40.0-dual60（独立双机实验版）
+
+- 游戏页改为倒置横屏，修正 180° 方向；双机游戏打开/输入不再等待书库同步完成。
+- 修正游戏自动打开和手柄方向链路；主设备打开游戏即通知从机。
+- Fix game landscape orientation by 180°, send game open/input before library sync, and keep peer auto-open. Bump to dual60.
+
+## 0.40.0-dual59（独立双机实验版）
+
+- 游戏页固定左横屏，双机阅读方向不再覆盖游戏。
+- 主机打开游戏时通过 BLE 通知从机自动打开同一游戏；从机不再需要手动进入。
+- 从机手柄第一次按方向会自动开始/继续屏幕机游戏。
+- Games force left landscape, auto-open on the peer over BLE, and a controller direction starts the game. Bump to dual59.
+
+## 0.40.0-dual58（独立双机实验版）
+
+- 双击电源键后长按，可解除贴合防误触锁定，并发出独立低音单鸣；期间普通电源短按不生效。
+- 触摸提示音降低到1300Hz/16ms，减小尖锐感和响度。
+- Double-click power then hold to release the contact guard with a dedicated low beep; lower and shorten the touch cue. Bump to dual58.
+
+## 0.40.0-dual57（独立双机实验版）
+
+- 游戏页重新布局：棋盘尽量贴边，横屏侧栏压缩；象棋保持 9:10 格形。
+- 贪吃蛇方向键改为标准十字键，速度提升到 450/300/180ms，方向确认后立即推进一格。
+- 新增双机游戏输入通道与 ABI 尾部：主机为屏幕机、从机为手柄机；贪吃蛇手柄页支持方向、暂停、速度和重开。
+- Expand board layouts, use a real D-pad and faster snake turns, and add the dual-game screen/controller channel. Bump to dual57.
+
+## 0.40.0-dual56（独立双机实验版）
+
+- 扇形滑动改为合并区域单次 DU：保留完整扩大圆框，但不再每次移动做 GL16 闪屏。
+- Fan sliding now refreshes one unioned DU area per move, keeping the full halo without repeated GL16 flashing. Bump to dual56.
+
+## 0.40.0-dual55（独立双机实验版）
+
+- 恢复非 duo 主线扇形滑动刷新：合并新旧光圈和提示区，一次局部 GL16；不再分开做多个 DU。修复滑动闪烁和光圈显示不完整。
+- Restore the non-duo fan refresh: union old/new halos and prompt, then one local GL16 instead of separate DU areas; fixes sliding flicker and clipped halo. Bump to dual55.
+
+## 0.40.0-dual54（独立双机实验版）
+
+- 完全恢复非 duo 扇形快捷菜单默认项：第 12 个位置从“贴合防误触”恢复为“存储”，旧配置中的 40 自动映射回 33。
+- Restore the non-duo fan default: slot 12 is storage again, and saved guard action 40 maps to 33. Bump to dual54.
+
+## 0.40.0-dual53（独立双机实验版）
+
+- 修正右下角扇形快捷手势被“回到双机阅读”悬浮按钮遮挡：按钮上移并避开 48px 角落起手区，滑动时隐藏按钮；扇形菜单本身保持原布局。
+- Move the floating dual-return button above the bottom-corner 48px gesture zone and hide it during a corner swipe, restoring the original corner fan menu entry. Bump to dual53.
+
 ## 0.40.0-dual52（独立双机实验版）
 
 - 修复“回到双机阅读”按钮点击无反应：对端未 ready 时先本地打开对端当前书，再进入阅读合流，不再直接返回失败。

@@ -163,6 +163,15 @@ bool app_touch_guard_filter(cst836u_touch_t *touch, int64_t now_ms, bool dual, b
 }
 
 bool app_touch_guard_blocked(void) { return g.blocked; }
+void app_touch_guard_force_release(int64_t now_ms) {
+    if (!g.initialized) app_touch_guard_reset();
+    if (g.blocked) end_block();
+    g.suspended_until = now_ms + 5000;
+    g.wait_release = true;
+    g.wait_since = now_ms;
+    clear_stats();
+    g.transition_event = 0;
+}
 
 int app_touch_guard_take_event(void) {
     int event = g.transition_event;

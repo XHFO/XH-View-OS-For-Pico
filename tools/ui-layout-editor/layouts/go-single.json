@@ -1,0 +1,94 @@
+{
+  "id": "go-single",
+  "name": "围棋 · 单机横屏",
+  "view": {
+    "w": 640,
+    "h": 360
+  },
+  "grid": 8,
+  "background": "assets/go-landscape.png",
+  "elements": [
+    {
+      "id": "title",
+      "type": "text",
+      "x": 48,
+      "y": 32,
+      "w": 150,
+      "h": 24,
+      "label": "围棋"
+    },
+    {
+      "id": "room",
+      "type": "button",
+      "x": 488,
+      "y": 32,
+      "w": 120,
+      "h": 28,
+      "label": "棋室"
+    },
+    {
+      "id": "board",
+      "type": "board",
+      "x": 168,
+      "y": 64,
+      "w": 296,
+      "h": 288,
+      "label": "棋盘"
+    },
+    {
+      "id": "status",
+      "type": "text",
+      "x": 488,
+      "y": 72,
+      "w": 128,
+      "h": 44,
+      "label": "轮到你 · 黑棋",
+      "font": 20
+    },
+    {
+      "id": "meta",
+      "type": "text",
+      "x": 488,
+      "y": 118,
+      "w": 128,
+      "h": 24,
+      "label": "入门 · 第 7 手"
+    },
+    {
+      "id": "undo",
+      "type": "button",
+      "x": 24,
+      "y": 112,
+      "w": 112,
+      "h": 40,
+      "label": "悔棋"
+    },
+    {
+      "id": "restart",
+      "type": "button",
+      "x": 24,
+      "y": 176,
+      "w": 112,
+      "h": 40,
+      "label": "重开"
+    },
+    {
+      "id": "rules",
+      "type": "button",
+      "x": 24,
+      "y": 240,
+      "w": 112,
+      "h": 40,
+      "label": "规则与提示"
+    },
+    {
+      "id": "footer",
+      "type": "text",
+      "x": 488,
+      "y": 300,
+      "w": 128,
+      "h": 44,
+      "label": "自动保存 · 中键返回"
+    }
+  ]
+}

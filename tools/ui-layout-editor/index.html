@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pico UI Layout Editor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">P</span>
+      <div>
+        <strong>Pico UI Layout Editor</strong>
+        <small>拖拽排列固件界面元素 · 自动保存到本地 JSON</small>
+      </div>
+    </div>
+    <div class="actions">
+      <span id="saveState" class="save-state">加载中…</span>
+      <button id="undoBtn" class="ghost" title="撤销 (Ctrl/Cmd+Z)">撤销</button>
+      <button id="redoBtn" class="ghost" title="重做 (Ctrl/Cmd+Shift+Z)">重做</button>
+      <button id="exportBtn" class="ghost">导出 C</button>
+      <button id="saveBtn" class="primary">保存</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <div class="section-title">页面</div>
+      <div id="screenList" class="screen-list"></div>
+      <div class="sidebar-help">
+        <div class="section-title">操作</div>
+        <p>拖动元素移动</p>
+        <p>拖右下角缩放</p>
+        <p>方向键微调 1px</p>
+        <p>Shift + 方向键 10px</p>
+        <p>Delete 删除</p>
+      </div>
+    </aside>
+
+    <section class="canvas-shell">
+      <div class="canvas-toolbar">
+        <div class="tool-group">
+          <button id="addBtn" class="ghost">＋ 元素</button>
+          <button id="dupBtn" class="ghost">复制</button>
+          <button id="delBtn" class="ghost danger">删除</button>
+          <button id="frontBtn" class="ghost">置顶</button>
+        </div>
+        <div class="tool-group">
+          <label class="check"><input id="gridToggle" type="checkbox" checked> 网格</label>
+          <label class="check"><input id="bgToggle" type="checkbox" checked> 底图</label>
+          <label class="zoom-label">缩放 <input id="zoom" type="range" min="60" max="150" value="100"> <span id="zoomValue">100%</span></label>
+        </div>
+      </div>
+      <div id="viewport" class="viewport">
+        <div id="stage" class="stage">
+          <img id="background" class="background" alt="">
+          <div id="grid" class="grid-layer"></div>
+          <div id="elements" class="elements"></div>
+        </div>
+      </div>
+      <div class="canvas-footer">
+        <span id="overlapInfo">无重叠</span>
+        <span id="cursorInfo">640 × 360</span>
+      </div>
+    </section>
+
+    <aside class="inspector">
+      <div class="section-title">属性</div>
+      <div id="emptyInspector" class="empty">选择一个元素</div>
+      <div id="inspector" class="inspector-body" hidden>
+        <label>ID <input id="propId" type="text"></label>
+        <label>类型
+          <select id="propType">
+            <option value="button">button</option>
+            <option value="text">text</option>
+            <option value="board">board</option>
+            <option value="panel">panel</option>
+          </select>
+        </label>
+        <label>文字 <textarea id="propLabel" rows="2"></textarea></label>
+        <div class="field-grid">
+          <label>X <input id="propX" type="number" step="1"></label>
+          <label>Y <input id="propY" type="number" step="1"></label>
+          <label>W <input id="propW" type="number" step="1"></label>
+          <label>H <input id="propH" type="number" step="1"></label>
+        </div>
+        <div class="field-grid">
+          <label>字号 <input id="propFont" type="number" step="1" min="8" max="48"></label>
+          <label>颜色 <input id="propColor" type="number" step="1" min="0" max="15"></label>
+        </div>
+        <div class="inspector-note">坐标是 640×360 逻辑像素，写入固件前会乘 1.9。</div>
+      </div>
+    </aside>
+  </main>
+
+  <div id="exportModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>导出 C 代码</strong>
+        <button id="closeExport" class="ghost">关闭</button>
+      </div>
+      <textarea id="exportText" readonly spellcheck="false"></textarea>
+      <div class="modal-actions">
+        <span id="copyState"></span>
+        <button id="copyBtn" class="primary">复制到剪贴板</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -113,6 +113,20 @@ bool dl_reading_active(dual_link_t* link, bool active);
 /// Sync a committed selection/annotation; text is truncated to the control-frame limit.
 bool dl_annotation(dual_link_t* link, uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text);
 
+/// 双机游戏手柄输入：手柄机提交，屏幕机读取；BLE 控制通道承载。
+/// Dual-game controller input: controller submits, screen consumes; carried by BLE control.
+bool dl_game_input(dual_link_t* link, uint8_t input);
+bool dl_game_take(dual_link_t* link, uint8_t* input);
+/// 主机请求从机同步打开同一游戏。 / Primary asks the secondary to open the same game.
+bool dl_game_open(dual_link_t* link, uint8_t kind);
+bool dl_game_open_take(dual_link_t* link, uint8_t* kind);
+/// 棋类吃子状态小包；主发从收。 / Captured-state packet; primary to secondary.
+bool dl_game_packet(dual_link_t* link, const void* data, size_t bytes);
+size_t dl_game_packet_take(dual_link_t* link, void* data, size_t capacity);
+/// 任一端退出游戏时通知对端一起退出。 / Either side can request the peer to leave the game.
+bool dl_game_close(dual_link_t* link);
+bool dl_game_close_take(dual_link_t* link);
+
 /// BLE 已加密且认证后才交付控制帧；这些接口只从 UI 线程调用。
 /// Deliver control frames only after BLE encryption/authentication; UI-thread only.
 void dl_control_connected(dual_link_t* link, bool connected);
