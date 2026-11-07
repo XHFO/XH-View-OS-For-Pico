@@ -13,13 +13,14 @@
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v6.1-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 ![Target](https://img.shields.io/badge/target-ESP32--S3-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 
-小纸 Pico 是深圳思维重置科技有限公司旗下小纸 Read 系列的开发板，面向墨水屏开源固件开发者，
-搭载 ESP32-S3 和 4.7 寸单色墨水屏。本仓库是随板发布的出厂固件。
+**XH View OS For Pico** 是 XH Lab 面向小纸 Pico（ESP32-S3、4.7 寸单色墨水屏）
+构建的系统固件。本私有仓库包含当前双机预览分支的完整固件源码、系统应用和构建资料。
 
-固件为显示、触摸、加速度计、电源、按键、TF 卡、字体、睡眠与唤醒提供独立的演示页和诊断页，
-用于逐项确认硬件状态，并为自有固件提供刷新策略、功耗处理和交互方式的参考实现。
+系统整合书架与阅读器、传书工具、Home Link、TF 应用、诊断页面和双机联动；
+原有硬件演示与诊断页面继续保留。小纸 Pico 板级支持、PMU 协议主机端和芯片驱动
+来自 MindReset 上游项目，可独立复用。
 
-板级支持、PMU 协议主机端和芯片驱动均为可独立复用的组件。这是一份硬件演示固件，并非完整的阅读器产品。
+本仓库是先行预览系统固件，不是另行发布的完成态阅读器产品。
 
 面向 AI agent 的目录职责、`app_desc_t` 契约、术语表和注释规范见 [AGENTS.md](AGENTS.md)。
 
