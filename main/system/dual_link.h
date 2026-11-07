@@ -54,6 +54,8 @@ typedef struct {
     bool calibration_request; ///< 从机请求主机重新校准。/ Secondary asks the primary to calibrate.
     bool peer_reading; ///< 对端当前是否仍在阅读页。/ Whether the peer is still on the reading page.
     bool remote_open; ///< 主机收到任意一端的显式开书请求，可越过本机 away 锁。/ Primary accepted an explicit open request and may override local away.
+    bool game_active; ///< 已确认的游戏会话。 / Accepted game session.
+    uint32_t game_session; ///< 当前游戏会话 ID。 / Current game session ID.
     bool annotation_valid; ///< 是否收到划词/批注事件。/ Whether a selection/annotation event is available.
     uint32_t annotation_seq, annotation_chapter, annotation_start, annotation_end;
     uint8_t annotation_type;
@@ -130,6 +132,7 @@ bool dl_game_take(dual_link_t* link, uint8_t* input);
 /// 任一端请求对端同步打开同一游戏；请求在断线后保留，收到 ACK 前重试。
 /// Either role may request the peer to open the same game; retain and retry until ACK.
 bool dl_game_open(dual_link_t* link, uint8_t kind);
+bool dl_game_open_pending(const dual_link_t* link);
 /// 取出待应用的游戏打开请求；完成后必须调用 open_finish 发送 ACK/NACK。
 /// Take an incoming game-open request; finish_open must send its ACK/NACK.
 bool dl_game_open_take(dual_link_t* link, uint8_t* kind, uint32_t* session, uint32_t* request);

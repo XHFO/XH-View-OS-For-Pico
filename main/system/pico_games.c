@@ -63,6 +63,12 @@ static char s_pending_id[32];
 static bool s_pending_tool;
 static int s_remove=-1,s_nav=-1;
 static bool s_dual_game_applying;
+static struct {
+    bool valid;
+    char event[24];
+    int kind;
+    unsigned generation, aux;
+} s_dual_game_status;
 static char s_error[160];
 static pico_app_package_t s_active_info;
 static const pico_app_exports_t *s_app;
@@ -203,7 +209,20 @@ static void host_worker_suspend(void) { vTaskSuspend(NULL); }
 static uint32_t host_worker_stack_free(void) { return (uint32_t)uxTaskGetStackHighWaterMark(NULL); }
 static void host_delay(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); }
 static void host_diagnostic(const char *event,int type,unsigned generation,unsigned stack_free) {
+    if (event && !strncmp(event, "duo_", 4)) {
+        snprintf(s_dual_game_status.event, sizeof(s_dual_game_status.event), "%s", event);
+        s_dual_game_status.kind = type;
+        s_dual_game_status.generation = generation;
+        s_dual_game_status.aux = stack_free;
+        s_dual_game_status.valid = true;
+    }
     ESP_LOGI("pico_apps","%s %s kind=%d generation=%u stack_free=%u",s_active_info.id,event,type,generation,stack_free);
+}
+bool ps_games_duo_status(char *event,size_t capacity,int *kind,unsigned *generation,unsigned *aux) {
+    if(!event||!capacity||!kind||!generation||!aux||!s_dual_game_status.valid)return false;
+    snprintf(event,capacity,"%s",s_dual_game_status.event);
+    *kind=s_dual_game_status.kind;*generation=s_dual_game_status.generation;*aux=s_dual_game_status.aux;
+    return true;
 }
 static bool host_weread(uint32_t command,pico_app_weread_status_t *out){
     if(!out||out->bytes<sizeof(*out)||!s_app||strcmp(s_active_info.id,"weread"))return false;
@@ -773,15 +792,23 @@ bool ps_games_tick(void) {
         ps_dual_game_close_finish(dual_request,!game_route(ps_route()));
         return true;
     }
+    // 从机可能先进入游戏，此时主机仍在书架且目录尚未扫描；先就绪目录，
+    // 未取走 BLE 打开请求，下一轮继续处理，不能过早 NACK。
+    // The peer may enter first while this unit is still on the shelf; prepare
+    // the catalog before consuming the BLE request so it is not NACKed early.
+    if(ps_dual_game_open_pending()&&!storage_held()&&ps_background_io_allowed())ps_games_rescan();
     uint8_t open_kind=0;
-    if(ps_dual_game_open_take(&open_kind,&dual_session,&dual_request)){
+    if(s_count>0&&ps_dual_game_open_take(&open_kind,&dual_session,&dual_request)){
         bool opened=false;
-        for(unsigned i=0;i<s_count;i++)if(s_items[i].info.kind==open_kind){
-            s_dual_game_applying=true;
-            opened=open_item(i);
-            if(!opened)ps_toast(s_error);
-            s_dual_game_applying=false;
-            break;
+        for(int attempt=0;attempt<2&&!opened;attempt++){
+            for(unsigned i=0;i<s_count;i++)if(s_items[i].info.kind==open_kind){
+                s_dual_game_applying=true;
+                opened=open_item(i);
+                if(!opened)ps_toast(s_error);
+                s_dual_game_applying=false;
+                break;
+            }
+            if(!opened&&attempt==0)ps_games_rescan();
         }
         ps_dual_game_open_finish(dual_request,dual_session,opened);
         return true;

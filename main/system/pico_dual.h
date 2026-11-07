@@ -43,6 +43,7 @@ uint8_t ps_dual_game_role(void);
 bool ps_dual_game_send(uint8_t input);
 int ps_dual_game_recv(void);
 bool ps_dual_game_open(uint8_t kind);
+bool ps_dual_game_open_pending(void);
 bool ps_dual_game_open_take(uint8_t* kind, uint32_t* session, uint32_t* request);
 void ps_dual_game_open_finish(uint32_t request, uint32_t session, bool accepted);
 bool ps_dual_game_open_result_take(uint32_t* request, bool* accepted);

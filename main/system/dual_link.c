@@ -1409,6 +1409,8 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->calibration_request = d->calibration_request;
     out->peer_reading = d->peer_reading;
     out->remote_open = d->remote_open;
+    out->game_active = d->game_active;
+    out->game_session = d->game_session;
     out->annotation_valid = d->annotation_valid;
     out->annotation_seq = d->annotation_seq;
     out->annotation_type = d->annotation_type;
@@ -1540,6 +1542,9 @@ bool dl_game_open(dual_link_t* d, uint8_t kind) {
     d->game_pending = d->game_ready = false;
     d->game_payload_pending = d->game_payload_ready = false;
     return true;
+}
+bool dl_game_open_pending(const dual_link_t* d) {
+    return d && d->game_open_ready;
 }
 bool dl_game_open_take(dual_link_t* d, uint8_t* kind, uint32_t* session, uint32_t* request) {
     if (!d || !kind || !session || !request || !d->game_open_ready) return false;

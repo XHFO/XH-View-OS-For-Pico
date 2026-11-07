@@ -261,6 +261,8 @@ unsigned ps_games_count(void);
 bool ps_games_item(unsigned index,const char **id,const char **title);
 /// 按稳定包ID启动游戏，复用保存、介质检查与单模块载入流程。/ Open a stable game package ID through existing save, media and single-module guards.
 bool ps_games_open_id(const char *id);
+/// 最近一次双机棋局启动动作，用于可信 USB 验收；不含棋局内容。 / Latest dual-game start action for trusted USB validation; no game content.
+bool ps_games_duo_status(char *event, size_t capacity, int *kind, unsigned *generation, unsigned *aux);
 bool ps_games_install(const char *staged_path,bool replace);
 bool ps_games_remove(const char *id);
 const char *ps_games_last_error(void);

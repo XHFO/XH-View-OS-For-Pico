@@ -48,6 +48,8 @@
 #define PGA_DUO_PAUSE 4
 #define PGA_DUO_SPEED 5
 #define PGA_DUO_RESTART 6
+#define PGA_DUO_CONTINUE 7
+#define PGA_DUO_NEW_GAME 8
 #endif
 
 /* ---- 规则与存档 / Rules and records ---- */
@@ -1295,6 +1297,12 @@ static void pg_duo_send_action(uint8_t code)
     (void)code;
 #endif
 }
+
+static void pg_duo_request_start(bool new_game)
+{
+    if(pg_duo_role_now()==PGA_DUO_CONTROLLER)
+        pg_duo_send_action(new_game?PGA_DUO_NEW_GAME:PGA_DUO_CONTINUE);
+}
 static uint8_t pg_duo_capture[2][8];
 static bool pg_duo_capture_ready;
 static uint32_t pg_duo_peer_generation,pg_duo_peer_moves;
@@ -1340,6 +1348,15 @@ static void pg_duo_poll(void)
             int action=pga_duo_recv();if(action<0)break;
             if(action==PG_DUO_UNDO)pg_undo();
             else if(action==PG_DUO_RESTART)pg_start_game(g_pos.type);
+            else if(action==PGA_DUO_NEW_GAME){
+                pga_host->diagnostic("duo_new_game",g_pos.type,pg_duo_generation,(unsigned)g_save.active);
+                pg_start_game(g_pos.type);
+            }
+            else if(action==PGA_DUO_CONTINUE){
+                pga_host->diagnostic("duo_continue",g_pos.type,pg_duo_generation,(unsigned)g_save.active);
+                if(g_save.active)ps_navigate(PS_PLAYGAME);
+                else pg_start_game(g_pos.type);
+            }
             else if(action==PG_DUO_RULES)g_modal=2;
             ps_dirty();
         }
@@ -1502,7 +1519,8 @@ static bool pg_modal_tap(int tx,int ty)
     int x=(view.w-w)/2,y=(view.h-h)/2;
     if(!ps_hit(tx,ty,x,y,w,h)){g_modal=0;g_promotion_to=-1;return true;}
     if(g_modal==1){if(ps_hit(tx,ty,x+20,y+h-55,(w-52)/2,35)){g_modal=0;return true;}
-        if(ps_hit(tx,ty,x+32+(w-52)/2,y+h-55,(w-52)/2,35)){pg_start_game(g_pos.type);return true;}}
+        if(ps_hit(tx,ty,x+32+(w-52)/2,y+h-55,(w-52)/2,35)){
+            pg_duo_request_start(true);pg_start_game(g_pos.type);return true;}}
     else if(g_modal==2){if(ps_hit(tx,ty,x+20,y+h-42,w-40,28))g_modal=0;}
     else{int bw=(w-48)/4;const int pieces[]={5,2,4,3};
         for(int i=0;i<4;i++)if(ps_hit(tx,ty,x+18+i*(bw+4),y+86,bw,88)){
@@ -1535,8 +1553,12 @@ static bool pg_lobby_tap(int tx,int ty)
     for(int i=0;i<3;i++)if(ps_hit(tx,ty,x+i*(bw+gap),y+32,bw,38)){p->level=i+1;p->streak=0;pg_persist();return true;}
     if(ps_hit(tx,ty,x,y+82,w,38)){p->automatic=!p->automatic;p->streak=0;pg_persist();return true;}
     int bx=view.landscape?324:x,by=view.landscape?94:y+188,bw2=view.landscape?view.w-350:w;
-    if(g_save.active&&ps_hit(tx,ty,bx,by,bw2,42)){ps_navigate(PS_PLAYGAME);return true;}
-    if(ps_hit(tx,ty,bx,by+54,bw2,42)){if(g_save.active)g_modal=1;else pg_start_game(type);return true;}
+    if(g_save.active&&ps_hit(tx,ty,bx,by,bw2,42)){
+        pg_duo_request_start(false);ps_navigate(PS_PLAYGAME);return true;}
+    if(ps_hit(tx,ty,bx,by+54,bw2,42)){
+        if(g_save.active)g_modal=1;
+        else{pg_duo_request_start(true);pg_start_game(type);}
+        return true;}
     if(ps_hit(tx,ty,bx,by+108,bw2,38)){g_modal=2;return true;}
     return false;
 }
@@ -1716,7 +1738,7 @@ bool ps_games_key(int key)
 bool ps_games_tick(void)
 {
     bool changed=false;
-    if(ps_route()==PS_PLAYGAME)pg_duo_poll();
+    if(ps_route()==PS_PLAYGAME||ps_route()==PS_GAMES)pg_duo_poll();
     if(g_busy&&atomic_load_explicit(&g_job.done,memory_order_acquire)){
         // WithCaps外部删除等待工作任务停止后才回收其TCB和栈。/ External WithCaps deletion stops the worker before reclaiming its TCB and stack.
         vTaskDeleteWithCaps(g_task);g_task=NULL;

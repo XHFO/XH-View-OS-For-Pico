@@ -1,3 +1,10 @@
+## 0.40.0-dual74（独立双机实验版）
+
+- 棋类大厅的“继续棋局”和“开始新局”现在会通过双机输入通道同步到主机；从机确认重开时也会重置主机棋盘。
+- 主机收到远端游戏打开请求时先刷新游戏目录，目录尚未扫描完不会提前 NACK。
+- 增加游戏启动动作与游戏 session 的可信 USB 诊断输出。
+- Dual-game chess lobby Continue and New Game now execute on the primary; refresh the game catalog before acknowledging a remote open, and expose bounded game-session diagnostics. Bump to dual74.
+
 ## 0.40.0-dual73（独立双机实验版）
 
 - 游戏打开改为双向请求；加入 session、request ID、ACK/NACK、断线重连重声明和关闭确认，修复从机发起后主机不接力。

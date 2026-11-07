@@ -396,6 +396,9 @@ bool ps_dual_game_open(uint8_t kind) {
     if (!dual_session && !start()) return false;
     return dl_game_open(dual_session, kind);
 }
+bool ps_dual_game_open_pending(void) {
+    return dual_session && dl_game_open_pending(dual_session);
+}
 bool ps_dual_game_open_take(uint8_t* kind, uint32_t* session, uint32_t* request) {
     return dual_session && dl_game_open_take(dual_session, kind, session, request);
 }
@@ -1157,11 +1160,30 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
     bool game_item = !strncmp(line, "RPICO DUAL GAME ITEM ", 21);
     bool game_open = !strncmp(line, "RPICO DUAL GAME OPEN ", 21);
+    bool game_input = !strncmp(line, "RPICO DUAL GAME INPUT ", 22);
+    bool game_status = !strcmp(line, "RPICO DUAL GAME STATUS");
     if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock &&
-        !guard && !calibrate && !font && !game_item && !game_open && strcmp(line, "RPICO DUAL STATUS")) return false;
+        !guard && !calibrate && !font && !game_item && !game_open && !game_input && !game_status &&
+        strcmp(line, "RPICO DUAL STATUS")) return false;
     load();
     bool accepted = true;
-    if (game_item || game_open) {
+    if (game_status) {
+        char event[24]={0};int kind=0;unsigned generation=0,aux=0;
+        accepted=ps_games_duo_status(event,sizeof(event),&kind,&generation,&aux);
+        snprintf(out,capacity,
+            "{\"dual_game_status\":true,\"accepted\":%s,\"event\":\"%s\",\"kind\":%d,\"generation\":%u,\"active\":%u}",
+            accepted?"true":"false",event,kind,generation,aux);
+        return true;
+    } else if (game_input) {
+        const char* digits=line+22;
+        unsigned code=0;
+        accepted=*digits!=0&&strlen(digits)<=3;
+        for(const char* c=digits;accepted&&*c;++c){
+            if(*c<'0'||*c>'9')accepted=false;
+            else code=code*10+(unsigned)(*c-'0');
+        }
+        accepted=accepted&&code<=255&&ps_dual_game_send((uint8_t)code);
+    } else if (game_item || game_open) {
         const char* digits=line+21;
         unsigned index=0;
         accepted=*digits!=0&&strlen(digits)<=3;
@@ -1267,7 +1289,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
         "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
         "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
-        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"base_valid\":%s,\"cal_request\":%s,\"peer_reading\":%s,\"remote_open\":%s,\"orientation\":%u,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"game_active\":%s,\"game_session\":%u,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"base_valid\":%s,\"cal_request\":%s,\"peer_reading\":%s,\"remote_open\":%s,\"orientation\":%u,"
         "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
         accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
         state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
@@ -1279,7 +1301,7 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         state.reused,(unsigned)state.verified_bytes,(unsigned)state.resumed,
         state.listed?"true":"false",state.peer_listed?"true":"false",
         state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
-        (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
+        (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",state.game_active?"true":"false",(unsigned)state.game_session,
         (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,status.base_valid?"true":"false",status.calibration_request?"true":"false",status.peer_reading?"true":"false",status.remote_open?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
         book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
