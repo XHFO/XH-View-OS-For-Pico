@@ -216,6 +216,12 @@ See [Changelog](docs/CHANGELOG.md) for feature changes. Offline pinyin data come
 - [epdiy](https://github.com/vroland/epdiy): e-paper timing and rendering. This is a
   trimmed fork for the board's LCD path, licensed under LGPL-3.0-or-later.
   Local changes are listed in [components/epdiy/LICENSE](components/epdiy/LICENSE).
+- [kiikoread / Pico Reader](https://github.com/wegooo-cell/read-pico-reader) by
+  Kiiko is the source of the E0470 staggered page-turn waveform and animation
+  implementation. MindReset lists the community firmware on its
+  [Read Pico integrations page](https://dot.mindreset.tech/docs/read_0/start/kiikoread).
+  This repository adapts it for the paired reader in
+  [components/e0470_page_turn](components/e0470_page_turn/README.md).
 - Uses MiSans. The default full TF-card font is the unmodified official MiSans variable font, bundled as a software component under the [MiSans license](licenses/misans/LICENSE.zh-CN.txt), with the [original agreement](licenses/misans/MiSans-License.pdf). See [deployment notes](sdcard/README.md).
 - [stb_truetype](https://github.com/nothings/stb): glyph rasterization, public domain.
 - [pwm_audio](https://github.com/espressif/esp-iot-solution/tree/master/components/audio/pwm_audio):

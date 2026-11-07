@@ -2,8 +2,11 @@
  * SPDX-FileCopyrightText: 2026 mindreset
  * SPDX-License-Identifier: Apache-2.0
  *
- * 基于 MindReset Read Pico 官方 E0470 波形与刷新路径实现。
- * Built on the MindReset Read Pico E0470 waveform and refresh path.
+ * 错相揭页实现源自 Kiiko 厂长（kiikoread / Pico Reader），并基于 MindReset
+ * Read Pico 的 E0470 波形与刷新路径适配。
+ * The staggered page-turn implementation originates from Kiiko (kiikoread /
+ * Pico Reader) and is adapted onto the MindReset Read Pico E0470 waveform and
+ * refresh path.
  * 错相揭页引擎实现。阅读使用8带/GL16；主页可指定柔和序列和条带数。差分只算一次，每拍只换对应相位的1K LUT。
  * Staggered page-turn engine: reading uses 8 bands / GL16; main pages may supply a soft sequence and band count. Calculate differences once and select per-band 1 KiB phase LUTs on each tick.
  * 用户2026-10-29：根页清理支持45相，阅读仍41相；保留方向、11090us节拍及各自灰阶序列。
