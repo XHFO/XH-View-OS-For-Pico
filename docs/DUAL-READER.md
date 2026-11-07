@@ -4,7 +4,7 @@
 
 This feature belongs only to `experiment/dual-pico-reader`, based on the local dev71 implementation. It is not merged into the main system. Use dual74 on both readers for incremental sync, left-page-first presentation, shared typography, contents and source navigation, and primary-following orientation with independent 180-degree offsets.
 
-本私有分支提供完整源码；私有仓库 `main` 原有的切片目录不受此分支上传影响。
+本分支提供完整源码；公共仓库 `main` 原有的切片目录不受此分支上传影响。
 
 This private branch contains the complete firmware tree; the repository’s existing slice-based main branch is maintained separately.
 
@@ -80,7 +80,7 @@ The data channel uses local IPv4 pairing and authenticated TCP; controls use sep
 
 ## 构建与验证 / Build and verify
 
-上游 CI 工作流原样保留在 [docs/ci/upstream-build.yml](ci/upstream-build.yml)，作为构建参考。此私有实验分支使用下面的命令进行本地构建与测试。
+上游 CI 工作流原样保留在 [docs/ci/upstream-build.yml](ci/upstream-build.yml)，作为构建参考。本实验分支使用下面的命令进行本地构建与测试。
 
 The upstream CI definition is preserved unchanged at `docs/ci/upstream-build.yml` as a build reference. Use the commands below to build and test this private experiment locally.
 
