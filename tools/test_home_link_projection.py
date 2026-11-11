@@ -42,7 +42,9 @@ def main():
         env.globals["is_number"] = is_number
         template = env.from_string(request["template"])
         def render(rows, printers=None):
-            return template.render(states=States(rows), printers=printers if printers is not None else request["variables"]["printers"], area_name=lambda entity: "书房" if entity == "light.first" else None)
+            variables=dict(request["variables"])
+            if printers is not None:variables["printers"]=printers
+            return template.render(states=States(rows), **variables, area_name=lambda entity: "书房" if entity == "light.first" else None)
         huge = "x" * 300000
         rows = [state("light.first", friendly_name="阅读灯", huge_unused=huge, temperature="NaN")]
         rows += [state("sensor.noise_"+str(i), "1", device_class="power", history=huge) for i in range(600)]
@@ -74,5 +76,27 @@ def main():
         assert discovered[-1]["pico_cut"] and len(discovered)==9
         subprocess.run(command+["-DPICO_HOME_LINK_FULL=0"],check=True)
         subprocess.run([str(binary),str(small),"6","6"],check=True)
-        print(f"Jinja: 1603 entities / huge individual attributes projected to {len(rendered.encode())} bytes; adversarial max {len(worst_json.encode())} / {192*1024} bytes; empty/overflow/long IDs passed")
+        scoped=json.loads(subprocess.check_output([str(binary),"scoped-template"]))
+        limited=env.from_string(scoped['template'])
+        large=[state('light.office_'+str(i),friendly_name='书房灯') for i in range(100)]
+        large += [state('light.other_'+str(i)) for i in range(1500)]
+        large += [state('sensor.bad_sdcard_status','idle'),state('sensor.p1_print_status','printing'),state('sensor.p1_print_progress','42')]
+        area_id=lambda entity:'office' if 'office_' in entity or '.p1_' in entity else 'other'
+        kwargs=dict(states=States(large),area_id=area_id,area_name=lambda entity:'书房',is_number=is_number)
+        selected=json.loads(limited.render(**kwargs,**scoped['variables']))
+        assert selected[-1]['pico_total']==100 and len([x for x in selected if not x.get('pico_printer') and 'entity_id' in x])==64
+        assert not any('other_' in x.get('entity_id','') or 'sdcard' in x.get('entity_id','') for x in selected)
+        assert any(x.get('entity_id')=='sensor.p1_print_status' for x in selected)
+        empty_scope=dict(scoped['variables'],areas=[],printer_only=True)
+        no_home=json.loads(limited.render(**kwargs,**empty_scope))
+        assert no_home[-1]['pico_total']==0 and all(x.get('pico_printer') for x in no_home[:-1])
+        area_template=env.from_string(subprocess.check_output([str(binary),'areas-template'],text=True))
+        catalog=json.loads(area_template.render(states=States(large),area_id=area_id,area_name=lambda entity:'书房'))
+        assert catalog['total']==2 and sum(x['devices'] for x in catalog['items'])==1600
+        many=[state('light.room_'+str(i)) for i in range(40)]
+        catalog=json.loads(area_template.render(states=States(many),area_id=lambda e:e,area_name=lambda e:'房间'))
+        assert catalog['total']==40 and len(catalog['items'])==32
+        catalog=json.loads(area_template.render(states=States([state('light.no_area')]),area_id=lambda e:None,area_name=lambda e:None))
+        assert catalog['items']==[dict(id='',name='未分配房间',devices=1)]
+        print(f"Jinja: legacy projection {len(rendered.encode())} bytes; scoped 1600 entities filtered before response, 64 cap, zero selection, printer suffix matching, room counts/overflow/unassigned passed")
 if __name__ == "__main__": main()

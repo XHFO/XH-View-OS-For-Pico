@@ -146,17 +146,16 @@ void ps_sound_snapshot(ps_sound_snapshot_t *out) {
 void ps_sound_render(uint8_t *fb) {
     ps_view_t v=ps_view();uint8_t flags=ps_sound_options();bool enabled=flags&PS_SOUND_ENABLED;
     ps_heading(fb,"提示音","低短操作音 · 充电升调 · 错误低双音");
-    int top=v.landscape?88:112,rh=v.landscape?44:56,gap=v.landscape?7:12;
+    int top=112,rh=v.landscape?40:56,gap=v.landscape?6:12;
     const char *names[]={"提示音","按键与触摸","充电接入","错误提醒"};
     for(unsigned i=0;i<4;i++) {
-        char label[64];snprintf(label,sizeof(label),"%s · %s",names[i],flags&(1u<<i)?"开":"关");
-        ps_button(fb,20,top+i*(rh+gap),v.w-40,rh,label,(flags&(1u<<i))&&(i==0||enabled));
+        ps_toggle(fb,20,top+i*(rh+gap),v.w-40,rh,names[i],flags&(1u<<i),i==0||enabled);
     }
     ps_wrap(fb,24,top+4*(rh+gap)+4,v.w-48,11,2,"关闭总开关即静音。锁屏和休眠期间不发提示音。",5);
 }
 bool ps_sound_event(const ps_event_t *event) {
     if(!event||event->type!=PS_TAP)return false;
-    ps_view_t v=ps_view();int top=v.landscape?88:112,rh=v.landscape?44:56,gap=v.landscape?7:12;
+    ps_view_t v=ps_view();int top=112,rh=v.landscape?40:56,gap=v.landscape?6:12;
     uint8_t flags=ps_sound_options();
     for(unsigned i=0;i<4;i++)if(ps_hit(event->x,event->y,20,top+i*(rh+gap),v.w-40,rh)) {
         if(i&&!(flags&PS_SOUND_ENABLED)){ps_toast("请先开启提示音");return true;}

@@ -18,9 +18,21 @@
 
 ## 应用包 / App packages
 
-“应用集”顶部的“应用下载”横幅读取 `updates/apps.txt`，然后打开应用选择层；用户可逐项勾选、全选缺失项或翻页查看，确认后只下载所选包。下载使用固定 HTTPS 来源、证书验证和 30 秒超时，先写入 `apps/.staging/<id>.tmp`，再由现有 PGA 安装事务校验并原子提交。已存在的包不会重复下载；需要更新或修复时先移除对应应用。应用集右侧“扫描”只重读本机 TF 应用，不联网。
+从 dual98 起，应用跟随设备更新频道：稳定使用 `updates/apps.txt` 与 `apps/packages/`，测试使用 `updates/test/apps.txt` 与 `apps/packages/test/`。切换频道会清除目录及未提交选择，下载或安装期间禁止切换；两类包分别发布，不向旧稳定固件推送依赖新宿主接口的应用。
 
-Tap the App downloads banner inside Apps to read `updates/apps.txt`, then choose one or more missing packages from the selection layer. Downloads use the fixed HTTPS origin, certificate verification and a 30-second timeout; the existing PGA installer validates the staged file before an atomic commit. The Scan action only re-reads local TF packages.
+From dual98, apps follow the update channel: stable uses `updates/apps.txt` and `apps/packages/`; test uses `updates/test/apps.txt` and `apps/packages/test/`. Switching discards the catalog and pending selection and is rejected during downloads or installation. Publish the feeds independently to protect older stable hosts.
+
+“应用集”顶部的“应用下载与更新”横幅读取 `updates/apps.txt`，比较本地包头与云端版本，分别标记可下载、可更新、已是最新或已安装（远端版本未确认）。用户可逐项勾选或全选可安装项，确认后只下载所选包。系统固件更新与此入口独立，不自动更新应用。
+
+Tap App downloads & updates inside Apps to compare local package headers with `updates/apps.txt`, then select missing or older apps. System firmware updates remain separate. Unknown remote versions are shown as Installed, never Up to date.
+
+清单保留 `game=<id>` / `tool=<id>` 行，可追加 `app_version=<id>,<正整数版本>`，例如 `app_version=home-link,10108`。旧固件会忽略版本行。`tools/build_apps_update_feed.py` 从打包目录的 `catalog.json` 和实际 PGA 包头生成清单，检查版本与目录一致。旧网站无版本行时，后台对每个包仅读取 512 字节头并关闭连接；不下载整个载荷来检查更新。本地只读包头，每次显式检查一次，不在阅读或绘制时扫描文件。
+
+The feed keeps `game=<id>` / `tool=<id>` lines and optionally adds `app_version=<id>,<positive integer>`. Old firmware ignores version lines. `tools/build_apps_update_feed.py` validates catalog entries against actual PGA headers. Legacy feeds fall back to bounded remote-header probes, with no payload download for update checking.
+
+下载使用固定 HTTPS 来源、证书验证和 30 秒超时，先写入 `apps/.staging/<id>.tmp`，核对包 ID、类别和检查时的版本，再由现有 PGA 安装事务验证载荷并原子提交。安装失败保留原包；同版、更旧版本和未选中应用不会覆盖。目录固定到本批安装结束，避免网站重排改变选择；失败后可重新检查或重试。应用管理中的“重新扫描 TF 卡”只读本机，不联网。
+
+Downloads use a fixed HTTPS origin, verified certificates and a 30-second timeout. The staged package must match its selected ID, class and catalog version before the existing payload-validation and atomic-install transaction. Failed installs retain the original package. Same or older versions and unselected apps are skipped. Each batch retains its catalog snapshot across installation handoffs.
 
 PGA1 应用包继续由网站目录分发。网页管理器按目录中的字节数和 SHA-256 下载，并校验包内 ABI、当前 ESP32-S3 payload 和 CRC 后写入：
 

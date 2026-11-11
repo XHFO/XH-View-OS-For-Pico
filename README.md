@@ -1,6 +1,6 @@
 # XH View OS For Pico · Duo
 
-> **Dual-reader preview · 0.40.0-dual97** — Complete firmware source for `experiment/dual-pico-reader`. System updates and app downloads are separate, status icons offer three aligned appearances, and the last-read shelf card supports default, boarding-pass, train-ticket and cinema-stub styles. Direction-led page turns, relayed progress and atomic shelf return remain intact. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system.
+> **Dual-reader preview · 0.40.0-dual98** — Complete firmware source for `experiment/dual-pico-reader`. System updates and app downloads are separate, status icons offer three aligned appearances, and the last-read shelf card supports default, boarding-pass, train-ticket and cinema-stub styles. Direction-led page turns, relayed progress and atomic shelf return remain intact. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system.
 
 **Languages:** [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md)
 

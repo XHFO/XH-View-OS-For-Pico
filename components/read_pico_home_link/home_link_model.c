@@ -403,7 +403,7 @@ static void import_candidate(const cJSON *e, rp_home_snapshot_t *s) {
     if (!tail)
         return;
     size_t len = strlen(id) - strlen(tail);
-    if (len >= sizeof(s->imports[0].serial) || !len)
+    if (len >= sizeof(((rp_home_printer_config_t *)0)->serial) || !len)
         return;
     for (unsigned i = 0; i < s->import_count; i++)
         if (strlen(s->imports[i].serial) == len && !strncmp(s->imports[i].serial, id, len))
@@ -829,16 +829,17 @@ static const char ha_states_template[] =
     "{% set ns=namespace(items=[],total=0,printers=printers|unique|list,cut=false) %}"
     "{% for e in states %}{% set a=e.attributes %}{% set id=e.entity_id %}"
     "{% if id|length<96 %}"
+    "{% set included=not scoped or (area_id(id) or '') in areas %}"
     "{% if e.domain in ['light','switch','climate','fan'] or "
     "(e.domain=='sensor' and a.get('device_class') in ['temperature','humidity']) %}"
-    "{% set ns.total=ns.total+1 %}{% if ns.total<=96 %}"
+    "{% if included %}{% set ns.total=ns.total+1 %}{% if ns.total<=limit %}"
     "{% set ns.items=ns.items+[dict(entity_id=id,state=(e.state|string)[:63],attributes=dict("
     "friendly_name=((a.get('friendly_name') or '')|string)[:79],"
     "device_class=((a.get('device_class') or '')|string)[:11],"
     "unit_of_measurement=((a.get('unit_of_measurement') or '')|string)[:15],"
     "area_name=((area_name(id) or a.get('room') or '')|string)[:39],"
-    "temperature=a.get('temperature')|float(none) if is_number(a.get('temperature')) else none))] %}{% endif %}{% endif %}"
-    "{% if id.endswith('_print_status') or id.endswith('_printing_state') %}"
+    "temperature=a.get('temperature')|float(none) if is_number(a.get('temperature')) else none))] %}{% endif %}{% endif %}{% endif %}"
+    "{% if (included or printer_only) and (id.endswith('_print_status') or id.endswith('_printing_state')) %}"
     "{% set prefix=id.rsplit('_',2)[0] %}"
     "{% if prefix not in ns.printers %}{% if ns.printers|length<8 %}"
     "{% set ns.printers=ns.printers+[prefix] %}"
@@ -853,13 +854,21 @@ static const char ha_states_template[] =
     "friendly_name=((e.attributes.get('friendly_name') or '')|string)[:47] if label else ''))] %}"
     "{% endif %}{% endfor %}{% endfor %}"
     "{{(ns.items+[dict(pico_total=[ns.total,65535]|min,pico_cut=ns.cut)])|to_json(ensure_ascii=false)}}";
-static char *states_body(const rp_home_config_t *c) {
+static char *states_body_scoped(const rp_home_config_t *c,const rp_home_area_scope_t *scope) {
     cJSON *payload = cJSON_CreateObject();
     cJSON *variables = cJSON_AddObjectToObject(payload, "variables");
     cJSON *printers = cJSON_AddArrayToObject(variables, "printers");
     char *body = NULL;
     if (!payload || !variables || !printers || !cJSON_AddStringToObject(payload, "template", ha_states_template))
         goto done;
+    cJSON *areas=cJSON_AddArrayToObject(variables,"areas");
+    if(!areas||!cJSON_AddBoolToObject(variables,"scoped",scope!=NULL)||
+       !cJSON_AddBoolToObject(variables,"printer_only",scope&&(!scope->version||!scope->count))||
+       !cJSON_AddNumberToObject(variables,"limit",scope?RP_HOME_DEVICE_LIMIT:RP_HOME_ENTITIES))goto done;
+    if(scope&&scope->version==1&&scope->count<=RP_HOME_AREA_MAX)
+        for(unsigned i=0;i<scope->count;i++){
+            cJSON *id=cJSON_CreateString(scope->ids[i]);if(!id)goto done;cJSON_AddItemToArray(areas,id);
+        }
     for (unsigned i = 0; i < RP_HOME_PRINTERS; i++)
         if (c->printers[i].source == RP_HOME_HA && *c->printers[i].serial) {
             cJSON *prefix = cJSON_CreateString(c->printers[i].serial);
@@ -871,9 +880,62 @@ done:
     cJSON_Delete(payload);
     return body;
 }
-rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
+static char *states_body(const rp_home_config_t *c){return states_body_scoped(c,NULL);}
+// 只返回房间ID、名称与数量，不读取实体属性；内存分配在PSRAM。/ Return only room IDs, names and counts; allocate responses in PSRAM.
+static const char ha_areas_template[]=
+    "{% set ns=namespace(counts={},items=[],total=0) %}{% for e in states %}"
+    "{% if e.entity_id|length<96 and (e.domain in ['light','switch','climate','fan'] or "
+    "(e.domain=='sensor' and e.attributes.get('device_class') in ['temperature','humidity'])) %}"
+    "{% set a=area_id(e.entity_id) or '' %}{% if a|length<64 %}"
+    "{% set ns.counts=dict(ns.counts,**{a:ns.counts.get(a,0)+1}) %}{% endif %}{% endif %}{% endfor %}"
+    "{% for id,n in ns.counts|dictsort %}{% set ns.total=ns.total+1 %}"
+    "{% if ns.total<=32 %}{% set ns.items=ns.items+[dict(id=id,name=((area_name(id) or id) if id else '未分配房间')[:63],devices=[n,65535]|min)] %}"
+    "{% endif %}{% endfor %}{{dict(total=ns.total,items=ns.items)|to_json(ensure_ascii=false)}}";
+static rp_home_result_t template_request(const rp_home_config_t *c,const rp_home_transport_t *t,bool home,
+    const char *body,char *response,size_t capacity,size_t *bytes,int *status){
+    char base[192],target[224];bool external;
+    rp_home_result_t result=RP_HOME_OFFLINE;
+    for(unsigned i=0;i<2;i++){
+        if(endpoint(c,home&&i==0,base,sizeof(base),&external)){
+            snprintf(target,sizeof(target),"%s/api/template",base);
+            result=request(t,"POST",target,c->ha_token,body,response,capacity,bytes,status,
+                external?c->cf_access_client_id:NULL,external?c->cf_access_client_secret:NULL);
+        }
+        if(!home||result==RP_HOME_OK||result==RP_HOME_AUTH||!c->external_enabled)break;
+    }
+    return result;
+}
+rp_home_result_t rp_home_fetch_areas(const rp_home_config_t *c,rp_home_areas_t *out,const rp_home_transport_t *t,bool home,int *status){
+    if(!c||!out||!status||!rp_home_config_valid(c)||!*c->ha_token)return RP_HOME_INVALID;
+    cJSON *payload=cJSON_CreateObject();
+    if(!payload||!cJSON_AddStringToObject(payload,"template",ha_areas_template)){cJSON_Delete(payload);return RP_HOME_NOMEM;}
+    char *body=cJSON_PrintUnformatted(payload);cJSON_Delete(payload);
+    char *response=model_memory(16385);
+    if(!body||!response){free(body);free(response);return RP_HOME_NOMEM;}
+    size_t bytes=0;rp_home_result_t result=template_request(c,t,home,body,response,16385,&bytes,status);
+    if(result==RP_HOME_OK){
+        cJSON *json=parse(response,bytes),*items=cJSON_GetObjectItemCaseSensitive(json,"items");
+        double total=number(json,"total");unsigned count=cJSON_GetArraySize(items);
+        if(!cJSON_IsArray(items)||!isfinite(total)||total<0||total>65535||floor(total)!=total||count>RP_HOME_AREA_MAX||total<count)result=RP_HOME_INVALID;
+        else{
+            memset(out,0,sizeof(*out));out->count=count;out->total=(uint32_t)total;out->truncated=total>count;
+            for(unsigned i=0;i<count;i++){
+                cJSON *item=cJSON_GetArrayItem(items,i);const char *id=str(item,"id"),*name=str(item,"name");double n=number(item,"devices");
+                if(!cJSON_IsString(cJSON_GetObjectItemCaseSensitive(item,"id"))||strlen(id)>=64||!isfinite(n)||n<0||n>65535||floor(n)!=n){result=RP_HOME_INVALID;break;}
+                for(unsigned j=0;j<i;j++)if(!strcmp(id,out->items[j].id))result=RP_HOME_INVALID;
+                copy(out->items[i].id,64,id);copy(out->items[i].name,64,name);
+                size_t used=strlen(out->items[i].name);
+                if(strlen(name)>used){while(used&&((unsigned char)name[used]&0xc0)==0x80)used--;out->items[i].name[used]=0;}
+                out->items[i].devices=(uint16_t)n;
+            }
+        }
+        cJSON_Delete(json);
+    }
+    free(body);free(response);return result;
+}
+rp_home_result_t rp_home_fetch_scoped(const rp_home_config_t *c, rp_home_snapshot_t *s,
                                rp_home_token_t tokens[RP_HOME_PRINTERS], const rp_home_transport_t *t, bool online,
-                               bool at_home, int64_t now) {
+                               bool at_home, int64_t now,const rp_home_area_scope_t *scope) {
     if (!c || !s || !tokens || !rp_home_config_valid(c))
         return RP_HOME_INVALID;
     if (!c->enabled)
@@ -889,7 +951,7 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
     bool external = false;
     s->result = RP_HOME_EMPTY;
     if (*c->ha_token) {
-        char *body = states_body(c);
+        char *body = scope?states_body_scoped(c,scope):states_body(c);
         rp_home_result_t result = body ? RP_HOME_OFFLINE : RP_HOME_NOMEM;
         if (body && endpoint(c, at_home, base, sizeof(base), &external)) {
             snprintf(target, sizeof(target), "%s/api/template", base);
@@ -1008,6 +1070,10 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
     free(response);
     s->revision++;
     return s->result;
+}
+rp_home_result_t rp_home_fetch(const rp_home_config_t *c,rp_home_snapshot_t *s,rp_home_token_t tokens[RP_HOME_PRINTERS],
+    const rp_home_transport_t *t,bool online,bool home,int64_t now){
+    return rp_home_fetch_scoped(c,s,tokens,t,online,home,now,NULL);
 }
 rp_home_result_t rp_home_control(const rp_home_config_t *c, const rp_home_entity_t *e, const char *action, float value,
                                  const rp_home_transport_t *t, bool at_home, int *status) {

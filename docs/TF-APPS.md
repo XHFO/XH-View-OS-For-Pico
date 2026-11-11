@@ -1,5 +1,17 @@
 # TF 卡应用包规范（PGA1 / ABI v1）
 
+家庭连接首次同步或「管理设备 → 选择房间」时，先获取房间名称和数量，再勾选并保存同步范围。HA 服务端只投影选中范围的六类设备字段，不下载全量实体后再隐藏。每次最多64项；超额要求减少房间，不静默保存。未分配房间独立列出；空选择表示不同步家庭设备。房间目录最多32项，超额明确提示。范围独立存于 NVS，绑定 HA 地址与认证；更换服务需重新选择。取消或保存失败保留已生效范围。设备后续增长超过上限时显示总数与截断提示。
+
+Room discovery returns names/counts before any home-entity sync. Server-side projection includes only selected areas and the supported six entity types, capped at 64. Unassigned devices form a separate area; an empty selection syncs no home devices. The 32-area catalog reports overflow. Scope is persisted separately from credential layout and bound to HA identity. Cancel and failed saves retain the active scope.
+
+打印机「添加 → 通过 Home Assistant 查找」列出未添加的打印状态实体，选择后自动推导实体前缀，再由用户确认名称并保存。只匹配 `_print_status` 或 `_printing_state`，不会将 SD 卡状态误识别为打印状态。手动添加作为高级入口保留；本机最多3台，发现列表最多8台。Bambu MQTT/云与 Formlabs 直接连接尚未迁入，既有凭据仍保留。
+
+Printer setup selects a source, discovers complete `_print_status`/`_printing_state` entities, derives their prefixes and asks for confirmation before saving. Manual prefixes remain available. There are three saved slots and at most eight discovery candidates; direct Bambu/Formlabs protocols remain unavailable with existing credentials retained.
+
+家庭与打印机分别由 `tools/home-link.pga`（kind 130）和 `tools/printer-link.pga`（kind 131）提供。家庭连接同步 HA 支持的实体，可保存本机显示选择与排序；隐藏不删除 HA 实体。打印机提供三槽位的 HA 实体前缀添加、改名与移除，不依赖家庭连接包安装。两者复用宿主 HA 服务、凭据与持久化事务，手机填写按入口分别保存。首次使用 HA 需先在设置的家庭连接页面配置服务。旧 Bambu LAN/云端及 Formlabs 直连配置保留；薄宿主目前尚未迁入直连协议，应用明确提示不可用，不伪造已连接状态。
+
+Home and Printers use separate `tools/home-link.pga` (kind 130) and `tools/printer-link.pga` (kind 131) packages. Home supports local entity visibility and ordering without deleting HA entities. Printers supports three HA entity-prefix slots with rename/removal, independently of installing Home Link. Both share host HA credentials and persistence transactions; phone forms save separately by entry. Configure HA once through Home settings. Existing Bambu LAN/cloud and Formlabs direct credentials remain preserved; direct protocols are not yet available in the thin host and are explicitly marked unavailable.
+
 本规范定义小纸 Pico 的可安装应用。六个首批游戏为五子棋、围棋、象棋、国际象棋、2048 和贪吃蛇；工具应用另有画板笔记。**游戏规则、AI、游戏页面以及画板编辑实现均编译进独立应用包，不静态链接进固件。** 固件仅包含启动器、包校验、加载器及公共绘图、输入、存档与任务接口。
 
 The six first-party games are independent executable packages. Rules, AI and game UI live in the packages; firmware contains only the launcher, validator, loader and host services.

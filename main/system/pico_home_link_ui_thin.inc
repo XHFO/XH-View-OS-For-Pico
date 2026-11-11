@@ -29,13 +29,13 @@ static bool thin_portal_back(void) {
 
 static bool thin_open_home(uint8_t page, bool toast) {
     ps_apps_prepare_home(page);
-    if (ps_apps_open("home-link")) return true;
+    if (ps_apps_open(page==THIN_HOME_PRINTERS?"printer-link":"home-link")) return true;
     ps_apps_prepare_home(0xff);
     if (toast) ps_toast(ps_tr("settings.home_link.missing"));
     return false;
 }
 
-static bool thin_open_portal(void) {
+static bool thin_open_portal(uint8_t page) {
     if (!ps_home_portal_start(PS_HOME_PORTAL_OWNER_HOME)) {
         ps_home_portal_view_t portal;
         ps_home_portal_view(&portal);
@@ -43,6 +43,7 @@ static bool thin_open_portal(void) {
         thin_portal = true;
         return true;
     }
+    ps_home_portal_set_printers(page==THIN_HOME_PRINTERS);
     ps_home_portal_view_t portal;
     ps_home_portal_view(&portal);
     if (!portal.url[0] || !ui_wifi_qr_prepare_url(portal.url)) {
@@ -91,12 +92,12 @@ static bool thin_hit_page(const ps_event_t *e, uint8_t page) {
     if (thin_chip(e)) return true;
     ps_view_t v = ps_view();
     if (ps_hit(e->x, e->y, 16, v.h - 104, v.w - 32, 40)) return thin_open_home(page, true), true;
-    if (ps_hit(e->x, e->y, 16, v.h - 56, v.w - 32, 40)) return thin_open_portal(), true;
+    if (ps_hit(e->x, e->y, 16, v.h - 56, v.w - 32, 40)) return thin_open_portal(page), true;
     return false;
 }
 
 static void real_ha_render(uint8_t *fb) {
-    thin_empty(fb, ps_tr("settings.home_link.title"), "固件保留空状态。可打开 TF 家庭工具包，或用手机扫码填写 Home Assistant 与打印机。");
+    thin_empty(fb, ps_tr("settings.home_link.title"), "下载家庭连接应用后，可连接 Home Assistant 并选择在本机显示的设备。");
 }
 static bool real_ha_event(const ps_event_t *e) { return thin_hit_page(e, THIN_HOME_MONITOR); }
 static void real_ha_settings_render(uint8_t *fb) {
@@ -105,7 +106,7 @@ static void real_ha_settings_render(uint8_t *fb) {
 static bool real_ha_settings_event(const ps_event_t *e) { return thin_hit_page(e, THIN_HOME_SETUP); }
 static void real_printer_render(uint8_t *fb, bool settings) {
     thin_empty(fb, ps_tr(settings ? "settings.home_link.printers_settings" : "settings.home_link.printers_title"),
-               ps_tr("settings.home_link.printers_empty"));
+               "请在应用集中下载独立的 3D 打印机应用。原有连接配置会保留，无需安装家庭连接应用。");
 }
 static bool real_printer_event(const ps_event_t *e, bool settings) {
     (void)settings;

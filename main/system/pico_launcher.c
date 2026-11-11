@@ -16,10 +16,25 @@
 
 static unsigned page;
 static int remove_item=-1;
+static char remove_id[32],remove_title[64];
+static bool manage_picker, manage_mode;
 static ps_scroll_track_t launcher_scroll;
 static bool download_picker;
 static unsigned download_picker_page;
 static bool download_selected[PS_UPDATES_APPS_MAX];
+static void remove_begin(const char *id,const char *title){
+    snprintf(remove_id,sizeof(remove_id),"%s",id);snprintf(remove_title,sizeof(remove_title),"%s",title);
+    remove_item=0;ps_dirty();
+}
+bool ps_launcher_modal_active(void){return manage_picker||download_picker||remove_item>=0;}
+bool ps_launcher_back(void){
+    if(!ps_launcher_modal_active()&&!manage_mode)return false;
+    if(remove_item>=0)remove_item=-1;
+    else if(download_picker)download_picker=false;
+    else if(manage_picker)manage_picker=false;
+    else manage_mode=false;
+    ps_dirty();return true;
+}
 // 首页已显示入口按用户顺序，其余入口仍可在应用集中发现。/ Use Home order first and keep hidden destinations discoverable in Apps.
 static const ps_navigation_entry_t *destination(unsigned index) {
     for(int i=0;i<ps_navigation_count();i++) {
@@ -67,31 +82,35 @@ static EpdRect download_item_rect(unsigned index) {
     return (EpdRect){picker.x+16,picker.y+62+(int)index*40,picker.width-32,36};
 }
 static const char *download_title(const char *id) {
+    if(!strcmp(id,"printer-link"))return "3D 打印机";
     static const struct {const char *id,*key;} names[]={
         {"gomoku","launcher.app.gomoku"},{"go","launcher.app.go"},
         {"xiangqi","launcher.app.xiangqi"},{"chess","launcher.app.chess"},
         {"2048","launcher.app.2048"},{"snake","launcher.app.snake"},
         {"drawing-notes","launcher.app.drawing"},{"weread","launcher.app.weread"},
-        {"home-link","launcher.app.home"}
+        {"home-link","launcher.app.home"},{"printer-link","launcher.app.printer"}
     };
     for(size_t i=0;i<sizeof(names)/sizeof(names[0]);i++)
         if(!strcmp(id,names[i].id))return ps_tr(names[i].key);
     return id;
 }
+static bool download_eligible(const ps_updates_app_t *app) {
+    return !app->installed||app->update_available;
+}
 static unsigned download_selected_count(const ps_updates_app_t *apps,unsigned count) {
     unsigned selected=0;
-    for(unsigned i=0;i<count;i++)if(!apps[i].installed&&download_selected[i])selected++;
+    for(unsigned i=0;i<count;i++)if(download_eligible(&apps[i])&&download_selected[i])selected++;
     return selected;
 }
 static unsigned download_missing_count(const ps_updates_app_t *apps,unsigned count) {
     unsigned missing=0;
-    for(unsigned i=0;i<count;i++)if(!apps[i].installed)missing++;
+    for(unsigned i=0;i<count;i++)if(download_eligible(&apps[i]))missing++;
     return missing;
 }
 static void download_toggle_all(const ps_updates_app_t *apps,unsigned count) {
     unsigned selected=download_selected_count(apps,count);
     unsigned missing=download_missing_count(apps,count);
-    for(unsigned i=0;i<count;i++)download_selected[i]=!apps[i].installed&&selected!=missing;
+    for(unsigned i=0;i<count;i++)download_selected[i]=download_eligible(&apps[i])&&selected!=missing;
 }
 static EpdRect card(unsigned slot) {
     ps_view_t v=ps_view();int cols=v.landscape?3:2,rows=v.landscape?2:3;
@@ -99,20 +118,43 @@ static EpdRect card(unsigned slot) {
     int h=(v.h-top-77-(rows-1)*gap)/rows;
     return (EpdRect){16+(int)(slot%cols)*(w+gap),top+(int)(slot/cols)*(h+gap),w,h};
 }
+static EpdRect manage_rect(void) {
+    ps_view_t v=ps_view();int w=v.landscape?520:v.w-32,h=304;
+    return (EpdRect){(v.w-w)/2,(v.h-h)/2,w,h};
+}
+static EpdRect manage_choice(unsigned i) {
+    EpdRect r=manage_rect();int w=(r.width-44)/2;
+    return (EpdRect){r.x+16+(int)(i%2)*(w+12),r.y+54+(int)(i/2)*46,w,40};
+}
+static void manage_render(uint8_t *fb) {
+    EpdRect r=manage_rect();ps_modal_background(fb);
+    ps_surface(fb,r.x,r.y,r.width,r.height,false);
+    ps_text(fb,r.x+16,r.y+14,18,"应用管理",1);
+    const char *labels[]={"默认顺序","按名称","最近使用","最近安装","版本优先","重新扫描 TF 卡"};
+    for(unsigned i=0;i<6;i++){
+        EpdRect c=manage_choice(i);
+        ps_button(fb,c.x,c.y,c.width,c.height,labels[i],false);
+        if(i<5&&ps_games_sort_mode()==i)ps_icon(fb,c.x+8,c.y+12,14,PI_CHECK,1);
+    }
+    ps_text(fb,r.x+16,r.y+199,11,"仅排序游戏包；导航入口保持原顺序",5);
+    ps_button(fb,r.x+16,r.y+242,(r.width-44)/2,44,"取消",false);
+    ps_button(fb,r.x+28+(r.width-44)/2,r.y+242,(r.width-44)/2,44,"选择要移除的应用",false);
+}
 static void download_picker_render(uint8_t *fb) {
     ps_view_t v=ps_view();EpdRect r=download_picker_rect();
+    ps_modal_background(fb);
     ps_box(fb,r.x,r.y,r.width,r.height,12,15,true);
     ps_box(fb,r.x,r.y,r.width,r.height,12,0,false);
-    ps_text(fb,r.x+16,r.y+12,20,ps_tr("launcher.download.picker"),0);
+    ps_text(fb,r.x+16,r.y+12,16,ps_tr("launcher.download.picker"),0);
     ps_updates_app_t apps[PS_UPDATES_APPS_MAX];
     unsigned count=ps_updates_apps_catalog(apps,PS_UPDATES_APPS_MAX);
     unsigned total=download_picker_pages(count);char text[80];
     if(download_picker_page>=total)download_picker_page=total-1;
     if(total>1) {
-        ps_button(fb,r.x+r.width-76,r.y+10,30,26,"<",false);
-        ps_button(fb,r.x+r.width-42,r.y+10,30,26,">",false);
+        ps_button(fb,r.x+r.width-104,r.y+8,40,40,"<",false);
+        ps_button(fb,r.x+r.width-56,r.y+8,40,40,">",false);
         snprintf(text,sizeof(text),"%u / %u",download_picker_page+1,total);
-        ps_center(fb,r.x+r.width-59,r.y+44,9,text,5);
+        ps_center(fb,r.x+r.width-60,r.y+50,9,text,5);
     }
     unsigned per=download_per_page(),first=download_picker_page*per,last=first+per;
     if(last>count)last=count;
@@ -123,29 +165,36 @@ static void download_picker_render(uint8_t *fb) {
     }
     for(unsigned index=first;index<last;index++) {
         EpdRect item=download_item_rect(index-first);
+        bool checked=(apps[index].installed&&!apps[index].update_available)||download_selected[index];
         ps_box(fb,item.x,item.y,item.width,item.height,7,
                download_selected[index]?13:15,true);
         ps_box(fb,item.x+8,item.y+(item.height-18)/2,18,18,4,
-               download_selected[index]?2:11,download_selected[index]);
-        if(download_selected[index])ps_icon(fb,item.x+11,item.y+(item.height-12)/2,12,PI_CHECK,15);
+               checked?2:11,checked);
+        if(checked)ps_icon(fb,item.x+11,item.y+(item.height-12)/2,12,PI_CHECK,15);
         ps_wrap(fb,item.x+32,item.y+(v.landscape?5:7),item.width-96,11,1,
                 download_title(apps[index].id),1);
-        const char *state=apps[index].installed?ps_tr("launcher.download.installed"):
+        const char *state=apps[index].update_available?ps_tr("launcher.download.update"):
+            apps[index].installed?(apps[index].remote_version?ps_tr("launcher.download.latest"):ps_tr("launcher.download.installed")):
             download_selected[index]?ps_tr("launcher.download.chosen"):
             ps_tr("launcher.download.available");
         if(v.landscape)ps_text(fb,item.x+32,item.y+24,9,state,5);
         else ps_text(fb,item.x+item.width-62,item.y+10,9,state,5);
     }
-    int by=r.y+r.height-48;
+    int by=r.y+r.height-56;
     unsigned selected=download_selected_count(apps,count);
-    ps_button(fb,r.x+16,by,58,34,ps_tr("launcher.download.all"),false);
-    ps_button(fb,r.x+82,by,74,34,ps_tr("common.cancel"),false);
+    ps_button(fb,r.x+16,by,58,40,ps_tr("launcher.download.all"),false);
+    ps_button(fb,r.x+82,by,74,40,ps_tr("common.cancel"),false);
     snprintf(text,sizeof(text),ps_tr("launcher.download.selected"),selected);
-    ps_button(fb,r.x+164,by,r.width-180,34,text,selected!=0);
+    if(selected)ps_button(fb,r.x+164,by,r.width-180,40,text,true);
+    else {
+        ps_box(fb,r.x+164,by,r.width-180,40,7,13,true);
+        ps_center(fb,r.x+164+(r.width-180)/2,by+12,11,
+            count&&!download_missing_count(apps,count)?"暂无可选更新":"请先选择应用",5);
+    }
 }
 void ps_launcher_enter(void) {
     ps_games_rescan();remove_item=-1;page=effective_page();
-    download_picker=false;download_picker_page=0;
+    download_picker=false;download_picker_page=0;manage_picker=false;manage_mode=false;
     memset(download_selected,0,sizeof(download_selected));
 }
 void ps_launcher_render(uint8_t *fb) {
@@ -154,8 +203,9 @@ void ps_launcher_render(uint8_t *fb) {
     if(ps_navigation_index(PS_APPS)>=0) {
         ps_tabs(fb,0);ps_text(fb,16,85,25,ps_tr("launcher.title"),1);
     } else ps_heading(fb,ps_tr("launcher.title"),NULL);
-    ps_button(fb,v.w-80,85,64,29,ps_tr("launcher.refresh"),false);
-    if(!v.landscape){snprintf(text,sizeof(text),ps_tr("launcher.summary"),n,ps_games_count());ps_text(fb,18,122,11,text,5);}
+    ps_button(fb,v.w-80,80,64,40,manage_mode?"完成":"管理",false);
+    if(!v.landscape&&!manage_mode){snprintf(text,sizeof(text),ps_tr("launcher.summary"),n,ps_games_count());ps_text(fb,18,122,11,text,5);}
+    if(manage_mode&&!v.landscape)ps_text(fb,18,125,11,"轻点 TF 应用移除 · 系统入口保留",5);
     EpdRect download=download_rect();
     ps_surface(fb,download.x,download.y,download.width,download.height,false);
     int icon_y=download.y+(download.height-30)/2;
@@ -192,13 +242,16 @@ void ps_launcher_render(uint8_t *fb) {
     ps_button(fb,16,y,68,29,ps_tr("common.prev"),false);
     snprintf(text,sizeof(text),"%u / %u",shown+1,pages());ps_center(fb,v.w/2,y+8,11,text,5);
     ps_button(fb,v.w-84,y,68,29,ps_tr("common.next"),false);
-    if(remove_item>=0&&(unsigned)remove_item<ps_games_count()) {
+    if(manage_picker)manage_render(fb);
+    if(remove_item>=0) {
         int w=v.w-40;if(w>500)w=500;int x=(v.w-w)/2,top=(v.h-220)/2,bw=(w-52)/2;
+        ps_modal_background(fb);
         ps_box(fb,x,top,w,220,8,15,true);ps_box(fb,x,top,w,220,8,0,false);
-        ps_text(fb,x+20,top+20,20,"移除这个应用？",0);
-        ps_wrap(fb,x+20,top+65,w-40,13,2,"移除应用包，存档会保留",4);
+        ps_text(fb,x+20,top+18,18,"移除应用",0);
+        ps_wrap(fb,x+20,top+49,w-40,14,1,remove_title,1);
+        ps_wrap(fb,x+20,top+85,w-40,12,2,"移除应用包，存档会保留",4);
         ps_button(fb,x+20,top+150,bw,42,"取消",false);
-        ps_button(fb,x+32+bw,top+150,bw,42,"移除",true);
+        ps_button(fb,x+32+bw,top+150,bw,42,"移除应用",false);
     }
     if(download_picker)download_picker_render(fb);
 }
@@ -207,6 +260,7 @@ static bool turn(int delta) {
     page=(effective_page()+last+delta)%last;return true;
 }
 bool ps_launcher_key(int key) {
+    if(manage_picker||remove_item>=0)return true;
     if(download_picker) {
         if(key!=0&&key!=2)return false;
         ps_updates_app_t apps[PS_UPDATES_APPS_MAX];
@@ -219,14 +273,29 @@ bool ps_launcher_key(int key) {
     return key==0||key==2?turn(key==0?-1:1):false;
 }
 bool ps_launcher_event(const ps_event_t *e) {
+    if(manage_picker) {
+        if(e->type!=PS_TAP)return true;
+        EpdRect r=manage_rect();
+        for(unsigned i=0;i<6;i++){
+            EpdRect c=manage_choice(i);
+            if(ps_hit(e->x,e->y,c.x,c.y,c.width,c.height)){
+                if(i<5)(void)ps_games_sort_set(i);else ps_games_rescan();
+                page=0;ps_dirty();return true;
+            }
+        }
+        if(ps_hit(e->x,e->y,r.x+28+(r.width-44)/2,r.y+242,(r.width-44)/2,44)){
+            manage_mode=true;manage_picker=false;
+        }else if(!ps_hit(e->x,e->y,r.x,r.y,r.width,r.height)||
+                 ps_hit(e->x,e->y,r.x+16,r.y+242,(r.width-44)/2,44))manage_picker=false;
+        ps_dirty();return true;
+    }
     if(remove_item>=0) {
         if(e->type!=PS_TAP)return true;
         ps_view_t v=ps_view();int w=v.w-40;if(w>500)w=500;int x=(v.w-w)/2,top=(v.h-220)/2,bw=(w-52)/2;
         if(!ps_hit(e->x,e->y,x,top,w,220)||ps_hit(e->x,e->y,x+20,top+150,bw,42)) {
             remove_item=-1;
         } else if(ps_hit(e->x,e->y,x+32+bw,top+150,bw,42)) {
-            const char *id=NULL,*title=NULL;
-            if(ps_games_item((unsigned)remove_item,&id,&title)&&ps_games_remove(id))remove_item=-1;
+            if(ps_games_remove(remove_id))remove_item=-1;
             else {ps_toast(ps_games_last_error());remove_item=-1;}
         }
         ps_dirty();return true;
@@ -241,11 +310,11 @@ bool ps_launcher_event(const ps_event_t *e) {
         unsigned count=ps_updates_apps_catalog(apps,PS_UPDATES_APPS_MAX);
         unsigned total=download_picker_pages(count),per=download_per_page();
         if(total>1) {
-            if(ps_hit(e->x,e->y,r.x+r.width-76,r.y+10,30,26)) {
+            if(ps_hit(e->x,e->y,r.x+r.width-104,r.y+8,40,40)) {
                 download_picker_page=(download_picker_page+total-1)%total;
                 return true;
             }
-            if(ps_hit(e->x,e->y,r.x+r.width-42,r.y+10,30,26)) {
+            if(ps_hit(e->x,e->y,r.x+r.width-56,r.y+8,40,40)) {
                 download_picker_page=(download_picker_page+1)%total;
                 return true;
             }
@@ -254,7 +323,7 @@ bool ps_launcher_event(const ps_event_t *e) {
         for(unsigned index=first;index<last;index++) {
             EpdRect item=download_item_rect(index-first);
             if(ps_hit(e->x,e->y,item.x,item.y,item.width,item.height)) {
-                if(apps[index].installed) {
+                if(!download_eligible(&apps[index])) {
                     ps_toast(ps_tr("launcher.download.installed"));
                 } else {
                     download_selected[index]=!download_selected[index];
@@ -263,19 +332,19 @@ bool ps_launcher_event(const ps_event_t *e) {
                 return true;
             }
         }
-        int by=r.y+r.height-48;
-        if(ps_hit(e->x,e->y,r.x+16,by,58,34)) {
+        int by=r.y+r.height-56;
+        if(ps_hit(e->x,e->y,r.x+16,by,58,40)) {
             download_toggle_all(apps,count);ps_dirty();return true;
         }
-        if(ps_hit(e->x,e->y,r.x+82,by,74,34)) {
+        if(ps_hit(e->x,e->y,r.x+82,by,74,40)) {
             download_picker=false;ps_dirty();return true;
         }
-        if(ps_hit(e->x,e->y,r.x+164,by,r.width-180,34)) {
+        if(ps_hit(e->x,e->y,r.x+164,by,r.width-180,40)) {
             const char *ids[PS_UPDATES_APPS_MAX];unsigned selected=0;
             for(unsigned i=0;i<count;i++)
-                if(!apps[i].installed&&download_selected[i])ids[selected++]=apps[i].id;
+                if(download_eligible(&apps[i])&&download_selected[i])ids[selected++]=apps[i].id;
             if(!selected) {
-                ps_toast(ps_tr("launcher.download.need_selection"));
+                return true;
             } else if(!ps_updates_download_apps_selected(ids,selected)) {
                 unsigned catalog=0;char message[96];
                 (void)ps_updates_apps_status(&catalog,message,sizeof(message));
@@ -299,7 +368,7 @@ bool ps_launcher_event(const ps_event_t *e) {
     if(consume)return true;
     if(e->type!=PS_TAP&&e->type!=PS_LONG)return false;
     ps_view_t v=ps_view();
-    if(ps_hit(e->x,e->y,v.w-80,85,64,29)){ps_launcher_enter();return true;}
+    if(ps_hit(e->x,e->y,v.w-80,80,64,40)){if(manage_mode)manage_mode=false;else manage_picker=true;ps_dirty();return true;}
     EpdRect download=download_rect();
     if(e->type==PS_TAP&&ps_hit(e->x,e->y,download.x,download.y,download.width,download.height)){
         download_picker=true;download_picker_page=0;remove_item=-1;
@@ -315,9 +384,18 @@ bool ps_launcher_event(const ps_event_t *e) {
     for(unsigned slot=0;slot<6&&shown*6+slot<count();slot++) {
         EpdRect r=card(slot);if(!ps_hit(e->x,e->y,r.x,r.y,r.width,r.height))continue;
         unsigned index=shown*6+slot;
-        if(e->type==PS_LONG&&index>=n&&index<n+ps_games_count()) {
-            remove_item=(int)(index-n);ps_dirty();return true;
+        if((e->type==PS_LONG||manage_mode)&&index<n){
+            const ps_navigation_entry_t *item=destination(index);const char *id=NULL,*title=NULL;
+            if(item&&item->route==PS_APPLICATION&&ps_apps_tool_item(item->id,&id,&title)){
+                remove_begin(id,title);return true;
+            }
         }
+        if((e->type==PS_LONG||manage_mode)&&index>=n&&index<n+ps_games_count()) {
+            const char *id=NULL,*title=NULL;
+            if(ps_games_item(index-n,&id,&title))remove_begin(id,title);
+            return true;
+        }
+        if(manage_mode){ps_toast("系统入口无需移除，可在首页导航中隐藏");return true;}
         if(e->type==PS_LONG)return false;
         if(index<n) {
             const ps_navigation_entry_t *item=destination(index);

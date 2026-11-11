@@ -2330,51 +2330,153 @@ static void shelf_star(uint8_t *fb,int x,int y,bool active){
 static void shelf_ticket_dash(uint8_t *fb,int x,int y,int height){
     for(int at=y+3;at<y+height-5;at+=8)ps_line(fb,x,at,x,at+4,8);
 }
+static void shelf_ticket_dash_horizontal(uint8_t *fb,int x,int right,int y){
+    for(int at=x+3;at<right-5;at+=8)ps_line(fb,at,y,at+4,y,8);
+}
+static void shelf_hairline(uint8_t *fb,int x0,int y0,int x1,int y1){
+    ps_line_thin(fb,x0,y0,x1,y1,0);
+}
+static void shelf_hairarc(uint8_t *fb,int cx,int cy,int radius,int sx,int sy){
+    int x=0,y=radius,error=1-radius;
+    int left_x=cx+sx*y,left_y=cy;
+    int top_x=cx,top_y=cy+sy*y;
+    while(x<=y){
+        x++;
+        if(error<0)error+=2*x+1;
+        else{y--;error+=2*(x-y)+1;}
+        if(x>y)break;
+        int next_left_x=cx+sx*y,next_left_y=cy+sy*x;
+        int next_top_x=cx+sx*x,next_top_y=cy+sy*y;
+        shelf_hairline(fb,left_x,left_y,next_left_x,next_left_y);
+        shelf_hairline(fb,top_x,top_y,next_top_x,next_top_y);
+        left_x=next_left_x;left_y=next_left_y;
+        top_x=next_top_x;top_y=next_top_y;
+    }
+}
+static void shelf_hairbox(uint8_t *fb,int x,int y,int width,int height,int radius){
+    if(width<2||height<2||radius<0)return;
+    int limit=(width<height?width:height)/2;
+    if(radius>limit)radius=limit;
+    int right=x+width-1,bottom=y+height-1;
+    if(radius){
+        shelf_hairline(fb,x+radius,y,right-radius,y);
+        shelf_hairline(fb,x+radius,bottom,right-radius,bottom);
+        shelf_hairline(fb,x,y+radius,x,bottom-radius);
+        shelf_hairline(fb,right,y+radius,right,bottom-radius);
+        shelf_hairarc(fb,x+radius,y+radius,radius,-1,-1);
+        shelf_hairarc(fb,right-radius,y+radius,radius,1,-1);
+        shelf_hairarc(fb,x+radius,bottom-radius,radius,-1,1);
+        shelf_hairarc(fb,right-radius,bottom-radius,radius,1,1);
+    }else{
+        shelf_hairline(fb,x,y,right,y);
+        shelf_hairline(fb,x,bottom,right,bottom);
+        shelf_hairline(fb,x,y,x,bottom);
+        shelf_hairline(fb,right,y,right,bottom);
+    }
+}
+static void shelf_open_top(uint8_t *fb,int cx,int y,int radius){
+    ps_box(fb,cx-radius,y-radius,radius*2,radius*2,radius,PS_THEME_SURFACE,true);
+    shelf_hairarc(fb,cx,y,radius,-1,1);
+    shelf_hairarc(fb,cx,y,radius,1,1);
+}
+static void shelf_open_bottom(uint8_t *fb,int cx,int y,int radius){
+    ps_box(fb,cx-radius,y-radius,radius*2,radius*2,radius,PS_THEME_SURFACE,true);
+    shelf_hairarc(fb,cx,y,radius,-1,-1);
+    shelf_hairarc(fb,cx,y,radius,1,-1);
+}
+static void shelf_open_left(uint8_t *fb,int x,int cy,int radius){
+    ps_box(fb,x-radius,cy-radius,radius*2,radius*2,radius,PS_THEME_SURFACE,true);
+    shelf_hairarc(fb,x,cy,radius,1,-1);
+    shelf_hairarc(fb,x,cy,radius,1,1);
+}
+static void shelf_open_right(uint8_t *fb,int x,int cy,int radius){
+    ps_box(fb,x-radius,cy-radius,radius*2,radius*2,radius,PS_THEME_SURFACE,true);
+    shelf_hairarc(fb,x,cy,radius,-1,-1);
+    shelf_hairarc(fb,x,cy,radius,-1,1);
+}
+static void shelf_card_meta(uint8_t *fb,int x,int y,bool landscape,reader_file_t *book){
+    const char *format=book?(book->epub?"EPUB":"TXT"):"BOOK";
+    const char *location=book?(book->is_flash?"内置存储":"TF 卡"):"等待传入图书";
+    int tag_w=landscape?27:31;
+    ps_box(fb,x,y,tag_w,17,5,PS_THEME_BORDER,true);
+    ps_center(fb,x+tag_w/2,y+3,8,format,PS_THEME_INK);
+    ps_text_fixed(fb,x+tag_w+8,y+4,9,location,PS_THEME_SECONDARY);
+}
 static void shelf_continue_card(uint8_t *fb,int x,int y,int width,int height,bool landscape,
                                 const char *title,const char *position,reader_file_t *book){
     uint8_t style=ps_shelf_card_style();
-    if(style==PS_SHELF_CARD_DEFAULT){
-        ps_box(fb,x,y+2,width,height-2,12,PS_THEME_BORDER,true);
-        ps_box(fb,x,y,width,height-3,12,PS_THEME_INSET,true);
-        ps_text(fb,x+14,y+9,10,"上次读到",PS_THEME_SECONDARY);
-        int title_width=width-(landscape?30:83);
-        shelf_name_text(fb,x+14,y+30,title_width,landscape?20:24,title,PS_THEME_INK);
-        ps_text_fixed(fb,x+14,y+height-24,10,position,PS_THEME_SECONDARY);
-        if(!landscape&&book)shelf_file_cover(fb,book,x+width-59,y+12,44,68);
-        return;
-    }
-    ps_box(fb,x+2,y+2,width,height-2,9,PS_THEME_BORDER,true);
-    ps_box(fb,x,y,width,height-3,9,PS_THEME_SURFACE,true);
-    int split=x+width-70;
-    shelf_ticket_dash(fb,split,y,height-3);
-    const char *eyebrow,*route,*stub;
-    if(style==PS_SHELF_CARD_BOARDING){
-        eyebrow="登机牌 · READING PASS";
-        route="书架  →  未完章节";
-        stub="GATE";
-    }else if(style==PS_SHELF_CARD_TRAIN){
-        eyebrow="火车票 · RAIL TICKET";
-        route="上次站  →  下一站";
-        stub="检票";
-    }else{
-        eyebrow="电影票根 · ADMIT ONE";
-        route="今日放映 · 点击入场";
-        stub="F-07";
-    }
-    char meta[64];
-    if(book)snprintf(meta,sizeof(meta),"%s · %s · 已读 %u%%",
-                     book->is_flash?"内置":"TF 卡",book->epub?"EPUB":"TXT",book->pct);
-    else ri_copy(meta,sizeof(meta),position);
-    ps_text_fixed(fb,x+12,y+7,9,eyebrow,PS_THEME_SECONDARY);
-    shelf_name_text(fb,x+12,y+(landscape?23:27),split-x-24,landscape?20:23,
-                    title,PS_THEME_INK);
-    ps_text_fixed(fb,x+12,y+(landscape?46:55),9,meta,PS_THEME_SECONDARY);
-    ps_text_fixed(fb,x+12,y+(landscape?61:77),9,route,PS_THEME_SECONDARY);
-    ps_center(fb,split+35,y+7,9,stub,PS_THEME_SECONDARY);
+    int bottom=y+height-3;
     char pct[12];
     if(book)snprintf(pct,sizeof(pct),"%u%%",book->pct);
     else ri_copy(pct,sizeof(pct),"--");
-    ps_center(fb,split+35,y+(landscape?31:36),landscape?15:18,pct,PS_THEME_SELECTED);
+    if(style==PS_SHELF_CARD_DEFAULT){
+        const int tab=24,split=x+width-70,stub_center=split+35;
+        ps_box(fb,x+2,y+3,width,height-2,9,10,true);
+        ps_box(fb,x,y,width,height-3,9,PS_THEME_SURFACE,true);
+        ps_box(fb,split+3,y+3,width-(split-x)-5,height-8,7,PS_THEME_INSET,true);
+        shelf_hairbox(fb,x,y,width,height-2,9);
+        ps_box(fb,x+3,y+4,tab-2,height-10,5,PS_THEME_INSET,true);
+        shelf_hairline(fb,x+tab,y+12,x+tab,bottom-12);
+        shelf_open_top(fb,x+tab,y,4);shelf_open_bottom(fb,x+tab,bottom,4);
+        shelf_open_top(fb,split,y,5);shelf_open_bottom(fb,split,bottom,5);
+        shelf_ticket_dash(fb,split,y+7,bottom-y-12);
+        for(int row=0;row<14;row++)ps_fill(fb,x+6,y+height/2-7+row,row<=6?row+1:14-row,1,PS_THEME_SURFACE);
+        shelf_name_text(fb,x+tab+12,y+(landscape?8:12),split-x-tab-22,landscape?20:24,title,PS_THEME_INK);
+        shelf_card_meta(fb,x+tab+12,y+(landscape?32:42),landscape,book);
+        int bx=x+tab+12,by=bottom-(landscape?24:29),bw=split-bx-12;
+        if(bw>8){ps_box(fb,bx,by,bw,5,2,PS_THEME_BORDER,true);if(book&&book->pct)ps_box(fb,bx,by,bw*book->pct/100,5,2,PS_THEME_INK,true);}
+        ps_text_fixed(fb,bx,bottom-(landscape?16:20),9,book?"已读进度 · 点击继续":"点击继续",PS_THEME_SECONDARY);
+        ps_center(fb,stub_center,y+7,9,"进度",PS_THEME_SECONDARY);
+        ps_center(fb,stub_center,y+(landscape?31:37),landscape?16:19,pct,PS_THEME_INK);
+        ps_center(fb,stub_center,bottom-14,8,"续读",PS_THEME_SECONDARY);
+        return;
+    }
+    ps_box(fb,x+2,y+3,width,height-2,9,10,true);
+    ps_box(fb,x,y,width,height-3,9,PS_THEME_SURFACE,true);
+    if(style==PS_SHELF_CARD_TRAIN){
+        const int split=bottom-28;
+        ps_box(fb,x+3,split+1,width-6,bottom-split-2,5,PS_THEME_INSET,true);
+        shelf_hairbox(fb,x,y,width,height-2,9);
+        shelf_open_left(fb,x,split,5);shelf_open_right(fb,x+width,split,5);
+        shelf_ticket_dash_horizontal(fb,x+7,x+width-7,split);
+        shelf_name_text(fb,x+12,y+(landscape?8:12),width-24,landscape?20:26,title,PS_THEME_INK);
+        shelf_card_meta(fb,x+12,y+(landscape?31:44),landscape,book);
+        ps_text_fixed(fb,x+12,split+7,9,"已读进度 · 点击继续",PS_THEME_SECONDARY);
+        ps_center(fb,x+width-35,split+5,landscape?12:14,pct,PS_THEME_INK);
+        return;
+    }
+    int split=x+(width*76)/100,stub_center=split+(x+width-split)/2;
+    ps_box(fb,split+3,y+3,width-(split-x)-5,height-8,7,PS_THEME_INSET,true);
+    if(style==PS_SHELF_CARD_CINEMA){
+        const int cut=landscape?12:15;
+        for(int row=0;row<cut;row++){int span=cut-row;ps_fill(fb,x+width-span,y+row,span+3,1,PS_THEME_SURFACE);}
+        for(int row=0;row<cut;row++){int span=cut-row;ps_fill(fb,x,bottom-row,span+3,1,PS_THEME_SURFACE);}
+        shelf_hairline(fb,x+width-cut,y,x+width,y+cut);
+        shelf_hairline(fb,x,bottom-cut,x+cut,bottom);
+        shelf_hairline(fb,x,y,x+width-cut,y);
+        shelf_hairline(fb,x+width,y+cut,x+width,bottom);
+        shelf_hairline(fb,x+cut,bottom,x+width,bottom);
+        shelf_hairline(fb,x,y,x,bottom-cut);
+        shelf_open_top(fb,split,y,5);shelf_open_bottom(fb,split,bottom,5);
+    }else{
+        shelf_hairbox(fb,x,y,width,height-2,9);
+        shelf_open_top(fb,split,y,5);shelf_open_bottom(fb,split,bottom,5);
+    }
+    shelf_ticket_dash(fb,split,y+7,bottom-y-12);
+    const char *route="按上次位置继续阅读",*stub="进度";
+    shelf_name_text(fb,x+12,y+(landscape?14:18),split-x-24,landscape?23:27,title,PS_THEME_INK);
+    shelf_card_meta(fb,x+12,y+(landscape?40:55),landscape,book);
+    ps_text_fixed(fb,x+12,y+(landscape?61:77),9,route,PS_THEME_SECONDARY);
+    ps_center(fb,stub_center,y+7,9,stub,PS_THEME_SECONDARY);
+    if(style==PS_SHELF_CARD_CINEMA){
+        int radius=landscape?17:20,cx=stub_center,cy=y+height/2+3;
+        ps_box(fb,cx-radius,cy-radius,radius*2,radius*2,radius,PS_THEME_SURFACE,true);
+        shelf_hairarc(fb,cx,cy,radius,1,1);shelf_hairarc(fb,cx,cy,radius,-1,1);
+        shelf_hairarc(fb,cx,cy,radius,1,-1);shelf_hairarc(fb,cx,cy,radius,-1,-1);
+        ps_center(fb,cx,cy-(landscape?5:6),landscape?11:13,pct,PS_THEME_INK);
+    }else{
+        ps_center(fb,stub_center,y+(landscape?31:36),landscape?15:18,pct,PS_THEME_INK);
+    }
 }
 static void shelf_render(uint8_t *fb){
     ps_view_t v=ps_view();reader_shelf_layout_t l=shelf_layout();

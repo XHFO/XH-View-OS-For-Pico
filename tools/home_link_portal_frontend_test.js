@@ -7,14 +7,14 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(process.argv[2], 'utf8');
-assert(html.includes('<title>家庭填写</title>') && html.includes('家庭与打印机'));
+assert(html.includes('<title>连接填写</title>') && html.includes("id='printers' hidden"));
 assert(!html.includes('å®') && !html.includes('\ufffd'));
 assert(html.includes("id='go' type='button' disabled"));
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script);
 
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); };
-function fixture(respond) {
+function fixture(respond, printers = false) {
   const elements = new Map();
   class Element {
     constructor() { this.children = []; this.value = ''; this.checked = false; this.disabled = false; this._text = ''; }
@@ -31,7 +31,7 @@ function fixture(respond) {
   const calls = [];
   const context = {
     document: {getElementById: id => elements.get(id), createElement: () => new Element()},
-    location: {hash: '#t=' + '5a'.repeat(16)}, Promise, setTimeout: (fn) => setImmediate(fn),
+    location: {hash: '#t=' + '5a'.repeat(16) + (printers ? '&p=1' : '')}, URLSearchParams, Promise, setTimeout: (fn) => setImmediate(fn),
     fetch: async (path, options) => {
       const request = {path, method: options.method, headers: options.headers,
                        body: options.body ? JSON.parse(options.body) : undefined};
@@ -51,7 +51,7 @@ function getReply(request) {
   return {body: {printers: [{source: 1, name: 'HA', serial: 'sensor.printer'}, {source: 0}, {source: 0}]}};
 }
 async function main() {
-  let app = fixture(request => getReply(request));
+  let app = fixture(request => getReply(request), true);
   app.context.save();
   assert.equal(app.calls.filter(call => call.method === 'PUT').length, 0, 'must wait for initial load');
   await settle();
@@ -73,19 +73,23 @@ async function main() {
   assert.equal(app.elements.get('go').disabled, true);
   release({body: {ok: true, queued: true}});
   await settle();
-  assert.equal(app.calls.filter(call => call.method === 'PUT').length, 4);
+  assert.equal(app.calls.filter(call => call.method === 'PUT').length, 1, 'Home never writes printer slots');
+  assert.equal(app.calls.some(call => call.path === '/api/lan/printers'), false);
+  assert.equal(app.elements.get('printers').hidden, true);
   assert.equal(app.elements.get('go').disabled, false);
   assert.equal(app.elements.get('token').value, '');
   assert(app.elements.get('s').textContent.startsWith('已写入设备'));
 
   app = fixture(request => getReply(request) || (request.path.includes('slot=1') ?
-    {status: 507, body: {error: 'save_failed'}} : {body: {ok: true}}));
+    {status: 507, body: {error: 'save_failed'}} : {body: {ok: true}}), true);
   await settle();
   app.context.save();
   await settle();
   assert(app.elements.get('s').textContent.startsWith('部分设置已保存'));
   assert.equal(app.elements.get('go').disabled, false);
-  assert.equal(app.calls.filter(call => call.method === 'PUT').length, 3, 'do not continue after a failed slot');
+  assert.equal(app.calls.filter(call => call.method === 'PUT').length, 2, 'do not continue after a failed slot');
+  assert.equal(app.calls.some(call => call.method === 'PUT' && call.path === '/api/lan/home'), false, 'Printers never changes HA settings');
+  assert.equal(app.elements.get('home').hidden, true);
   let searches = 0;
   app = fixture(request => request.path === '/api/lan/home/discover' ?
     {body: ++searches === 1 ? {busy: true, servers: []} : {busy: false, servers: [{name: '<HA>', url: 'http://192.168.1.12:18123'}]}} : getReply(request));
@@ -110,6 +114,6 @@ async function main() {
   await settle(); app.context.discover(); await settle();
   assert(app.elements.get('discoveryStatus').textContent.includes('Wi-Fi'));
   assert.equal(app.elements.get('discover').disabled, false);
-  console.log('PASS: actual UTF-8 portal page, all-slot preflight, duplicate-submit guard and partial-save feedback');
+  console.log('PASS: separate Home/Printer forms and writes, all-slot preflight, duplicate-submit guard, partial-save feedback and discovery');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

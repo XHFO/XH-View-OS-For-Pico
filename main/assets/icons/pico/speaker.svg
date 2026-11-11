@@ -1,0 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0; Copyright 2026 XH_Lab -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M11 4 6 9H3v6h3l5 5V4Z"/>
+  <path d="M15 8c2 2 2 6 0 8M18 5c4 4 4 10 0 14"/>
+</svg>

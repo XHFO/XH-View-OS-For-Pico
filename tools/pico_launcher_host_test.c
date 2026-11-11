@@ -11,6 +11,8 @@ static unsigned depth,game_count=6,scans,stores,opens,draws;
 static unsigned dirties,removals,catalog_refreshes,selected_downloads,app_catalog=9;
 static char selected_last[32];
 static bool blocked;
+static bool app_upgrade;
+static unsigned sort_mode;
 static char removed[32];
 static const char *game_ids[]={"gomoku","go","xiangqi","chess","2048","snake"};
 static const char *game_titles[]={"五子棋","围棋","中国象棋","国际象棋","2048","贪吃蛇"};
@@ -29,6 +31,10 @@ const char *ps_games_last_error(void){return "TF card unavailable";}
 bool ps_games_item(unsigned index,const char **id,const char **title){if(index>=game_count)return false;*id=game_ids[index];*title=game_titles[index];return true;}
 bool ps_games_open_id(const char *id){opens++;snprintf(opened,sizeof(opened),"%s",id);if(blocked)return false;ps_navigate(PS_PLAYGAME);return true;}
 bool ps_games_remove(const char *id){assert(id&&*id);snprintf(removed,sizeof(removed),"%s",id);removals++;return true;}
+bool ps_apps_tool_item(uint16_t navigation,const char **id,const char **title){(void)navigation;(void)id;(void)title;return false;}
+unsigned ps_games_sort_mode(void){return sort_mode;}
+bool ps_games_sort_set(unsigned mode){sort_mode=mode;return true;}
+void ps_modal_background(uint8_t *fb){ps_fill(fb,0,0,view.w,view.h,15);}
 bool ps_updates_download_apps(void){return true;}
 bool ps_updates_apps_status(unsigned *catalog,char *message,size_t bytes){
     if(catalog)*catalog=app_catalog;
@@ -42,6 +48,7 @@ unsigned ps_updates_apps_catalog(ps_updates_app_t *out,unsigned capacity){
     for(unsigned i=0;i<count;i++){
         memset(&out[i],0,sizeof(out[i]));snprintf(out[i].id,sizeof(out[i].id),"%s",ids[i]);
         out[i].tool=i>=6;out[i].installed=i<2;
+        out[i].update_available=app_upgrade&&i==0;
     }
     return count;
 }
@@ -115,8 +122,13 @@ int main(void){
         int by=modal.y+modal.height-48;
         assert(tap(modal.x+164+(modal.width-180)/2,by+17));
         assert(selected_downloads==1&&!strcmp(selected_last,"xiangqi")&&!download_picker);
-        unsigned before=scans;assert(tap(view.w-40,97)&&scans==before+1);
-        assert(ps_launcher_key(2)&&page==0);assert(ps_launcher_key(0)&&page==2);
+        app_upgrade=true;assert(tap(download.x+10,download.y+10));pick=download_item_rect(0);
+        assert(tap(pick.x+20,pick.y+10));assert(tap(modal.x+180,by+17));
+        assert(selected_downloads==1&&!strcmp(selected_last,"gomoku"));app_upgrade=false;
+        unsigned before=scans;assert(tap(view.w-40,97)&&manage_picker);
+        EpdRect scan=manage_choice(5);assert(tap(scan.x+20,scan.y+20)&&scans==before+1);
+        EpdRect manage=manage_rect();assert(tap(manage.x+30,manage.y+260)&&!manage_picker);
+        assert(ps_launcher_key(2)&&page==1);assert(ps_launcher_key(0)&&page==0);
         assert(!ps_launcher_key(-1));
     }
     // TF应用消失后页数钳制，系统与Cloudflare入口保留且不误启旧索引。/ Clamp pages after TF removal; retain system/Cloudflare entries without launching a stale game index.

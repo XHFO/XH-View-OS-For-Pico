@@ -19,8 +19,9 @@ TOOLS = (
     ("drawing-notes", "画板笔记", "画笔、橡皮和撤销 · 保存原稿后继续绘画", 128, "apps/src/drawing_notes.c", 10002, ()),
     ("weread", "微信读书", "在线搜书、图书资料、推荐与阅读统计 · 离线划线与想法", 129, "apps/src/weread.c", 10200,
      ("apps/include/weread_snapshot.h", "apps/include/weread_explore.h", "apps/include/weread_explore_json.h")),
-    ("home-link", "家庭连接", "Home Assistant 与打印机监看 · 可扫码填写", 130, "apps/src/home_link.c", 10106,
+    ("home-link", "家庭连接", "Home Assistant 房间选择、设备管理与控制 · 可扫码填写", 130, "apps/src/home_link.c", 10109,
      ("main/system/pico_scroll.h",)),
+    ("printer-link", "3D 打印机", "独立打印机发现、添加与管理 · 保留已有配置", 131, "apps/src/printer_link.c", 10002, ()),
 )
 
 

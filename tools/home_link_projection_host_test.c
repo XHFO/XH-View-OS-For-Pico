@@ -50,6 +50,11 @@ int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "template")) {
         char *body=states_body(&config); assert(body); puts(body); tracked_free(body); assert(!live); return 0;
     }
+    if(argc==2&&!strcmp(argv[1],"scoped-template")){
+        rp_home_area_scope_t scope={.version=1,.count=1};strcpy(scope.ids[0],"office");
+        char *body=states_body_scoped(&config,&scope);assert(body);puts(body);tracked_free(body);assert(!live);return 0;
+    }
+    if(argc==2&&!strcmp(argv[1],"areas-template")){puts(ha_areas_template);return 0;}
     assert(argc == 4);
     FILE *f=fopen(argv[1],"rb"); assert(f); fseek(f,0,SEEK_END); long size=ftell(f); rewind(f);
     char *body=malloc((size_t)size+1); assert(body); assert(fread(body,1,(size_t)size,f)==(size_t)size); fclose(f); body[size]=0;

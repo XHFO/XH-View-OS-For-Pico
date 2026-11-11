@@ -38,7 +38,7 @@ typedef enum { PI_BOOK, PI_HOME, PI_SETTINGS, PI_BACK, PI_CLOSE, PI_SEARCH,
     PI_LIGHT, PI_SWITCH, PI_FAN, PI_THERMOMETER, PI_CLIMATE, PI_PRINTER,
     PI_GAME, PI_CHECK, PI_PLUS, PI_MINUS, PI_REFRESH, PI_LOCK, PI_MORE, PI_BLUETOOTH,
     PI_HIGHLIGHT, PI_LIST, PI_HEART, PI_BATTERY, PI_USB, PI_SD, PI_SLIDERS,
-    PI_PAUSE, PI_PLAY, PI_POWER, PI_GRID, PI_LINK, PI_DROPLET, PI_COUNT } ps_icon_t;
+    PI_PAUSE, PI_PLAY, PI_POWER, PI_GRID, PI_LINK, PI_DROPLET, PI_SOUND, PI_COUNT } ps_icon_t;
 
 ps_view_t ps_view(void);
 ps_route_t ps_route(void);
@@ -214,8 +214,15 @@ EpdRect ps_rect(int x,int y,int w,int h);
 bool ps_hit(int x,int y,int rx,int ry,int rw,int rh);
 void ps_fill(uint8_t *fb,int x,int y,int w,int h,int gray);
 void ps_line(uint8_t *fb,int x0,int y0,int x1,int y1,int gray);
+void ps_line_thin(uint8_t *fb,int x0,int y0,int x1,int y1,int gray);
 void ps_box(uint8_t *fb,int x,int y,int w,int h,int radius,int gray,bool filled);
 void ps_text(uint8_t *fb,int x,int y,int size,const char *text,int gray);
+/// 带明确文字状态的轻量开关行。/ Lightweight toggle row with an explicit text state.
+void ps_toggle(uint8_t *fb,int x,int y,int w,int h,const char *label,bool on,bool enabled);
+/// 当前 UI 字号的逻辑宽度。/ Logical width at the effective UI text size.
+int ps_text_width(int size,const char *s);
+/// 静态遮盖背景，避免弹层露出标题碎片。/ Static modal backdrop without title fragments.
+void ps_modal_background(uint8_t *fb);
 /// 固定字号的提示文字；超宽仅截短，不缩字。/ Fixed-size prompts truncate rather than resize.
 void ps_text_fixed(uint8_t *fb,int x,int y,int size,const char *text,int gray);
 /// 只画光圈轮廓，避开静态圆形按钮，不重画其底色或图标。/ Draw only a cursor outline, excluding static circular buttons.
@@ -246,6 +253,8 @@ void ps_reader_editor_ink_cancel(void);
 /// TF应用与画板局部绘制。/ TF application and drawing damage interface.
 bool ps_apps_open(const char *id);
 void ps_apps_register_navigation(void);
+/// 将已扫描工具入口解析为稳定包 ID，不访问存储。/ Resolve a scanned tool destination to a stable package ID without I/O.
+bool ps_apps_tool_item(uint16_t navigation,const char **id,const char **title);
 bool ps_apps_ink_mode(void);
 bool ps_apps_ink_render_partial(uint8_t *fb,EpdRect areas[4],int *count);
 void ps_apps_ink_invalidate(void);
@@ -287,6 +296,12 @@ bool ps_games_item(unsigned index,const char **id,const char **title);
 const char *ps_games_sort_label(void);
 /// 循环并持久化应用排序，同时重排当前目录。/ Cycle and persist the app sort, then reorder the current catalog.
 bool ps_games_sort_cycle(void);
+/// 明确选择 TF 应用排序。/ Explicit TF app sort selection.
+unsigned ps_games_sort_mode(void);
+bool ps_games_sort_set(unsigned mode);
+/// 应用弹层优先处理返回与遮挡。/ App modals own Back and overlay visibility.
+bool ps_launcher_modal_active(void);
+bool ps_launcher_back(void);
 /// 按稳定包ID启动游戏，复用保存、介质检查与单模块载入流程。/ Open a stable game package ID through existing save, media and single-module guards.
 bool ps_games_open_id(const char *id);
 bool ps_games_install(const char *staged_path,bool replace);

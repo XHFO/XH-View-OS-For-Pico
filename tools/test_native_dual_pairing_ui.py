@@ -32,9 +32,9 @@ for wide in ([False] if a.legacy_repro else [False,True]):
    state=tap(319 if wide else 179,330 if wide else 580)
    assert state['route']==34,state
    # Reentering pairing starts automatic BLE discovery; manual input remains one tap away.
-   state=tap(180,340);assert state['route']==19,state
+   state=tap(480 if wide else 180,244 if wide else 340);assert state['route']==19,state
   else:
-   state=tap(180,318);assert state['route']==19,state
+   state=tap(480 if wide else 180,244 if wide else 318);assert state['route']==19,state
  def clear(n):
   for _ in range(n):digit('<')
  try:

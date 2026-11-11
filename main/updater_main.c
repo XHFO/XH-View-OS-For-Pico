@@ -130,11 +130,11 @@ static void status(int filled, int stage) {
     text_center(fb, w, w / 2, 232, 3, "FIRMWARE UPDATE");
     logical_fill((EpdRect){card_x, 292, card_w, 3}, 0, fb);
 
-    const char *title = stage == UPDATE_VERIFYING ? "VERIFYING IMAGE" :
-        stage == UPDATE_WRITING ? "WRITING SYSTEM" :
+    const char *title = stage == UPDATE_VERIFYING ? "CHECKING UPDATE" :
+        stage == UPDATE_WRITING ? "INSTALLING SYSTEM" :
         stage == UPDATE_COMPLETE ? "UPDATE COMPLETE" : "UPDATE FAILED";
-    const char *detail = stage == UPDATE_VERIFYING ? "CHECKING SHA256" :
-        stage == UPDATE_WRITING ? "INSTALLING OTA0" :
+    const char *detail = stage == UPDATE_VERIFYING ? "PLEASE WAIT" :
+        stage == UPDATE_WRITING ? "KEEP POWER CONNECTED" :
         stage == UPDATE_COMPLETE ? "RESTARTING" : "RETURNING TO SYSTEM";
     text_center(fb, w, w / 2, 430, 4, title);
     text_center(fb, w, w / 2, 500, 3, detail);
@@ -142,16 +142,17 @@ static void status(int filled, int stage) {
     const int bar_x = card_x, bar_y = 585, bar_w = card_w, bar_h = 92;
     logical_fill((EpdRect){bar_x, bar_y, bar_w, bar_h}, 0, fb);
     logical_fill((EpdRect){bar_x + 5, bar_y + 5, bar_w - 10, bar_h - 10}, 15, fb);
-    if (filled > 0)
+    if (stage != UPDATE_FAILED && filled > 0)
         logical_fill((EpdRect){bar_x + 5, bar_y + 5,
             (bar_w - 10) * filled / 100, bar_h - 10}, 0, fb);
 
     char percent[8];
-    snprintf(percent, sizeof(percent), "%d%%", filled < 0 ? 0 : filled > 100 ? 100 : filled);
+    if(stage == UPDATE_FAILED)snprintf(percent,sizeof(percent),"STOPPED");
+    else snprintf(percent, sizeof(percent), "%d%%", filled < 0 ? 0 : filled > 100 ? 100 : filled);
     text_center(fb, w, w / 2, 725, 6, percent);
     logical_fill((EpdRect){card_x, 845, card_w, 2}, 0, fb);
     text_center(fb, w, w / 2, 900, 3,
-                stage == UPDATE_FAILED ? "KEEP CARD INSERTED" : "DO NOT POWER OFF");
+                stage == UPDATE_FAILED ? "RETRY FROM SETTINGS" : "DO NOT POWER OFF");
     text_center(fb, w, w / 2, 1080, 3, "XHFO.NET");
     epd_poweron();
     epd_hl_update_screen(&s_hw.hl, MODE_GC16, 24);

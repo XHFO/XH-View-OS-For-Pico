@@ -169,8 +169,9 @@ static bool s_content_owned,s_content_refresh;
 static const app_desc_t* s_legacy;
 static const app_desc_t* s_global_app;
 static bool s_global_enabled, s_global_claimed, s_book_return, s_real_book_preferred;
-static int64_t s_firmware_confirm_until;
-static int64_t s_update_channel_confirm_until;
+// 风险确认持久到明确取消或提交，不依赖计时或长按。/ Explicit confirmation, never timeout/double-tap/hold.
+static uint8_t s_update_confirm;
+static char s_update_confirm_version[33];
 static int s_book_return_depth;
 static app_redraw_t s_global_redraw;
 static int s_battery = -1;
@@ -892,6 +893,7 @@ static void enter(ps_route_t r) {
     s_fan_selected = -1;
     if(r!=PS_QUICK_SETTINGS)s_quick_edit.active=false;
     else if(!s_quick_edit.active)quick_edit_begin();
+    s_update_confirm=0;
     s_route = r;
     s_panel = 0;
     s_focus = 0;
@@ -1010,6 +1012,8 @@ void ps_switch(int section) {
 }
 void ps_back(void) {
     if (ps_storage_busy()) return;
+    if(s_route==PS_APPS&&ps_launcher_back())return;
+    if(s_route==PS_DEVICE&&s_update_confirm){s_update_confirm=0;s_dirty=true;return;}
     if (s_route == PS_POWER && ps_power_back()) { s_dirty=true; return; }
     if ((s_route == PS_USB_TRANSFER || ps_usb_background()) && ps_usb_back()) { s_dirty=true; return; }
     if (s_route == PS_STORAGE && ps_storage_back()) { s_dirty = true; return; }
@@ -1714,11 +1718,11 @@ static const device_setting_t device_settings[] = {
     {"阅读排版","字体与行距",PI_SLIDERS,PS_READING_SETTINGS,DEVICE_ACTION_ROUTE},
     {"笔记输入","语言与键盘",PI_NOTE,PS_INPUT_SETTINGS,DEVICE_ACTION_ROUTE},
     {"双机阅读","主从配对与书库同步",PI_LINK,PS_DUAL,DEVICE_ACTION_ROUTE},
-    {"首页导航","排序与隐藏",PI_LAYOUT,PS_NAV_SETTINGS,DEVICE_ACTION_ROUTE},
+    {"首页导航","排序与隐藏",PI_GRID,PS_NAV_SETTINGS,DEVICE_ACTION_ROUTE},
     {"快捷菜单","功能位置与排序",PI_GRID,PS_QUICK_SETTINGS,DEVICE_ACTION_ROUTE},
-    {"提示音","触摸与充电提示",PI_NOTE,PS_SOUND,DEVICE_ACTION_ROUTE},
-    {"翻页动画","开关与灰阶",PI_LAYOUT,PS_ANIMATION_SETTINGS,DEVICE_ACTION_ROUTE},
-    {"状态栏图标","墨线极简",PI_LAYOUT,PS_DEVICE,DEVICE_ACTION_STATUS_STYLE},
+    {"提示音","触摸与充电提示",PI_SOUND,PS_SOUND,DEVICE_ACTION_ROUTE},
+    {"翻页动画","开关与灰阶",PI_PLAY,PS_ANIMATION_SETTINGS,DEVICE_ACTION_ROUTE},
+    {"状态栏图标","墨线极简",PI_BATTERY,PS_DEVICE,DEVICE_ACTION_STATUS_STYLE},
     {"上次阅读卡片","默认",PI_BOOK,PS_DEVICE,DEVICE_ACTION_SHELF_CARD},
     {"应用集","下载、排序与管理",PI_GRID,PS_APPS,DEVICE_ACTION_ROUTE},
     {"Home Assistant","连接与实体",PI_HOME,PS_HA_SETTINGS,DEVICE_ACTION_ROUTE},
@@ -1762,33 +1766,32 @@ static void status_wifi_draw(uint8_t *fb,int x,int y,bool book){
     bool online=usb||read_pico_connectivity_online();
     ps_icon(fb,x,y,16,usb?PI_USB:PI_WIFI,online?3:8);
     if(!online&&!usb)ps_line(fb,x+1,y+15,x+15,y+1,3);
-    if(book&&online)ps_line(fb,x+3,y+18,x+13,y+18,7);
+    (void)book;
 }
-static void status_pair_draw(uint8_t *fb,int center,int y,bool book,bool linked){
+static void status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int role){
+    if(!linked)return;
     if(book){
-        const int size=16,gap=8;
-        int left=center-(size*2+gap)/2,right=left+size+gap;
+        const int size=12,gap=8;
+        int left=x,right=left+size+gap;
         ps_icon(fb,left,y,size,PI_BOOK,linked?2:8);
         ps_icon(fb,right,y,size,PI_BOOK,linked?6:8);
         if(linked){
-            ps_line(fb,left+size,y+size/2,right,y+size/2,6);
-            ps_fill(fb,left+size+2,y+size/2-1,2,2,6);
-            ps_fill(fb,right-4,y+size/2-1,2,2,6);
-            int role=ps_dual_role();
-            if(role==1)ps_fill(fb,left+2,y+size-2,3,2,2);
-            else if(role==2)ps_fill(fb,right+size-5,y+size-2,3,2,2);
+            ps_fill(fb,left+size+1,y+size/2,2,1,6);
+            ps_fill(fb,right-3,y+size/2,2,1,6);
         }
-        ps_line(fb,left+2,y+size+1,left+size-2,y+size+1,10);
-        ps_line(fb,right+2,y+size+1,right+size-2,y+size+1,10);
+        if(role==1)ps_line(fb,left+2,y+size+1,left+size-2,y+size+1,3);
+        else if(role==2)ps_line(fb,right+2,y+size+1,right+size-2,y+size+1,3);
     }else{
-        const int width=10,height=16,gap=8;
-        int left=center-(width*2+gap)/2,right=left+width+gap;
+        const int width=8,height=12,gap=8;
+        int left=x,right=left+width+gap;
         ps_box(fb,left,y,width,height,2,linked?3:7,false);
         ps_box(fb,right,y,width,height,2,linked?5:7,false);
-        if(linked)ps_line(fb,left+width,y+height/2,right,y+height/2,7);
-        int role=ps_dual_role();
-        if(linked&&role==1)ps_fill(fb,left+3,y+height-1,3,2,2);
-        else if(linked&&role==2)ps_fill(fb,right+width-6,y+height-1,3,2,2);
+        if(linked){
+            ps_fill(fb,left+width+1,y+height/2,2,1,6);
+            ps_fill(fb,right-3,y+height/2,2,1,6);
+        }
+        if(linked&&role==1)ps_fill(fb,left+width-3,y+height-3,3,2,2);
+        else if(linked&&role==2)ps_fill(fb,right+width-3,y+height-3,3,2,2);
     }
 }
 static void status_battery_draw(uint8_t *fb,int x,int y,bool book){
@@ -1806,7 +1809,7 @@ static void status_battery_draw(uint8_t *fb,int x,int y,bool book){
         if(book){
             int segment=(inner-3)/4;
             for(int i=0;i<4;i++){
-                int threshold=(i+1)*25;
+                int threshold=i*25+1;
                 if(percent>=threshold)ps_box(fb,x+2+i*(segment+1),y+2,segment,height-4,1,3,true);
             }
         }else{
@@ -1820,64 +1823,54 @@ static void status_battery_draw(uint8_t *fb,int x,int y,bool book){
         ps_line(fb,x+10,y+5,x+8,y+9,15);
     }
 }
-static void status_icons_draw(uint8_t *fb,ps_view_t v,bool book,bool linked){
-    status_wifi_draw(fb,12,3,book);
-    if(linked)status_pair_draw(fb,v.w/2,book?1:2,book,true);
-    uint8_t style=ps_status_style();
-    if(style==PS_STATUS_STYLE_LINE_PERCENT){
-        status_battery_draw(fb,v.w-58,6,false);
-        char level[16];
-        if(s_battery>=0)snprintf(level,sizeof(level),"%d%%",s_battery);
+// 实际状态栏与选择预览共用同一相对坐标。/ One relative layout for the live strip and its picker.
+static void status_strip_draw(uint8_t *fb,int left,int right,int top,uint8_t style,bool linked,int role){
+    bool book=style==PS_STATUS_STYLE_BOOK;
+    status_wifi_draw(fb,left,top+3,book);
+    status_pair_draw(fb,left+22,top+4,book,linked,role);
+    bool percent=style==PS_STATUS_STYLE_LINE_PERCENT;
+    status_battery_draw(fb,right-(percent?62:22),top+6,book);
+    if(percent){
+        char level[12];
+        if(s_battery>=0)snprintf(level,sizeof(level),"%d%%",s_battery>100?100:s_battery);
         else snprintf(level,sizeof(level),"--%%");
-        ps_text(fb,v.w-34,7,9,level,5);
-    }else{
-        status_battery_draw(fb,v.w-(book?35:34),book?3:5,book);
+        ps_text_fixed(fb,right-ps_text_width(9,level),top+4,9,level,5);
     }
+}
+static void status_icons_draw(uint8_t *fb,ps_view_t v,bool book,bool linked){
+    (void)book;status_strip_draw(fb,12,v.w-12,0,ps_status_style(),linked,ps_dual_role());
 }
 typedef struct {EpdRect panel,option[PS_STATUS_STYLE_COUNT],cancel;} status_style_picker_t;
 static status_style_picker_t status_style_picker_layout(void){
     ps_view_t v=ps_view();status_style_picker_t r={0};
-    if(v.landscape){
-        r.panel=(EpdRect){(v.w-520)/2,28,520,320};
-        for(int i=0;i<PS_STATUS_STYLE_COUNT;i++)r.option[i]=(EpdRect){r.panel.x+24,r.panel.y+62+i*70,r.panel.width-48,62};
-        r.cancel=(EpdRect){r.panel.x+r.panel.width-120,r.panel.y+r.panel.height-44,96,32};
-    }else{
-        r.panel=(EpdRect){16,76,v.w-32,490};
-        for(int i=0;i<PS_STATUS_STYLE_COUNT;i++)r.option[i]=(EpdRect){r.panel.x+14,r.panel.y+64+i*92,r.panel.width-28,80};
-        r.cancel=(EpdRect){r.panel.x+r.panel.width-108,r.panel.y+r.panel.height-42,92,32};
-    }
+    int h=v.landscape?312:414,w=v.landscape?520:v.w-32;
+    r.panel=(EpdRect){(v.w-w)/2,(v.h-h)/2,w,h};
+    int rh=v.landscape?58:84,step=v.landscape?64:92,top=v.landscape?62:72;
+    for(int i=0;i<PS_STATUS_STYLE_COUNT;i++)r.option[i]=(EpdRect){r.panel.x+16,r.panel.y+top+i*step,w-32,rh};
+    r.cancel=(EpdRect){r.panel.x+w-112,r.panel.y+h-56,96,40};
     return r;
 }
 static void status_style_picker_render(uint8_t *fb){
     if(!s_status_style_picker)return;
     ps_view_t v=ps_view();status_style_picker_t r=status_style_picker_layout();
-    ps_box(fb,r.panel.x+3,r.panel.y+4,r.panel.width,r.panel.height,14,2,true);
-    ps_box(fb,r.panel.x,r.panel.y,r.panel.width,r.panel.height,14,15,true);
-    ps_text(fb,r.panel.x+18,r.panel.y+16,16,"状态栏图标",1);
-    ps_text(fb,r.panel.x+18,r.panel.y+42,9,"选择网络、双机与电量的图标语言",5);
+    ps_modal_background(fb);ps_surface(fb,r.panel.x,r.panel.y,r.panel.width,r.panel.height,false);
+    ps_text(fb,r.panel.x+16,r.panel.y+14,16,"状态栏图标",1);
+    ps_text(fb,r.panel.x+16,r.panel.y+40,11,"选择网络、双机与电量的外观",5);
     for(int i=0;i<PS_STATUS_STYLE_COUNT;i++){
-        EpdRect row=r.option[i];
-        ps_box(fb,row.x,row.y,row.width,row.height,9,i==ps_status_style()?2:11,true);
+        EpdRect row=r.option[i];bool selected=i==ps_status_style();
+        ps_box(fb,row.x,row.y,row.width,row.height,9,selected?2:12,true);
         ps_box(fb,row.x+1,row.y+1,row.width-2,row.height-2,8,15,true);
-        ps_text(fb,row.x+12,row.y+13,14,status_style_name((uint8_t)i),1);
-        ps_text(fb,row.x+12,row.y+39,9,i==0?"双设备轮廓 · 默认":i==1?"双书页与分段电量":"双设备轮廓与百分比",5);
-        if(i==0){
-            status_wifi_draw(fb,row.x+row.width-180,row.y+22,false);
-            status_pair_draw(fb,row.x+row.width-120,row.y+20,false,true);
-            status_battery_draw(fb,row.x+row.width-34,row.y+24,false);
-        }else if(i==1){
-            status_wifi_draw(fb,row.x+row.width-180,row.y+22,true);
-            status_pair_draw(fb,row.x+row.width-120,row.y+19,true,true);
-            status_battery_draw(fb,row.x+row.width-34,row.y+24,true);
+        if(selected)ps_icon(fb,row.x+10,row.y+12,14,PI_CHECK,1);
+        ps_text_fixed(fb,row.x+32,row.y+10,14,status_style_name((uint8_t)i),1);
+        if(v.landscape){
+            ps_text_fixed(fb,row.x+32,row.y+34,10,selected?"当前使用":"轻点使用",5);
+            status_strip_draw(fb,row.x+row.width/2,row.x+row.width-16,row.y+12,(uint8_t)i,true,1);
         }else{
-            status_wifi_draw(fb,row.x+row.width-180,row.y+22,false);
-            status_pair_draw(fb,row.x+row.width-128,row.y+20,false,true);
-            status_battery_draw(fb,row.x+row.width-66,row.y+24,false);
-            ps_text(fb,row.x+row.width-42,row.y+25,9,"86%",5);
+            status_strip_draw(fb,row.x+32,row.x+row.width-16,row.y+34,(uint8_t)i,true,1);
+            ps_text_fixed(fb,row.x+32,row.y+61,10,selected?"当前使用":"轻点使用",5);
         }
     }
     ps_button(fb,r.cancel.x,r.cancel.y,r.cancel.width,r.cancel.height,"取消",false);
-    (void)v;
 }
 typedef struct {EpdRect panel,option[PS_SHELF_CARD_STYLE_COUNT],cancel;} shelf_card_picker_t;
 static shelf_card_picker_t shelf_card_picker_layout(void){
@@ -1887,78 +1880,100 @@ static shelf_card_picker_t shelf_card_picker_layout(void){
         int width=(r.panel.width-52)/2;
         for(int i=0;i<PS_SHELF_CARD_STYLE_COUNT;i++){
             r.option[i]=(EpdRect){r.panel.x+20+(i%2)*(width+12),
-                                  r.panel.y+60+(i/2)*112,width,100};
+                                  r.panel.y+60+(i/2)*100,width,90};
         }
-        r.cancel=(EpdRect){r.panel.x+r.panel.width-108,r.panel.y+r.panel.height-42,92,30};
+        r.cancel=(EpdRect){r.panel.x+r.panel.width-112,r.panel.y+r.panel.height-56,96,40};
     }else{
         r.panel=(EpdRect){16,76,v.w-32,490};
         for(int i=0;i<PS_SHELF_CARD_STYLE_COUNT;i++)
             r.option[i]=(EpdRect){r.panel.x+14,r.panel.y+64+i*88,r.panel.width-28,78};
-        r.cancel=(EpdRect){r.panel.x+r.panel.width-108,r.panel.y+r.panel.height-42,92,32};
+        r.cancel=(EpdRect){r.panel.x+r.panel.width-112,r.panel.y+r.panel.height-56,96,40};
     }
     return r;
 }
 static void shelf_card_motif(uint8_t *fb,int x,int y,int w,int h,uint8_t style){
-    if(style==PS_SHELF_CARD_DEFAULT){
-        ps_box(fb,x,y,w,h,8,11,true);
-        ps_box(fb,x+2,y+2,w-4,h-4,7,15,true);
-        ps_box(fb,x+8,y+10,w-16,4,2,5,true);
-        ps_box(fb,x+8,y+22,w-28,3,1,9,true);
-        ps_box(fb,x+8,y+31,w-20,3,1,9,true);
-        return;
-    }
-    ps_box(fb,x+1,y+2,w,h-2,7,12,true);
-    ps_box(fb,x,y,w,h-2,7,15,true);
+    ps_box(fb,x,y,w,h,5,1,true);ps_box(fb,x+1,y+1,w-2,h-2,4,15,true);
     int split=x+w-18;
-    for(int line=y+7;line<y+h-9;line+=7)ps_line(fb,split,line,split,line+3,8);
-    if(style==PS_SHELF_CARD_BOARDING){
-        ps_text_fixed(fb,x+7,y+7,9,"PASS",3);
-        ps_line(fb,x+7,y+22,split-7,y+22,8);
-        ps_text_fixed(fb,split+4,y+9,9,"07",2);
-    }else if(style==PS_SHELF_CARD_TRAIN){
-        ps_text_fixed(fb,x+7,y+7,9,"检 票",3);
-        ps_line(fb,x+7,y+22,split-8,y+22,8);
-        ps_line(fb,x+7,y+32,split-8,y+32,10);
-        ps_text_fixed(fb,split+5,y+9,9,"车",2);
+    if(style==PS_SHELF_CARD_TRAIN){
+        int line=y+h-12;
+        ps_fill(fb,x+2,line+2,w-4,8,13);
+        for(int xx=x+5;xx<x+w-4;xx+=6)ps_line(fb,xx,line,xx+2,line,7);
+        ps_box(fb,x-3,line-3,6,6,3,15,true);ps_box(fb,x+w-3,line-3,6,6,3,15,true);
     }else{
-        ps_text_fixed(fb,x+7,y+7,9,"ADMIT",3);
-        ps_line(fb,x+7,y+22,split-7,y+22,8);
-        ps_text_fixed(fb,split+5,y+9,9,"F7",2);
+        ps_fill(fb,split+2,y+3,14,h-6,13);
+        for(int yy=y+6;yy<y+h-4;yy+=6)ps_line(fb,split,yy,split,yy+2,7);
+        ps_box(fb,split-4,y-4,8,8,4,15,true);ps_box(fb,split-4,y+h-4,8,8,4,15,true);
+        if(style==PS_SHELF_CARD_DEFAULT){
+            ps_fill(fb,x+2,y+4,5,h-8,13);ps_line(fb,x+8,y+6,x+8,y+h-6,7);
+        }
+        if(style==PS_SHELF_CARD_CINEMA){
+            for(int k=0;k<7;k++){ps_fill(fb,x+w-7+k,y+k,8-k,1,15);ps_fill(fb,x,y+h-1-k,7-k,1,15);}
+            ps_line(fb,x+w-7,y,x+w,y+7,1);ps_line(fb,x,y+h-7,x+7,y+h-1,1);
+            ps_box(fb,split+4,y+18,10,10,5,1,false);
+        }
     }
+    int left=x+(style==PS_SHELF_CARD_DEFAULT?12:6);
+    ps_line(fb,left,y+12,split-6,y+12,3);ps_line(fb,left,y+19,split-10,y+19,8);
 }
 static void shelf_card_picker_render(uint8_t *fb){
     if(!s_shelf_card_picker)return;
     shelf_card_picker_t r=shelf_card_picker_layout();
+    ps_modal_background(fb);
     ps_box(fb,r.panel.x+3,r.panel.y+4,r.panel.width,r.panel.height,14,2,true);
     ps_box(fb,r.panel.x,r.panel.y,r.panel.width,r.panel.height,14,15,true);
     ps_text(fb,r.panel.x+18,r.panel.y+16,16,"上次阅读卡片",1);
     ps_text(fb,r.panel.x+18,r.panel.y+42,9,"选择书架续读区域的外观",5);
-    const char *details[]={"简洁圆角续读卡","航段式阅读票","双站式书页票","放映式收藏票根"};
+    const char *details[]={"书页签与进度副联","纵向开孔与副联","横向开孔与进度栏","切角与圆形进度章"};
     for(int i=0;i<PS_SHELF_CARD_STYLE_COUNT;i++){
         EpdRect row=r.option[i];
         ps_box(fb,row.x,row.y,row.width,row.height,9,i==ps_shelf_card_style()?2:11,true);
         ps_box(fb,row.x+1,row.y+1,row.width-2,row.height-2,8,15,true);
-        ps_text(fb,row.x+12,row.y+11,14,shelf_card_style_name((uint8_t)i),1);
-        ps_text_fixed(fb,row.x+12,row.y+38,9,details[i],5);
+        if(i==ps_shelf_card_style())ps_icon(fb,row.x+10,row.y+12,14,PI_CHECK,1);
+        ps_text_fixed(fb,row.x+32,row.y+11,14,shelf_card_style_name((uint8_t)i),1);
+        ps_text_fixed(fb,row.x+12,row.y+41,10,details[i],5);
         shelf_card_motif(fb,row.x+row.width-80,row.y+12,62,44,(uint8_t)i);
+        if(i==ps_shelf_card_style())ps_text_fixed(fb,row.x+12,row.y+61,9,"当前使用",5);
     }
     ps_button(fb,r.cancel.x,r.cancel.y,r.cancel.width,r.cancel.height,"取消",false);
 }
 static EpdRect device_about_header_rect(void) {
     ps_view_t v=ps_view();
-    return v.landscape?(EpdRect){16,82,(v.w-44)/2,210}:
-        (EpdRect){16,82,v.w-32,210};
+    return v.landscape?(EpdRect){16,82,(v.w-44)/2,222}:
+        (EpdRect){16,82,v.w-32,222};
 }
 static EpdRect device_update_channel_rect(int channel) {
     EpdRect header = device_about_header_rect();
     const int width = 50, gap = 6;
     return (EpdRect){header.x + header.width - 16 - 2 * width - gap + channel * (width + gap),
-                     header.y + 80, width, 24};
+                     header.y + 76, width, 32};
 }
 static EpdRect device_guide_rect(void) {
     ps_view_t v=ps_view();
-    return v.landscape?(EpdRect){16,298,(v.w-44)/2,34}:
+    return v.landscape?(EpdRect){16,310,(v.w-44)/2,34}:
         (EpdRect){16,576,v.w-32,34};
+}
+static EpdRect device_update_button_rect(void){
+    EpdRect h=device_about_header_rect();return (EpdRect){h.x+16,h.y+166,h.width-32,40};
+}
+static EpdRect device_confirm_rect(void){
+    ps_view_t v=ps_view();int w=v.landscape?500:v.w-32,h=266;
+    return (EpdRect){(v.w-w)/2,(v.h-h)/2,w,h};
+}
+static void device_confirm_render(uint8_t *fb){
+    if(!s_update_confirm)return;
+    EpdRect r=device_confirm_rect();ps_modal_background(fb);ps_surface(fb,r.x,r.y,r.width,r.height,false);
+    bool install=s_update_confirm==2;
+    ps_text_fixed(fb,r.x+16,r.y+16,18,install?"安装系统更新":"切换测试频道",1);
+    ps_wrap(fb,r.x+16,r.y+56,r.width-32,12,3,install?
+        "安装会重启设备。请保持供电和 TF 卡插入，安装时不要关闭电源。":
+        "测试版本可能存在功能异常或不稳定，适合愿意协助测试的用户。日常阅读建议使用稳定频道。",5);
+    if(install){
+        char line[80];snprintf(line,sizeof(line),"当前：%s",PS_VERSION);ps_text_fixed(fb,r.x+16,r.y+132,11,line,1);
+        snprintf(line,sizeof(line),"目标：%s",s_update_confirm_version);ps_text_fixed(fb,r.x+16,r.y+156,11,line,1);
+    }else ps_text_fixed(fb,r.x+16,r.y+150,11,"切换频道后仍需手动下载与安装。",1);
+    int w=(r.width-44)/2,by=r.y+r.height-60;
+    ps_button(fb,r.x+16,by,w,44,"取消",false);
+    ps_button(fb,r.x+28+w,by,w,44,install?"安装并重启":"切换测试频道",true);
 }
 static PICO_STORE_COLD void device_about_render(uint8_t *fb){
     ps_view_t v=ps_view();int cw=v.landscape?(v.w-44)/2:v.w-32;
@@ -1979,7 +1994,7 @@ static PICO_STORE_COLD void device_about_render(uint8_t *fb){
         EpdRect r=device_update_channel_rect(i);
         bool selected=channel==(uint8_t)i;
         ps_box(fb,r.x,r.y,r.width,r.height,7,selected?1:12,true);
-        ps_center(fb,r.x+r.width/2,r.y+5,9,ps_updates_channel_name((uint8_t)i),
+        ps_center(fb,r.x+r.width/2,r.y+9,10,ps_updates_channel_name((uint8_t)i),
                   selected?15:1);
     }
     char version[72];
@@ -1990,16 +2005,16 @@ static PICO_STORE_COLD void device_about_render(uint8_t *fb){
         snprintf(update_detail,sizeof(update_detail),"测试频道可能不稳定 · %s",update_message);
     else
         snprintf(update_detail,sizeof(update_detail),"%s",update_message);
-    ps_wrap(fb,header.x+16,header.y+134,header.width-32,9,1,update_detail,PS_THEME_SECONDARY);
+    ps_wrap(fb,header.x+16,header.y+134,header.width-32,11,1,update_detail,PS_THEME_SECONDARY);
     unsigned percent=0;
     if(ps_updates_firmware_progress(&percent)&&percent<=100){
-        int px=header.x+16,py=header.y+151,pw=header.width-32;
+        int px=header.x+16,py=header.y+156,pw=header.width-32;
         ps_box(fb,px,py,pw,5,2,13,true);
         if(percent)ps_box(fb,px,py,pw*percent/100,5,2,2,true);
     }
     const char *action=firmware_ready?"安装并重启":firmware_busy?"下载中":
         update_newer?"下载固件":"检查更新";
-    ps_button(fb,header.x+16,header.y+164,header.width-32,30,action,
+    ps_button(fb,header.x+16,header.y+166,header.width-32,40,action,
               firmware_ready||update_newer);
     char mac[24]="—", chip[48]="—", storage[48]="—", uid[40]="—";
 #ifdef ESP_PLATFORM
@@ -2024,7 +2039,7 @@ static PICO_STORE_COLD void device_about_render(uint8_t *fb){
 #endif
     const char *labels[]={"系统版本","设备型号","显示规格","MAC 地址","芯片","存储","设备 UID"};
     const char *values[]={PS_VERSION,"小纸 Pico","16 灰阶 · 684×1216",mac,chip,storage,uid};
-    int x=v.landscape?28+cw:16,y=v.landscape?82:304,rh=v.landscape?34:36;
+    int x=v.landscape?28+cw:16,y=v.landscape?82:316,rh=34;
     int panel_h=(int)(sizeof(labels)/sizeof(labels[0]))*rh+12;
     ps_surface(fb,x,y,cw,panel_h,false);
     for(size_t i=0;i<sizeof(labels)/sizeof(labels[0]);i++){
@@ -2034,6 +2049,7 @@ static PICO_STORE_COLD void device_about_render(uint8_t *fb){
         if(i+1<sizeof(labels)/sizeof(labels[0]))ps_line(fb,x+16,row+rh,x+cw-16,row+rh,13);
     }
     ps_button(fb,guide.x,guide.y,guide.width,guide.height,"首次使用引导",false);
+    device_confirm_render(fb);
 }
 static PICO_STORE_COLD void device_render(uint8_t* fb) {
     ps_view_t v=ps_view();ps_fill(fb,0,76,v.w,v.h-76,14);
@@ -2198,11 +2214,12 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
             onboarding_render(fb);
     }
     // 从设置打开的应用/游戏保留上级返回，不冒充首页导航。/ Apps/games opened from Settings keep parent Back instead of Home navigation.
-    if(!frozen&&!s_panel&&!s_fan&&s_depth&&s_history[s_depth-1]==PS_DEVICE&&(s_route==PS_APPS||s_route==PS_GAMES)){
+    bool app_modal=s_route==PS_APPS&&ps_launcher_modal_active();
+    if(!frozen&&!s_panel&&!s_fan&&!app_modal&&s_depth&&s_history[s_depth-1]==PS_DEVICE&&(s_route==PS_APPS||s_route==PS_GAMES)){
         ps_fill(fb,0,24,v.w,46,14);ps_heading(fb,"应用与服务",NULL);
     }
     if(frozen&&!s_panel&&!s_fan)ps_heading(fb,"TF 卡正由电脑管理","可继续使用设置和蓝牙，图书与应用暂停");
-    if(!frozen&&!s_panel&&!s_fan&&ps_home_launcher_visible())ps_tabs(fb,s_section);
+    if(!frozen&&!s_panel&&!s_fan&&!app_modal&&ps_home_launcher_visible())ps_tabs(fb,s_section);
     bool fullscreen_app=s_route==PS_CLOUDFLARE&&ps_desktop_app_available(true)&&!frozen&&!s_panel&&!s_fan;
     // 游戏页面占满屏幕，不绘制顶部系统状态栏，避免遮住棋盘/游戏区域。
     // Game pages own the whole screen; skip the system status bar so it cannot cover the board.
@@ -2215,11 +2232,12 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     if (s_panel) render_panel(fb);
     if (s_fan) render_fan(fb);
     if(ps_usb_background()&&!s_panel&&!s_fan&&(frozen||s_route==PS_CANVAS||s_route==PS_CLOUDFLARE))ps_usb_background_render(fb);
-    if (!standby) ps_corner_controls(fb);
+    bool blocking_modal=app_modal||s_status_style_picker||s_shelf_card_picker||s_update_confirm;
+    if (!standby&&!blocking_modal) ps_corner_controls(fb);
     if (dual_resume_visible() && !s_panel && !s_fan && !s_fan_candidate)
         ps_button(fb, dual_resume_rect().x, dual_resume_rect().y, dual_resume_rect().width,
                   dual_resume_rect().height, "回到双机阅读", true);
-    if (!fan_frame_active() && s_toast[0] && ps_now() < s_toast_until) {
+    if (!blocking_modal && !fan_frame_active() && s_toast[0] && ps_now() < s_toast_until) {
         int tw = v.w - 48;
         ps_box(fb, 24, v.h - 78, tw, 34, 5, 2, true);
         ps_center(fb, v.w / 2, v.h - 67, 11, s_toast, 15);
@@ -2283,47 +2301,44 @@ static PICO_STORE_COLD bool device_event(const ps_event_t* e) {
         return true;
     }
     if(s_device_page==DEVICE_ABOUT){
-        EpdRect firmware=device_about_header_rect(),guide=device_guide_rect();
+        EpdRect firmware=device_update_button_rect(),guide=device_guide_rect();
+        if(s_update_confirm){
+            if(e->type!=PS_TAP)return true;
+            EpdRect r=device_confirm_rect();int w=(r.width-44)/2,by=r.y+r.height-60;
+            if(ps_hit(e->x,e->y,r.x+16,by,w,44)){s_update_confirm=0;s_dirty=true;return true;}
+            if(ps_hit(e->x,e->y,r.x+28+w,by,w,44)){
+                uint8_t action=s_update_confirm;s_update_confirm=0;
+                if(action==1){
+                    if(ps_updates_channel_set(PS_UPDATE_CHANNEL_TEST)){(void)ps_updates_check();ps_toast("已切换测试频道");}
+                    else ps_toast("频道切换失败，请等待当前任务完成");
+                }else{
+                    char latest[33];
+                    if(!ps_updates_firmware_version(latest,sizeof(latest))||strcmp(latest,s_update_confirm_version))ps_toast("固件状态已变化，请重新检查更新");
+                    else if(!ps_updates_arm_firmware())ps_toast("固件未就绪或更新器不可用");
+                }
+                s_dirty=true;return true;
+            }
+            return true;
+        }
         if(e->type==PS_TAP){
             for(int i=0;i<2;i++){
                 EpdRect r=device_update_channel_rect(i);
-                if(!ps_hit(e->x,e->y,r.x,r.y,r.width,r.height)) continue;
-                uint8_t current=ps_updates_channel(),channel=(uint8_t)i;
-                if(channel==current){
-                    ps_toast(i==PS_UPDATE_CHANNEL_TEST?"当前为测试频道":"当前为稳定频道");
-                    return true;
-                }
-                if(channel==PS_UPDATE_CHANNEL_TEST &&
-                   (!s_update_channel_confirm_until||ps_now()>s_update_channel_confirm_until)){
-                    s_update_channel_confirm_until=ps_now()+10000;
-                    ps_toast("测试频道可能不稳定，再次轻点确认风险");
-                    s_dirty=true;
-                    return true;
-                }
-                if(!ps_updates_channel_set(channel)){
-                    ps_toast("频道切换失败，请等待当前更新任务结束");
-                    return true;
-                }
-                s_update_channel_confirm_until=0;
-                s_firmware_confirm_until=0;
-                ps_toast(channel==PS_UPDATE_CHANNEL_TEST?"已切换测试频道":"已切换稳定频道");
-                (void)ps_updates_check();
-                s_dirty=true;
-                return true;
+                if(!ps_hit(e->x,e->y,r.x,r.y,r.width,r.height))continue;
+                if(ps_updates_channel()==(uint8_t)i)return true;
+                if(i==PS_UPDATE_CHANNEL_TEST){s_update_confirm=1;s_toast[0]=0;s_dirty=true;return true;}
+                if(ps_updates_channel_set((uint8_t)i)){(void)ps_updates_check();ps_toast("已切换稳定频道");}
+                else ps_toast("频道切换失败，请等待当前任务完成");
+                s_dirty=true;return true;
             }
         }
-        if((e->type==PS_TAP||e->type==PS_LONG)&&ps_hit(e->x,e->y,firmware.x,firmware.y,firmware.width,firmware.height)){
+        if(e->type==PS_TAP&&ps_hit(e->x,e->y,firmware.x,firmware.y,firmware.width,firmware.height)){
             if(ps_updates_firmware_ready()){
-                if(e->type==PS_LONG||(s_firmware_confirm_until&&ps_now()<=s_firmware_confirm_until)){
-                    s_firmware_confirm_until=0;
-                    if(!ps_updates_arm_firmware())ps_toast("固件包未就绪或更新器不可用");
-                }else{
-                    s_firmware_confirm_until=ps_now()+10000;
-                    ps_toast("再次轻点安装并重启");
+                char version[33];
+                if(ps_updates_firmware_version(version,sizeof(version))){
+                    snprintf(s_update_confirm_version,sizeof(s_update_confirm_version),"%s",version);
+                    s_update_confirm=2;s_toast[0]=0;s_dirty=true;
                 }
-            }else if(!ps_updates_download_firmware()){
-                if(!ps_updates_check())ps_toast("请连接 Wi-Fi 或稍后重试");
-            }
+            }else if(!ps_updates_download_firmware()&&!ps_updates_check())ps_toast("请连接 Wi-Fi 或稍后重试");
             return true;
         }
         if(e->type!=PS_TAP)return false;

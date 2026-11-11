@@ -399,12 +399,12 @@ void ps_power_render(uint8_t *fb) {
     for(int i=0;i<6;i++)ps_button(fb,16+(i%3)*(aw+6),ay+22+(i/3)*36,aw,32,labels[i],ps_power_auto_minutes()==auto_choices[i]);
     if(app_settings_test_awake())ps_wrap(fb,16,ay+98,col,11,2,ps_tr("settings.power.awake"),5);
     int ty=v.landscape?76:332;
-    ps_button(fb,right,ty,col,v.landscape?36:44,ps_tr(ps_power_doubletap()?"settings.power.doubletap.on":"settings.power.doubletap.off"),ps_power_doubletap());
+    ps_toggle(fb,right,ty,col,v.landscape?36:44,"双击唤醒",ps_power_doubletap(),true);
     ps_wrap(fb,right,ty+(v.landscape?46:54),col,11,3,ps_tr("settings.power.doubletap.hint"),5);
     int y=appearance_y(v);const char *names[]={"settings.power.style.clock","settings.power.style.quotes","settings.power.style.covers","settings.power.style.page","settings.power.style.image","settings.power.style.board"};
     char label[80];snprintf(label,sizeof(label),ps_tr("settings.power.appearance"),ps_tr(names[ps_sleep_style()]));
     ps_button(fb,right,y,col,40,label,false);
-    ps_button(fb,right,y+52,col,40,ps_tr(ps_rotation_locked()?"settings.power.rotation.on":"settings.power.rotation.off"),ps_rotation_locked());
+    ps_toggle(fb,right,y+52,col,40,"方向锁定",ps_rotation_locked(),true);
     if(!v.landscape)ps_wrap(fb,18,554,v.w-36,11,3,ps_tr("settings.power.hint"),5);
 }
 bool ps_power_event(const ps_event_t *e) {

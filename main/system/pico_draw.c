@@ -100,7 +100,8 @@ void ps_fill(uint8_t* fb, int x, int y, int w, int h, int gray) {
     if (x1 > x && y1 > y)
         ui_fill_rect_fast(fb, ps_rect(x, y, x1 - x, y1 - y), (uint8_t)(clamp(gray, 0, 15) * 17));
 }
-void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
+static void antialiased_line(uint8_t *fb,int x0,int y0,int x1,int y1,int gray,
+                             int radius_squared,int solid_threshold) {
     if (!fb) return;
     ps_view_t v = ps_view();
     int ax = px(x0), ay = px(y0), bx = px(x1), by = px(y1);
@@ -110,7 +111,6 @@ void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
     int maxy = clamp((ay > by ? ay : by) + 2, 0, px(v.h));
     int64_t dx = (int64_t)(bx - ax) * 8, dy = (int64_t)(by - ay) * 8;
     int64_t length = dx * dx + dy * dy;
-    const int radius_squared = PS_THEME_STROKE_PX * PS_THEME_STROKE_PX * 16;
     gray = clamp(gray, 0, 15);
     bool horizontal = (dx < 0 ? -dx : dx) >= (dy < 0 ? -dy : dy);
     int start = horizontal ? minx : miny, end = horizontal ? maxx : maxy;
@@ -136,9 +136,16 @@ void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
                     coverage += cross * cross <= radius_squared * length;
                 }
             }
+            if (solid_threshold && coverage >= solid_threshold) coverage = 16;
             coverage_pixel(fb, x, y, gray, coverage);
         }
     }
+}
+void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
+    antialiased_line(fb,x0,y0,x1,y1,gray,PS_THEME_STROKE_PX*PS_THEME_STROKE_PX*16,0);
+}
+void ps_line_thin(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
+    antialiased_line(fb,x0,y0,x1,y1,gray,16,6);
 }
 void ps_box(uint8_t* fb, int x, int y, int w, int h, int radius, int gray, bool filled) {
     if (w <= 0 || h <= 0) return;
@@ -213,6 +220,12 @@ void ps_text_fixed(uint8_t* fb,int x,int y,int size,const char* s,int gray) {
     // 提示只截短超宽文字，不改变字号，避免滑动过程中跳动。/ Truncate overlong prompts without resizing during motion.
     text(fb,x,y,size,s,gray,false,true,false);
 }
+int ps_text_width(int size,const char *s){
+    if(!s)return 0;
+    int old=ttf_get_weight();if(ps_route()!=PS_READ&&old<600)ttf_set_weight(600);
+    int width=(ttf_text_width_px(px(ui_size(size)),s)*10+18)/19;
+    ttf_set_weight(old);return width;
+}
 void ps_center(uint8_t* fb, int x, int y, int size, const char* s, int gray) {
     text(fb, x, y, size, s, gray, true, true, true);
 }
@@ -262,6 +275,18 @@ void ps_wrap(uint8_t* fb, int x, int y, int w, int size, int lines, const char* 
         line[n] = 0;
         ps_text(fb, x, y + row * (ui_size(size) + 7), size, line, gray);
     }
+}
+void ps_modal_background(uint8_t *fb) {
+    ps_view_t v=ps_view();ps_fill(fb,0,24,v.w,v.h-24,PS_THEME_CANVAS);
+}
+void ps_toggle(uint8_t *fb,int x,int y,int w,int h,const char *label,bool on,bool enabled) {
+    ps_surface(fb,x,y,w,h,false);
+    bool compact=w<180;int size=compact?11:14,pill=compact?26:42;
+    ps_wrap(fb,x+(compact?8:12),y+(h-ui_size(size))/2,w-(compact?48:74),size,1,label,enabled?PS_THEME_INK:PS_THEME_DISABLED);
+    int sx=x+w-pill-(compact?6:12),sy=y+(h-24)/2;
+    ps_box(fb,sx,sy,pill,24,12,PS_THEME_INSET,true);
+    ps_center(fb,sx+pill/2,sy+5,10,on?"开":"关",enabled?PS_THEME_INK:PS_THEME_DISABLED);
+    if(on)ps_line(fb,sx+6,sy+20,sx+pill-6,sy+20,PS_THEME_INK);
 }
 void ps_button(uint8_t* fb, int x, int y, int w, int h, const char* label, bool selected) {
     if (w <= 0 || h <= 0) return;

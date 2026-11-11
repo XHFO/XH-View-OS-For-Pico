@@ -44,6 +44,9 @@ typedef struct {
     rp_home_entity_t control_entity;
     char control_action[24];
     float control_value;
+    struct { uint32_t binding; rp_home_area_scope_t scope; uint32_t checksum; } room_record,room_edit;
+    rp_home_area_scope_t job_scope;
+    rp_home_areas_t areas,job_areas;
 } pga_store_t;
 
 static SemaphoreHandle_t s_lock;
@@ -53,6 +56,9 @@ static bool s_ready, s_queued, s_busy, s_online, s_at_home, s_stop, s_portal_own
 static bool s_control_pending, s_running, s_suspended;
 static uint32_t s_generation;
 static bool s_discover_queued, s_discover_running, s_discover_failed;
+static bool s_areas_queued,s_areas_running;
+static uint32_t s_areas_revision=1,s_areas_generation;
+static rp_home_result_t s_areas_result;
 #define s_config (s_store->config)
 #define s_snap (s_store->snap)
 #define s_tokens (s_store->tokens)
@@ -94,6 +100,28 @@ static bool save_config_locked(const rp_home_config_t *value) {
     }
     memset(s_store->packed, 0, sizeof(s_store->packed));
     return ok;
+}
+
+// 房间选择绑定HA地址与认证；更换服务后旧选择不复活，不改变v3凭据布局。
+// Bind room selection to HA endpoints/authentication; service changes never revive an old scope or alter the v3 credential layout.
+static uint32_t room_hash(const void *data,size_t bytes){
+    const uint8_t *p=data;uint32_t h=2166136261u;for(size_t i=0;i<bytes;i++)h=(h^p[i])*16777619u;return h;
+}
+static uint32_t room_binding(void){
+    return room_hash(s_config.local,offsetof(rp_home_config_t,rooms)-offsetof(rp_home_config_t,local));
+}
+static bool scope_ready(void){
+    return s_store->room_record.binding==room_binding()&&s_store->room_record.scope.version==1;
+}
+static void load_rooms(void){
+    size_t n=sizeof(s_store->room_record);
+    if(nvs_blob("pico_home_area",false,&s_store->room_record,&n)!=ESP_OK||n!=sizeof(s_store->room_record)||
+       s_store->room_record.checksum!=room_hash(&s_store->room_record,offsetof(__typeof__(s_store->room_record),checksum))||
+       s_store->room_record.scope.count>RP_HOME_AREA_MAX||!scope_ready()){
+        memset(&s_store->room_record,0,sizeof(s_store->room_record));return;
+    }
+    for(unsigned i=0;i<s_store->room_record.scope.count;i++)
+        if(!memchr(s_store->room_record.scope.ids[i],0,64)){memset(&s_store->room_record,0,sizeof(s_store->room_record));break;}
 }
 
 static void load_config(void) {
@@ -298,6 +326,80 @@ bool ps_home_pga_discover(bool start, rp_home_discovery_t *out, bool *busy, bool
     return ok;
 }
 
+static void run_areas(void){
+    lock();bool run=s_areas_queued&&!s_suspended;s_areas_queued=false;s_areas_running=run;
+    uint32_t generation=s_generation;
+    if(run)s_store->job_config=s_config;
+    unlock();if(!run)return;
+    read_pico_connectivity_link_t net;read_pico_connectivity_get_link(&net);
+    bool home=net.online&&*s_store->job_config.home_wifi&&!strcmp(net.ssid,s_store->job_config.home_wifi);
+    rp_home_transport_t transport={http_request,mqtt_unsupported,NULL};int status=0;
+    rp_home_result_t result=net.online?rp_home_fetch_areas(&s_store->job_config,&s_store->job_areas,&transport,home,&status):RP_HOME_OFFLINE;
+    lock();s_areas_running=false;
+    if(!s_suspended&&generation==s_generation){
+        s_areas_result=result;s_areas_revision++;
+        if(result==RP_HOME_OK){s_store->areas=s_store->job_areas;s_areas_generation=generation;}
+    }
+    unlock();memset(&s_store->job_config,0,sizeof(s_store->job_config));
+}
+
+bool ps_home_pga_rooms(uint32_t command,pico_app_home_rooms_t *out){
+    ps_home_pga_init();if(!s_ready||!out||out->bytes<sizeof(*out))return false;
+    lock();bool ok=true,notify=false;
+    uint32_t chosen=out->selected,revision=out->revision;
+    out->error[0]=0;
+    if(command==PGA_ROOMS_SCAN){
+        if(s_suspended||!s_worker||s_areas_queued||s_areas_running)ok=false;
+        else {s_areas_queued=notify=true;s_areas_result=RP_HOME_BUSY;}
+    }else if(command==PGA_ROOMS_SET){
+        unsigned count=s_store->areas.count,total=0;
+        if(s_portal_owner||read_pico_management_active()||s_suspended){ok=false;snprintf(out->error,sizeof(out->error),"请先关闭手机或电脑管理会话");}
+        else if(s_areas_running||s_areas_queued||s_areas_result!=RP_HOME_OK||s_areas_generation!=s_generation||revision!=s_areas_revision||
+            (count<32&&(chosen>>count))){ok=false;snprintf(out->error,sizeof(out->error),"房间列表已变化，请重新获取");}
+        if(ok){
+            for(unsigned i=0;i<count;i++)if(chosen&(1u<<i))total+=s_store->areas.items[i].devices;
+            if(total>RP_HOME_DEVICE_LIMIT){ok=false;snprintf(out->error,sizeof(out->error),"已选 %u 项，最多64项，请减少房间",total);}
+        }
+        if(ok){
+            memset(&s_store->room_edit,0,sizeof(s_store->room_edit));s_store->room_edit.binding=room_binding();
+            s_store->room_edit.scope.version=1;
+            for(unsigned i=0;i<count;i++)if(chosen&(1u<<i)){
+                unsigned j=s_store->room_edit.scope.count++;memcpy(s_store->room_edit.scope.ids[j],s_store->areas.items[i].id,64);
+            }
+            s_store->room_edit.checksum=room_hash(&s_store->room_edit,offsetof(__typeof__(s_store->room_edit),checksum));
+            size_t n=sizeof(s_store->room_edit);
+            if(nvs_blob("pico_home_area",true,&s_store->room_edit,&n)!=ESP_OK){ok=false;snprintf(out->error,sizeof(out->error),"保存失败，原房间范围已保留");}
+            else{
+                s_store->room_record=s_store->room_edit;s_generation++;s_areas_generation=s_generation;s_areas_revision++;
+                s_queued=s_control_pending=false;s_busy=s_running;
+                uint32_t rev=s_snap.revision+1;memset(&s_snap,0,sizeof(s_snap));s_snap.revision=rev;
+            }
+        }
+    }else if(command!=PGA_ROOMS_GET)ok=false;
+    out->bytes=sizeof(*out);out->revision=s_areas_revision;out->count=s_store->areas.count;out->total=s_store->areas.total;
+    out->configured=scope_ready();out->busy=s_areas_queued||s_areas_running;out->truncated=s_store->areas.truncated;out->result=s_areas_result;out->selected=0;
+    for(unsigned i=0;i<out->count;i++){
+        memcpy(out->items[i].id,s_store->areas.items[i].id,64);memcpy(out->items[i].name,s_store->areas.items[i].name,64);
+        out->items[i].devices=s_store->areas.items[i].devices;
+        if(out->configured)for(unsigned j=0;j<s_store->room_record.scope.count;j++)
+            if(!strcmp(out->items[i].id,s_store->room_record.scope.ids[j]))out->selected|=1u<<i;
+    }
+    if(!out->error[0]&&s_areas_result!=RP_HOME_OK&&s_areas_result!=RP_HOME_BUSY)
+        snprintf(out->error,sizeof(out->error),"%s",rp_home_result_text(s_areas_result));
+    unlock();if(notify)xTaskNotifyGive(s_worker);return ok;
+}
+
+bool ps_home_pga_printer_candidate(uint32_t index,pico_app_printer_config_t *out){
+    if(!s_ready||!out||out->bytes<sizeof(*out))return false;
+    lock();bool ok=index<s_snap.import_count;
+    if(ok){
+        const rp_home_printer_t *p=&s_snap.imports[index];
+        memset(out,0,sizeof(*out));out->bytes=sizeof(*out);out->revision=s_generation;out->source=RP_HOME_HA;
+        snprintf(out->name,sizeof(out->name),"%s",p->name);snprintf(out->serial,sizeof(out->serial),"%s",p->serial);
+    }
+    unlock();return ok;
+}
+
 static bool run_pending(void) {
     lock();
     bool run = s_queued && !s_suspended;
@@ -307,6 +409,8 @@ static bool run_pending(void) {
     if (run) {
         s_store->job_config = s_config;
         s_store->job_snap = s_snap;
+        memset(&s_store->job_scope,0,sizeof(s_store->job_scope));
+        if(scope_ready())s_store->job_scope=s_store->room_record.scope;
         // 保留旧配置供兼容回读，但薄宿主不能隐式启用尚未迁移的独立打印机协议。
         // Preserve legacy settings for readback without implicitly enabling unsupported printer protocols.
         for (unsigned i = 0; i < RP_HOME_PRINTERS; i++)
@@ -324,7 +428,7 @@ static bool run_pending(void) {
                           s_store->control_value, &transport, at_home, &http_status) : RP_HOME_OK;
     /* rp_home_fetch allocates its own PSRAM response (RP_HOME_HTTP_LIMIT). Do not malloc a second one from internal RAM. */
     if (result == RP_HOME_OK)
-        (void)rp_home_fetch(&s_store->job_config, &s_store->job_snap, s_tokens, &transport, online, at_home, now_ms());
+        (void)rp_home_fetch_scoped(&s_store->job_config, &s_store->job_snap, s_tokens, &transport, online, at_home, now_ms(),&s_store->job_scope);
     else {
         s_store->job_snap.result = result;
         s_store->job_snap.http_status = http_status;
@@ -360,6 +464,7 @@ static void worker(void *unused) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (s_stop) break;
         run_discovery();
+        run_areas();
         (void)run_pending();
     }
     s_worker = NULL;
@@ -375,6 +480,7 @@ void ps_home_pga_init(void) {
         s_store = heap_caps_calloc(1, sizeof(*s_store), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_store) return;
         load_config();
+        load_rooms();
         memset(&s_snap, 0, sizeof(s_snap));
         s_snap.revision = 1;
         s_snap.result = RP_HOME_EMPTY;
@@ -414,17 +520,19 @@ bool ps_home_pga_command(uint32_t command, pico_app_home_status_t *status) {
     bool online = net.online;
     lock();
     bool at_home = online && *s_config.home_wifi && !strcmp(s_config.home_wifi, net.ssid);
-    if (command != PGA_HOME_SYNC && command != PGA_HOME_STATUS) { unlock(); return false; }
-    bool ok = command != PGA_HOME_SYNC || (s_worker && !s_suspended);
-    if (command == PGA_HOME_SYNC && ok) {
+    bool sync=command==PGA_HOME_SYNC||command==PS_HOME_PRINTER_SYNC;
+    if (!sync && command != PGA_HOME_STATUS) { unlock(); return false; }
+    bool ok = !sync || (s_worker && !s_suspended&&(scope_ready()||command==PS_HOME_PRINTER_SYNC));
+    if (sync && ok) {
         s_online = online;
         s_at_home = at_home;
         s_queued = true;
         s_busy = true;
     }
     fill_status(status);
+    if(!ok&&command==PGA_HOME_SYNC&&!scope_ready())snprintf(status->error,sizeof(status->error),"请先选择房间");
     unlock();
-    if (command == PGA_HOME_SYNC && ok) xTaskNotifyGive(s_worker);
+    if (sync && ok) xTaskNotifyGive(s_worker);
     return ok;
 }
 
@@ -435,6 +543,8 @@ static void config_changed_locked(void) {
     uint32_t revision = s_snap.revision + 1;
     memset(&s_snap, 0, sizeof(s_snap));
     s_snap.revision = revision;
+    s_areas_queued=false;s_areas_revision++;s_areas_generation=0;s_areas_result=RP_HOME_EMPTY;
+    memset(&s_store->areas,0,sizeof(s_store->areas));
 }
 
 bool ps_home_pga_config(uint32_t command, pico_app_home_config_t *config) {
@@ -560,6 +670,51 @@ bool ps_home_pga_printer(uint32_t slot, pico_app_home_printer_t *out) {
     return true;
 }
 
+bool ps_home_pga_printer_config(uint32_t command,pico_app_printer_config_t *edit) {
+    ps_home_pga_init();
+    if(!s_ready||!edit||edit->bytes<sizeof(*edit)||edit->slot>=RP_HOME_PRINTERS)return false;
+    lock();
+    rp_home_printer_config_t *prior=&s_config.printers[edit->slot];
+    bool ok=false;
+    edit->error[0]=0;
+    if(command==PGA_PRINTER_GET){
+        edit->revision=s_generation;edit->source=prior->source;
+        snprintf(edit->name,sizeof(edit->name),"%s",prior->name);
+        snprintf(edit->serial,sizeof(edit->serial),"%s",prior->serial);
+        ok=true;
+    }else if(command!=PGA_PRINTER_SET&&command!=PGA_PRINTER_REMOVE){
+        snprintf(edit->error,sizeof(edit->error),"不支持的操作");
+    }else if(s_portal_owner||read_pico_management_active()){
+        snprintf(edit->error,sizeof(edit->error),"请先关闭手机或电脑管理页面");
+    }else if(edit->revision!=s_generation){
+        snprintf(edit->error,sizeof(edit->error),"配置已变化，请返回后重新编辑");
+    }else{
+        rp_home_config_t *next=&s_store->edit;*next=s_config;
+        rp_home_printer_config_t *target=&next->printers[edit->slot];
+        bool valid=true;
+        if(command==PGA_PRINTER_REMOVE)memset(target,0,sizeof(*target));
+        else if(!memchr(edit->name,0,sizeof(edit->name))||!memchr(edit->serial,0,sizeof(edit->serial))||!edit->name[0]){
+            valid=false;
+        }else if(edit->source==RP_HOME_HA){
+            // 同源更新保留其余槽；新增打印机不复用异源凭据。/ Keep other slots and never reuse foreign-source credentials for a new HA printer.
+            memset(target,0,sizeof(*target));target->source=RP_HOME_HA;
+            snprintf(target->name,sizeof(target->name),"%s",edit->name);
+            snprintf(target->serial,sizeof(target->serial),"%s",edit->serial);
+            for(unsigned i=0;i<RP_HOME_PRINTERS;i++)if(i!=edit->slot&&next->printers[i].source==RP_HOME_HA&&
+                !strcmp(next->printers[i].serial,edit->serial))valid=false;
+        }else if(prior->source>RP_HOME_HA&&edit->source==prior->source&&!strcmp(edit->serial,prior->serial)){
+            // 未迁移的旧连接只允许改名或明确移除，所有秘密字段原样保留。/ Legacy unsupported connections allow renaming or explicit removal while preserving every secret.
+            snprintf(target->name,sizeof(target->name),"%s",edit->name);
+        }else valid=false;
+        valid=valid&&rp_home_config_valid(next);
+        if(!valid)snprintf(edit->error,sizeof(edit->error),"检查名称与实体前缀，避免重复添加");
+        else if(!(ok=save_config_locked(next)))snprintf(edit->error,sizeof(edit->error),"保存失败，原配置已保留");
+        if(ok){s_config=*next;config_changed_locked();edit->revision=s_generation;}
+        memset(next,0,sizeof(*next));
+    }
+    unlock();return ok;
+}
+
 bool ps_home_pga_control(const char *entity_id, const char *action, float value) {
     ps_home_pga_init();
     if (!s_ready || !s_worker || !entity_id || !action || !*entity_id ||
@@ -642,7 +797,7 @@ bool ps_home_pga_portal_commit(const rp_home_config_t *config, bool *queued) {
     lock();
     bool ok = save_config_locked(config);
     if (ok) { s_config = *config; config_changed_locked(); }
-    bool queue = ok && s_worker && online && s_config.enabled && !s_suspended;
+    bool queue = ok && s_worker && online && s_config.enabled && !s_suspended && scope_ready();
     if (queue) {
         s_online = online;
         s_at_home = home;
@@ -668,6 +823,7 @@ bool ps_home_pga_suspend(uint32_t timeout_ms) {
     if (!s_suspended) s_generation++;
     s_suspended = true;
     s_discover_queued = false;
+    s_areas_queued=false;
     s_discover_failed = true;
     s_queued = s_control_pending = false;
     s_busy = s_running;
@@ -675,13 +831,13 @@ bool ps_home_pga_suspend(uint32_t timeout_ms) {
     int64_t deadline = now_ms() + timeout_ms;
     while (now_ms() < deadline) {
         lock();
-        bool busy = s_busy || s_queued || s_discover_running;
+        bool busy = s_busy || s_queued || s_discover_running || s_areas_running;
         unlock();
         if (!busy) return true;
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     lock();
-    bool busy = s_busy || s_queued || s_discover_running;
+    bool busy = s_busy || s_queued || s_discover_running || s_areas_running;
     unlock();
     return !busy;
 }

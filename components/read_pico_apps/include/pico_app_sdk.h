@@ -13,7 +13,7 @@
 #define PICO_APP_WORKER_STACK 20480u
 
 enum { PGA_GOMOKU, PGA_GO, PGA_XIANGQI, PGA_CHESS, PGA_2048, PGA_SNAKE };
-enum { PGA_DRAWING=128, PGA_WEREAD_KIND=129, PGA_HOME_LINK=130 };
+enum { PGA_DRAWING=128, PGA_WEREAD_KIND=129, PGA_HOME_LINK=130, PGA_PRINTER_LINK=131 };
 enum { PGA_PAGE_LAUNCHER, PGA_PAGE_BOARD, PGA_PAGE_ARCADE, PGA_PAGE_APP };
 enum { PGA_PRESS, PGA_MOVE, PGA_RELEASE, PGA_TAP, PGA_LONG, PGA_SWIPE_L,
        PGA_SWIPE_R, PGA_SWIPE_U, PGA_SWIPE_D, PGA_CANCEL };
@@ -87,6 +87,22 @@ typedef struct {
     uint8_t source,connected,has_data,result;
     int http_status;
 } pico_app_home_printer_t;
+/// 打印机应用的脱敏槽位事务；修订号防止过期编辑覆盖手机填写。/ Redacted printer transactions; revisions reject stale edits after phone changes.
+enum { PGA_PRINTER_GET, PGA_PRINTER_SET, PGA_PRINTER_REMOVE };
+typedef struct {
+    uint32_t bytes,revision,slot;
+    uint8_t source;
+    char name[48],serial[64],error[64];
+} pico_app_printer_config_t;
+/// 房间目录与选择共用修订号；只同步勾选范围，最多64项设备。/ Revision-bound room selection projects at most 64 device entities.
+enum { PGA_ROOMS_GET, PGA_ROOMS_SCAN, PGA_ROOMS_SET };
+typedef struct { char id[64],name[64]; uint32_t devices; } pico_app_home_area_t;
+typedef struct {
+    uint32_t bytes,revision,count,total,selected;
+    uint8_t configured,busy,truncated,result;
+    char error[96];
+    pico_app_home_area_t items[32];
+} pico_app_home_rooms_t;
 typedef struct {
     uint32_t abi,bytes;
     pico_app_view_t (*view)(void);
@@ -150,6 +166,15 @@ typedef struct {
     /// Small dual-game state packet (up to 32 bytes), primary to secondary.
     bool (*duo_packet_send)(const void *data, size_t bytes);
     int32_t (*duo_packet_recv)(void *data, size_t capacity);
+    /// 独立打印机应用尾部；仅状态/刷新/门户及单槽位事务，不提供打印控制。/ Independent printer tail: status/refresh/portal and slot transactions, never print control.
+    bool (*printer_link)(uint32_t command,pico_app_home_status_t *status);
+    bool (*printer_item)(uint32_t slot,pico_app_home_printer_t *out);
+    bool (*printer_config)(uint32_t command,pico_app_printer_config_t *config);
+    bool (*printer_input)(uint32_t command,char *value,size_t capacity);
+    /// 仅家庭连接应用可读写房间范围；绘制只消费缓存。/ Home Link alone edits room scope; rendering consumes cached data only.
+    bool (*home_rooms)(uint32_t command,pico_app_home_rooms_t *rooms);
+    /// 有界HA打印状态实体发现，不泄露凭据。/ Bounded HA printer-status discovery without credentials.
+    bool (*printer_candidate)(uint32_t index,pico_app_printer_config_t *out);
 } pico_app_host_t;
 
 /// 旧八款应用所需的原始宿主前缀；追加能力不得改变ABI1。/ Original host prefix for the eight existing apps; optional additions preserve ABI1.

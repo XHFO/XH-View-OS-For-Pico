@@ -22,7 +22,7 @@ def main() -> None:
             [cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-I", str(sdk),
              str(ROOT / "tools/home_link_entry_host_test.c"), "-ldl", "-o", str(binary)], check=True, cwd=ROOT)
         subprocess.run([str(binary), str(library)], check=True, cwd=ROOT)
-    print("PASS: actual Home Link 10106 entry pages and legacy host compatibility")
+    print("PASS: actual Home Link 10109 entries, device management and legacy host compatibility")
 
 
 if __name__ == "__main__":

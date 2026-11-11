@@ -34,10 +34,10 @@ def child_rect(index, landscape):
 
 def option_rect(index, landscape):
     if landscape:
-        panel = ((640 - 520) // 2, 28, 520, 320)
-        return (panel[0] + 24, panel[1] + 62 + index * 70, panel[2] - 48, 62)
-    panel = (16, 76, 328, 490)
-    return (panel[0] + 14, panel[1] + 64 + index * 92, panel[2] - 28, 80)
+        panel = ((640 - 520) // 2, 24, 520, 312)
+        return (panel[0] + 16, panel[1] + 62 + index * 64, panel[2] - 32, 58)
+    panel = (16, 113, 328, 414)
+    return (panel[0] + 16, panel[1] + 72 + index * 92, panel[2] - 32, 84)
 
 
 def center(rect):
@@ -50,8 +50,8 @@ checks = []
 
 
 def assert_rounded_battery(pixels, width):
-    # Portrait status battery: logical (302, 6), 19x10 at the preview's 1.9x scale.
-    x, y = 574, 11
+    # 百分比样式的圆角电池。/ Rounded battery in the percentage variant.
+    x, y = 543, 11
     corner = pixels[y * width + x]
     top = pixels[y * width + x + 18]
     assert corner > 180, corner

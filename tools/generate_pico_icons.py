@@ -27,7 +27,7 @@ ICONS = [
     ('BATTERY', 'battery'), ('USB', 'usb'), ('SD', 'sd-card'),
     ('SLIDERS', 'sliders-horizontal'), ('PAUSE', 'pause'), ('PLAY', 'play'),
     ('POWER', 'power'), ('GRID', 'layout-grid'), ('LINK', 'link'),
-    ('DROPLET', 'droplet'),
+    ('DROPLET', 'droplet'), ('SOUND', 'speaker'),
 ]
 TOLERANCE = 0.035
 
@@ -178,7 +178,7 @@ def svg_segments(file):
 def generate():
     segments, shapes, records = [], [], []
     for key, name in ICONS:
-        file = ASSETS / ('pico' if key == 'SD' else 'lucide') / (name+'.svg')
+        file = ASSETS / ('pico' if key in ('SD','SOUND') else 'lucide') / (name+'.svg')
         geometry = svg_segments(file)
         assert geometry and all(0 <= value <= 24*8 for line in geometry for value in line)
         shapes.append(f'    [PI_{key}] = {{{len(segments)}, {len(geometry)}}},')

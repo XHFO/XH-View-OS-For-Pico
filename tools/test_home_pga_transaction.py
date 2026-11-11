@@ -100,7 +100,7 @@ esp_err_t esp_http_client_cleanup(esp_http_client_handle_t);
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=ROOT / "main/system/pico_home_pga.c")
-    parser.add_argument("--case", choices=("all", "pga", "portal", "invalid", "migration", "worker", "network", "discovery"), default="all")
+    parser.add_argument("--case", choices=("all", "pga", "portal", "invalid", "migration", "worker", "network", "discovery", "printer", "rooms"), default="all")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     report = {"source": str(args.source.resolve()), "case": args.case,

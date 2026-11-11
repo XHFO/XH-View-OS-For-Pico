@@ -104,12 +104,15 @@ const char *ps_games_sort_label(void) {
     sort_ensure();
     return labels[s_sort.mode<APP_SORT_COUNT?s_sort.mode:APP_SORT_DEFAULT];
 }
-bool ps_games_sort_cycle(void) {
+unsigned ps_games_sort_mode(void) { sort_ensure();return s_sort.mode; }
+bool ps_games_sort_set(unsigned mode) {
+    if(mode>=APP_SORT_COUNT)return false;
     sort_ensure();
-    s_sort.mode=(uint8_t)((s_sort.mode+1)%APP_SORT_COUNT);
+    s_sort.mode=(uint8_t)mode;
     sort_save();qsort(s_items,s_count,sizeof(*s_items),compare_item);
     s_page=0;ps_dirty();return true;
 }
+bool ps_games_sort_cycle(void) { return ps_games_sort_set((ps_games_sort_mode()+1)%APP_SORT_COUNT); }
 static bool game_route(ps_route_t r) { return r==PS_PLAYGAME||r==PS_ARCADEGAME||r==PS_APPLICATION; }
 static ps_route_t app_route(uint32_t kind) { return kind>=128?PS_APPLICATION:kind>=PGA_2048?PS_ARCADEGAME:PS_PLAYGAME; }
 static void game_rotation(void);
@@ -319,6 +322,7 @@ static bool host_weread_open_link(const char *url){
     s_weread_link=true;ps_dirty();return true;
 }
 static bool home_link_active(void){return s_app&&s_app->kind==PGA_HOME_LINK;}
+static bool home_service_active(void){return s_app&&(s_app->kind==PGA_HOME_LINK||s_app->kind==PGA_PRINTER_LINK);}
 /* 0 monitor, 1 connection setup, 2 printers. 0xff means the next home-link open is not a deep link. */
 static uint8_t s_home_entry=0xff;
 static bool s_home_entry_armed;
@@ -334,7 +338,7 @@ void ps_apps_prepare_home(uint8_t page){
     s_home_entry=page;s_home_entry_armed=true;
 }
 static bool host_home_link(uint32_t command,pico_app_home_status_t *out){
-    if(!home_link_active()||!out)return false;
+    if(!home_service_active()||!out)return false;
     if(!out->bytes)out->bytes=sizeof(*out);
     if(command==PGA_HOME_ENTRY){
         uint8_t page=s_home_entry;
@@ -348,6 +352,7 @@ static bool host_home_link(uint32_t command,pico_app_home_status_t *out){
     }
     if(command==PGA_HOME_OPEN_SETUP){
         bool ok=ps_home_portal_start(PS_HOME_PORTAL_OWNER_GAMES);
+        if(ok)ps_home_portal_set_printers(s_app->kind==PGA_PRINTER_LINK);
         ps_home_portal_view_t view;ps_home_portal_view(&view);
         if(ok&&(!view.url[0]||!ui_wifi_qr_prepare_url(view.url))){ps_home_portal_stop();ok=false;}
         if(ok){s_home_portal=true;ps_dirty();}
@@ -363,7 +368,7 @@ static bool host_home_link(uint32_t command,pico_app_home_status_t *out){
         }
         return ok;
     }
-    return ps_home_pga_command(command,out);
+    return ps_home_pga_command(command==PGA_HOME_SYNC&&s_app->kind==PGA_PRINTER_LINK?PS_HOME_PRINTER_SYNC:command,out);
 }
 static bool host_home_link_config(uint32_t command,pico_app_home_config_t *cfg){
     if(!home_link_active()||!cfg)return false;
@@ -376,12 +381,21 @@ static bool host_home_link_entity(uint32_t index,pico_app_home_entity_t *out){
     return ps_home_pga_entity(index,out);
 }
 static bool host_home_link_printer(uint32_t slot,pico_app_home_printer_t *out){
-    if(!home_link_active()||!out)return false;
+    if(!home_service_active()||!out)return false;
     if(!out->bytes)out->bytes=sizeof(*out);
     return ps_home_pga_printer(slot,out);
 }
 static bool host_home_link_control(const char *entity_id,const char *action,float value){
     return home_link_active()&&ps_home_pga_control(entity_id,action,value);
+}
+static bool host_printer_config(uint32_t command,pico_app_printer_config_t *config){
+    return s_app&&s_app->kind==PGA_PRINTER_LINK&&ps_home_pga_printer_config(command,config);
+}
+static bool host_home_rooms(uint32_t command,pico_app_home_rooms_t *rooms){
+    return home_link_active()&&ps_home_pga_rooms(command,rooms);
+}
+static bool host_printer_candidate(uint32_t index,pico_app_printer_config_t *out){
+    return s_app&&s_app->kind==PGA_PRINTER_LINK&&ps_home_pga_printer_candidate(index,out);
 }
 static bool s_home_edit;
 static void home_portal_dismiss(void) {
@@ -391,11 +405,11 @@ static void home_portal_dismiss(void) {
     ui_wifi_qr_clear();
 }
 static void home_input_done(const char *text){
-    if(!home_link_active()||!s_home_edit)return;
+    if(!home_service_active()||!s_home_edit)return;
     ps_home_pga_input_done(text);s_home_edit=false;
 }
 static bool host_home_link_input(uint32_t command,char *value,size_t capacity){
-    if(!home_link_active())return false;
+    if(!home_service_active())return false;
     if(command==PGA_HOME_INPUT_CANCEL){s_home_edit=false;return ps_home_pga_input(command,value,capacity);}
     if(command==PGA_HOME_INPUT_OPEN){
         if(!value||s_home_edit)return false;
@@ -431,6 +445,9 @@ static const pico_app_host_t s_host={
     .weread_cover=host_weread_cover,
     .home_link=host_home_link,.home_link_config=host_home_link_config,.home_link_entity=host_home_link_entity,
     .home_link_printer=host_home_link_printer,.home_link_control=host_home_link_control,.home_link_input=host_home_link_input,
+    .printer_link=host_home_link,.printer_item=host_home_link_printer,
+    .printer_config=host_printer_config,.printer_input=host_home_link_input,
+    .home_rooms=host_home_rooms,.printer_candidate=host_printer_candidate,
     .tr=ps_tr,
     .duo_role=host_duo_role,.duo_input_send=host_duo_send,.duo_input_recv=host_duo_recv,
     .duo_packet_send=host_duo_packet_send,.duo_packet_recv=host_duo_packet_recv
@@ -528,12 +545,12 @@ bool ps_games_open_id(const char *id) {
     return error("应用已移除，请刷新应用集");
 }
 bool ps_apps_open(const char *id) {
-    bool armed=s_home_entry_armed&&id&&!strcmp(id,"home-link");
+    bool armed=s_home_entry_armed&&id&&(!strcmp(id,"home-link")||!strcmp(id,"printer-link"));
     ps_route_t opened_from=s_home_route_set?s_home_route_hint:ps_route();
     ps_route_t origin=armed?ps_previous_route():ps_route();
     // Deep links first enter a shell page; retain the source before open_package navigates again.
     // 深链接先经过宿主页，须在模块二次导航前保留真正来源，避免应用集返回到书架。
-    if(origin==PS_APPLICATION&&home_link_active())origin=s_origin;
+    if(origin==PS_APPLICATION&&home_service_active())origin=s_origin;
     if(origin==PS_HA||origin==PS_HA_SETTINGS||origin==PS_PRINTERS||origin==PS_PRINTER_SETTINGS||origin==PS_APPLICATION)
         origin=PS_SHELF;
     s_home_route_set=false;
@@ -553,6 +570,13 @@ bool ps_apps_open(const char *id) {
 }
 static void launch_tool(uint16_t id) {
     for(unsigned i=0;i<s_tool_count;i++)if(s_tools[i].navigation==id){if(!ps_apps_open(s_tools[i].id))ps_toast(s_error);return;}
+}
+bool ps_apps_tool_item(uint16_t navigation,const char **id,const char **title){
+    if(!id||!title)return false;
+    for(unsigned i=0;i<s_tool_count;i++)if(s_tools[i].navigation==navigation){
+        *id=s_tools[i].id;*title=s_tools[i].title;return true;
+    }
+    return false;
 }
 void ps_apps_register_navigation(void) {
     if(storage_held()){s_catalog_dirty=true;return;}
@@ -707,7 +731,7 @@ void ps_games_enter(ps_route_t route) {
     if(s_in_call)return;
     if(s_home_hold){
         bool same=route==s_home_hold_route;
-        bool keep=s_app&&home_link_active()&&(same||game_route(route));
+        bool keep=s_app&&home_service_active()&&(same||game_route(route));
         if(same||!keep)s_home_hold=false;
         if(keep&&same)return;
     }
@@ -753,7 +777,7 @@ void ps_games_power_resume(void) { s_power_paused=false; }
 void ps_games_render(uint8_t *fb) {
     if(game_route(ps_route())&&s_app){s_app->render(fb);ps_view_t v=ps_view();s_ink_reference=true;s_ink_width=v.w;s_ink_height=v.h;}
     else draw_launcher(fb);
-    if(s_home_portal&&home_link_active()){
+    if(s_home_portal&&home_service_active()){
         ps_home_portal_view_t portal;ps_home_portal_view(&portal);
         ps_view_t v=ps_view();int side=v.landscape?180:220,x=(v.w-side)/2,y=v.landscape?88:132;
         ps_fill(fb,0,0,v.w,v.h,15);ps_button(fb,16,20,72,36,"关闭",false);

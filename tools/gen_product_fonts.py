@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+import difflib
 from pathlib import Path
 import gen_builtin_font as gen
 
@@ -92,6 +93,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sans',type=Path,default=gen.default_src());p.add_argument('--serif',type=Path,required=True);p.add_argument('--kai',type=Path,required=True)
     p.add_argument('--fill-missing',action='store_true',help='Preserve shipped subsets and append only genuinely missing UI glyphs / 保留现有子集，仅补UI缺字')
+    p.add_argument('--ui-delta-from',type=Path,help='With --fill-missing, add only strings changed from this source tree / 仅补相对基线新增文案')
     p.add_argument('--compact-cmap',action='store_true',help='Remove redundant BMP maps covered by identical format12 mappings / 移除format12完全覆盖的重复BMP映射')
     p.add_argument('--report',type=Path,default=ROOT/'build/product-fonts.json');args=p.parse_args()
     raster_regression="龘𰻞𠮷麤"
@@ -102,6 +104,15 @@ def main():
         parts.append(s if path.suffix=='.txt' else ''.join(gen.unescape(m.group(0)) for m in gen.STRING_RE.finditer(s)))
     ui_files=ui_sources()
     prose=gen.unique_text(gen.ascii_printable(),*parts,*(source_strings(path) for path in ui_files),raster_regression,LEGACY_UI_COVERAGE)
+    if args.ui_delta_from:
+        assert args.fill_missing,'Delta coverage requires preserving shipped glyphs'
+        delta=[]
+        for path in ui_files:
+            before=args.ui_delta_from/path.relative_to(ROOT)
+            lines=difflib.unified_diff(before.read_text().splitlines() if before.is_file() else [],path.read_text().splitlines())
+            added='\n'.join(line[1:] for line in lines if line.startswith('+') and not line.startswith('+++') and not line.lstrip('+ ').startswith(('//','*')))
+            delta.extend(gen.unescape(m.group(0)) for m in gen.STRING_RE.finditer(added))
+        text=prose=gen.unique_text(gen.ascii_printable(),*delta)
     report={}
     from fontTools.ttLib import TTFont
     with tempfile.TemporaryDirectory(prefix='pico-font-subsets-') as directory:
@@ -127,9 +138,9 @@ def main():
                           'ui_sources':{str(path.relative_to(ROOT)):digest(path) for path in ui_files}}
             print(kind,out.stat().st_size,'bytes; missing',report[kind]['missing'])
         args.report.parent.mkdir(parents=True,exist_ok=True);args.report.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
-        # 为画板与手写许可的最小补字增加8KiB预算，仍以较小上限防止意外膨胀。
-        # Allow 8 KiB for drawing and handwriting-license glyph additions while retaining a tight growth cap.
-        assert sum(x['bytes'] for x in report.values())<1712*1024,'Product font budget exceeded'
+        # 为新增产品文案保留小幅补字预算，最终仍须验证4MiB固件上限。
+        # Allow bounded product-copy glyph growth; the final firmware must still fit its 4 MiB partition.
+        assert sum(x['bytes'] for x in report.values())<1728*1024,'Product font budget exceeded'
         assert not any(x['missing'] for x in report.values()),'Product font coverage incomplete'
         # 三字体均通过预算及覆盖检查后才发布，失败不留下半更新资源。
         # Publish only after all three fonts pass budget and coverage checks.

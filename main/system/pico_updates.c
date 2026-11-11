@@ -19,6 +19,8 @@
 #define UPDATE_URL_TEST "https://xhfo.net/projects/read-pico/updates/test/version.txt"
 #define APPS_URL "https://xhfo.net/projects/read-pico/updates/apps.txt"
 #define PACKAGE_URL "https://xhfo.net/projects/read-pico/apps/packages/"
+#define APPS_URL_TEST "https://xhfo.net/projects/read-pico/updates/test/apps.txt"
+#define PACKAGE_URL_TEST "https://xhfo.net/projects/read-pico/apps/packages/test/"
 #define FIRMWARE_URL_STABLE "https://xhfo.net/projects/read-pico/manage/firmware/stable/read-pico-app.bin"
 #define FIRMWARE_URL_TEST "https://xhfo.net/projects/read-pico/manage/firmware/test/read-pico-app.bin"
 #define APPS_MAX 12
@@ -39,6 +41,8 @@
 #include "freertos/task.h"
 #include "psa/crypto.h"
 static TaskHandle_t s_task;
+// 安装回到 UI 线程后仍保留整批选择模式。/ Preserve the batch selection mode across UI-thread installation.
+static unsigned s_dl_job;
 #endif
 
 enum { IDLE, BUSY, READY, FAILED };
@@ -60,6 +64,7 @@ static unsigned s_manifest_count;
 static char s_manifest_ids[APPS_MAX][32];
 static bool s_manifest_tools[APPS_MAX];
 static bool s_manifest_installed[APPS_MAX];
+static uint32_t s_manifest_local_version[APPS_MAX], s_manifest_remote_version[APPS_MAX];
 static bool s_manifest_selected[APPS_MAX];
 static char s_download_id[32];
 static volatile int s_fw_state = FW_IDLE;
@@ -87,6 +92,17 @@ static const char *update_url(void) {
 static const char *firmware_url(void) {
     channel_load();
     return s_channel == PS_UPDATE_CHANNEL_TEST ? FIRMWARE_URL_TEST : FIRMWARE_URL_STABLE;
+}
+
+// 应用跟随频道，稳定设备不会收到测试宿主专用包。/ Keep test-host packages isolated from stable devices.
+static const char *apps_url(void) {
+    channel_load();
+    return s_channel == PS_UPDATE_CHANNEL_TEST ? APPS_URL_TEST : APPS_URL;
+}
+
+static const char *package_url(void) {
+    channel_load();
+    return s_channel == PS_UPDATE_CHANNEL_TEST ? PACKAGE_URL_TEST : PACKAGE_URL;
 }
 
 static int suffix(const char *version) {
@@ -152,6 +168,7 @@ static const char *app_path(char *out, size_t bytes, const char *id, bool tool) 
 
 static bool parse_apps(const char *body) {
     unsigned count = 0;
+    memset(s_manifest_remote_version, 0, sizeof(s_manifest_remote_version));
     for (const char *line = body; line && *line;) {
         bool tool = !strncmp(line, "tool=", 5);
         if ((tool || !strncmp(line, "game=", 5)) && count < APPS_MAX) {
@@ -161,6 +178,7 @@ static bool parse_apps(const char *body) {
                 char id[32] = {0};
                 memcpy(id, at, id_bytes);
                 if (pico_app_id_valid(id)) {
+                    for (unsigned i=0;i<count;i++) if (!strcmp(id,s_manifest_ids[i])) return false;
                     memcpy(s_manifest_ids[count], id, id_bytes + 1);
                     s_manifest_tools[count] = tool;
                     count++;
@@ -171,6 +189,21 @@ static bool parse_apps(const char *body) {
         if (line) line++;
     }
     s_manifest_count = count;
+    // 可选版本行对旧固件透明；缺失时由后台读取远端包头。/ Optional version lines are transparent to old firmware; workers probe missing versions.
+    for (const char *line=body;line&&*line;) {
+        if (!strncmp(line,"app_version=",12)) {
+            const char *at=line+12,*comma=strchr(at,',');
+            size_t length=strcspn(at,"\r\n");
+            if (!comma||comma>=at+length) return false;
+            char *end=NULL;unsigned long version=strtoul(comma+1,&end,10);
+            if (end!=at+length||comma[1]<'0'||comma[1]>'9'||!version||version>UINT32_MAX) return false;
+            for (unsigned i=0;i<count;i++) if (strlen(s_manifest_ids[i])==(size_t)(comma-at)&&!memcmp(at,s_manifest_ids[i],(size_t)(comma-at))) {
+                if(s_manifest_remote_version[i])return false;
+                s_manifest_remote_version[i]=(uint32_t)version;
+            }
+        }
+        line=strchr(line,'\n');if(line)line++;
+    }
     s_manifest_loaded = count != 0;
     return count != 0;
 }
@@ -178,11 +211,17 @@ static bool parse_apps(const char *body) {
 static void snapshot_installed_apps(void) {
     for (unsigned i = 0; i < s_manifest_count; i++) {
         char path[96];
-        snprintf(path, sizeof(path), "/sdcard/apps/%s/%.31s.pga",
-                 s_manifest_tools[i] ? "tools" : "games", s_manifest_ids[i]);
-        s_manifest_installed[i] =
-            access(path, F_OK) == 0;
+        app_path(path,sizeof(path),s_manifest_ids[i],s_manifest_tools[i]);
+        s_manifest_installed[i] = access(path, F_OK) == 0;
+        pico_app_package_t package;
+        s_manifest_local_version[i]=s_manifest_installed[i]&&
+            pico_app_package_read(path,&package,false,NULL,0)&&!strcmp(package.id,s_manifest_ids[i])?package.version:0;
     }
+}
+
+static bool app_eligible(unsigned i) {
+    return !s_manifest_installed[i] || (s_manifest_remote_version[i] &&
+        s_manifest_remote_version[i]>s_manifest_local_version[i]);
 }
 
 static bool same_digest(const char *a, const char *b) {
@@ -378,12 +417,32 @@ static void firmware_worker(void *argument) {
     vTaskDelete(NULL);
 }
 
+// 旧目录仅探测 512 字节包头，不下载载荷；关闭连接后再进行下一项。/ Probe only the 512-byte header for legacy catalogs, then close before the next item.
+static uint32_t remote_app_version(unsigned i) {
+    char url[192];uint8_t header[PICO_APP_HEADER_BYTES];pico_app_package_t package;
+    snprintf(url,sizeof(url),"%s%s.pga",package_url(),s_manifest_ids[i]);
+    esp_http_client_config_t config={.url=url,.timeout_ms=10000,.buffer_size=1024,
+        .crt_bundle_attach=esp_crt_bundle_attach,.disable_auto_redirect=true};
+    esp_http_client_handle_t client=esp_http_client_init(&config);
+    bool ok=client&&esp_http_client_open(client,0)==ESP_OK;
+    int64_t bytes=ok?esp_http_client_fetch_headers(client):-1;
+    ok=ok&&esp_http_client_get_status_code(client)==200&&bytes>=PICO_APP_HEADER_BYTES&&bytes<=PICO_APP_PACKAGE_MAX;
+    unsigned used=0;
+    while(ok&&used<sizeof(header)) {
+        int n=esp_http_client_read(client,(char *)header+used,(int)(sizeof(header)-used));
+        if(n<=0)ok=false;else used+=(unsigned)n;
+    }
+    if(client)esp_http_client_cleanup(client);
+    return ok&&pico_app_package_header(header,sizeof(header),(uint32_t)bytes,&package,NULL,0)&&
+        !strcmp(package.id,s_manifest_ids[i])&&((package.kind>=128)==s_manifest_tools[i])?package.version:0;
+}
+
 static bool download_package(void) {
     char staging_dir[] = "/sdcard/apps/.staging";
     char path[96], url[192];
     if (mkdir(staging_dir, 0700) != 0 && errno != EEXIST) return false;
     snprintf(path, sizeof(path), "%s/%s.tmp", staging_dir, s_download_id);
-    snprintf(url, sizeof(url), PACKAGE_URL "%s.pga",
+    snprintf(url, sizeof(url), "%s%s.pga", package_url(),
              s_manifest_ids[s_dl_index]);
     unlink(path);
     FILE *file = fopen(path, "wb");
@@ -414,17 +473,23 @@ static bool download_package(void) {
         fflush(file) == 0 && fsync(fileno(file)) == 0;
     if (client) esp_http_client_cleanup(client);
     if (fclose(file) != 0) ok = false;
+    // 清单与下载物必须一致，避免发布切换或错误包覆盖现有应用。/ Match the download to its catalog snapshot before replacing an installed app.
+    pico_app_package_t package;
+    ok=ok&&pico_app_package_read(path,&package,false,NULL,0)&&
+        !strcmp(package.id,s_download_id)&&((package.kind>=128)==s_manifest_tools[s_dl_index])&&
+        (!s_manifest_remote_version[s_dl_index]||package.version==s_manifest_remote_version[s_dl_index])&&
+        (!s_manifest_installed[s_dl_index]||package.version>s_manifest_local_version[s_dl_index]);
     if (!ok) unlink(path);
     return ok;
 }
 
 static void apps_worker(void *argument) {
     int job = (int)(intptr_t)argument;
-    if (job == APP_JOB_CATALOG || job == APP_JOB_ALL || job == APP_JOB_SELECTED || !s_manifest_loaded) {
+    if (job == APP_JOB_CATALOG || !s_manifest_loaded) {
         static char body[2049];
         size_t used = 0;
         esp_http_client_config_t config = {
-            .url = APPS_URL,
+            .url = apps_url(),
             .timeout_ms = 10000,
             .buffer_size = 1024,
             .crt_bundle_attach = esp_crt_bundle_attach,
@@ -452,6 +517,8 @@ static void apps_worker(void *argument) {
         }
         s_apps = s_manifest_count;
         snapshot_installed_apps();
+        for(unsigned i=0;i<s_manifest_count;i++)
+            if(!s_manifest_remote_version[i])s_manifest_remote_version[i]=remote_app_version(i);
         s_manifest_catalog_ready = true;
         if (job == APP_JOB_ALL) s_dl_total = s_manifest_count;
     }
@@ -463,13 +530,11 @@ static void apps_worker(void *argument) {
     }
     while (s_dl_index < s_manifest_count) {
         unsigned index = s_dl_index;
-        char local[96];
         if (job == APP_JOB_SELECTED && !s_manifest_selected[index]) {
             s_dl_index++;
             continue;
         }
-        if (access(app_path(local, sizeof(local), s_manifest_ids[index],
-                            s_manifest_tools[index]), F_OK) != 0) {
+        if (app_eligible(index)) {
             s_dl_position++;
             snprintf(s_download_id, sizeof(s_download_id), "%s", s_manifest_ids[index]);
             s_dl_state = DL_BUSY;
@@ -489,7 +554,8 @@ static void apps_worker(void *argument) {
 }
 
 static bool apps_worker_start(unsigned job) {
-    if (s_task) return false;
+    if (s_task || (job != APP_JOB_CATALOG && job != APP_JOB_ALL && job != APP_JOB_SELECTED)) return false;
+    s_dl_job=job;
     // These workers read NVS/FAT and write flash while the cache may be disabled.
     // Their stacks must stay in internal RAM; PSRAM stacks trip ESP-IDF's flash-cache guard.
     if (xTaskCreate(apps_worker, "pico-appdl", 8192,
@@ -510,7 +576,7 @@ bool ps_updates_check(void) {
         return false;
     }
 #ifdef ESP_PLATFORM
-    if (s_task) return false;
+    if (s_task || s_dl_state == DL_BUSY || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING) return false;
     s_state = BUSY;
     if (s_fw_state != FW_BUSY) s_fw_state = FW_IDLE;
     s_fw_meta_valid = false;
@@ -534,7 +600,7 @@ bool ps_updates_check(void) {
 bool ps_updates_download_apps(void) {
     if (!read_pico_connectivity_online()) return false;
 #ifdef ESP_PLATFORM
-    if (s_task || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING) return false;
+    if (s_task || s_dl_state == DL_BUSY || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING) return false;
     s_dl_index = s_dl_installed = s_dl_position = 0;
     s_dl_total = s_manifest_count;
     s_manifest_loaded = false;
@@ -561,11 +627,19 @@ bool ps_updates_channel_set(uint8_t channel) {
     channel_load();
     if (channel == s_channel) return true;
 #ifdef ESP_PLATFORM
-    if (s_task || s_fw_state == FW_BUSY || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING)
+    if (s_task || s_fw_state == FW_BUSY || s_dl_state == DL_BUSY || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING)
         return false;
 #endif
     if (!ps_store("updchan1", &channel, sizeof(channel))) return false;
     s_channel = channel;
+    // 频道切换后不复用旧目录或未完成选择。/ Discard the previous channel's catalog and pending selection.
+    s_manifest_loaded = s_manifest_catalog_ready = false;
+    s_manifest_count = 0;
+    memset(s_manifest_selected, 0, sizeof(s_manifest_selected));
+    s_dl_state = DL_IDLE;
+    s_dl_index = s_dl_installed = s_dl_position = s_dl_total = 0;
+    s_download_id[0] = 0;
+    ++s_dl_revision;
     remove_firmware_cache();
     s_fw_state = FW_IDLE;
     s_fw_percent = 0;
@@ -581,13 +655,15 @@ bool ps_updates_channel_set(uint8_t channel) {
 }
 
 bool ps_updates_apps_catalog_refresh(void) {
+#ifdef ESP_PLATFORM
+    if (s_task || s_dl_state == DL_BUSY || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING) return false;
+#endif
     if (!read_pico_connectivity_online()) {
         s_dl_state = DL_FAILED;
         ++s_dl_revision;
         return false;
     }
 #ifdef ESP_PLATFORM
-    if (s_task) return false;
     s_dl_state = DL_CATALOG;
     ++s_dl_revision;
     return apps_worker_start(APP_JOB_CATALOG);
@@ -597,12 +673,14 @@ bool ps_updates_apps_catalog_refresh(void) {
     static const struct { const char *id; bool tool; } preview[] = {
         {"gomoku", false}, {"go", false}, {"xiangqi", false},
         {"chess", false}, {"2048", false}, {"snake", false},
-        {"drawing-notes", true}, {"weread", true}, {"home-link", true}
+        {"drawing-notes", true}, {"weread", true}, {"home-link", true}, {"printer-link", true}
     };
     s_manifest_count = (unsigned)(sizeof(preview) / sizeof(preview[0]));
     for (unsigned i = 0; i < s_manifest_count; i++) {
         snprintf(s_manifest_ids[i], sizeof(s_manifest_ids[i]), "%s", preview[i].id);
         s_manifest_tools[i] = preview[i].tool;
+        s_manifest_remote_version[i]=!strcmp(preview[i].id,"home-link")?10109:
+            !strcmp(preview[i].id,"printer-link")?10002:0;
     }
     s_manifest_loaded = true;
     snapshot_installed_apps();
@@ -625,6 +703,9 @@ unsigned ps_updates_apps_catalog(ps_updates_app_t *out, unsigned capacity) {
         snprintf(out[i].id, sizeof(out[i].id), "%s", s_manifest_ids[i]);
         out[i].tool = s_manifest_tools[i];
         out[i].installed = s_manifest_installed[i];
+        out[i].local_version=s_manifest_local_version[i];
+        out[i].remote_version=s_manifest_remote_version[i];
+        out[i].update_available=s_manifest_installed[i]&&app_eligible(i);
     }
     return count;
 }
@@ -633,14 +714,14 @@ bool ps_updates_download_apps_selected(const char *const *ids, unsigned count) {
     if (!ids || !count || !s_manifest_loaded || !s_manifest_catalog_ready ||
         !read_pico_connectivity_online()) return false;
 #ifdef ESP_PLATFORM
-    if (s_task || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING)
+    if (s_task || s_dl_state == DL_BUSY || s_dl_state == DL_READY || s_dl_state == DL_INSTALLING)
         return false;
     unsigned selected = 0;
     memset(s_manifest_selected, 0, sizeof(s_manifest_selected));
     for (unsigned i = 0; i < s_manifest_count; i++) {
         for (unsigned j = 0; j < count; j++) {
             if (ids[j] && !strcmp(ids[j], s_manifest_ids[i]) &&
-                !s_manifest_installed[i]) {
+                app_eligible(i)) {
                 s_manifest_selected[i] = true;
                 selected++;
                 break;
@@ -661,7 +742,7 @@ bool ps_updates_download_apps_selected(const char *const *ids, unsigned count) {
 bool ps_updates_download_firmware(void) {
     if (!read_pico_connectivity_online() || !s_newer || !s_fw_meta_valid) return false;
 #ifdef ESP_PLATFORM
-    if (s_task || s_fw_state == FW_BUSY || s_dl_state == DL_READY ||
+    if (s_task || s_fw_state == FW_BUSY || s_dl_state == DL_BUSY || s_dl_state == DL_READY ||
         s_dl_state == DL_INSTALLING) return false;
     if (!firmware_space_available(s_fw_size)) {
         s_fw_state = FW_FAILED;
@@ -685,6 +766,12 @@ bool ps_updates_download_firmware(void) {
 
 bool ps_updates_firmware_ready(void) {
     return firmware_files_ready(NULL);
+}
+
+bool ps_updates_firmware_version(char *out,size_t bytes) {
+    char version[33];
+    if(!out||bytes<sizeof(version)||!ps_updates_firmware_ready()||!firmware_image_version(version))return false;
+    snprintf(out,bytes,"%s",version);return true;
 }
 
 bool ps_updates_arm_firmware(void) {
@@ -749,11 +836,18 @@ bool ps_updates_apps_status(unsigned *catalog, char *message, size_t message_byt
             snprintf(message, message_bytes, "应用包已下载，正在准备安装");
         else if (s_dl_state == DL_DONE)
             snprintf(message, message_bytes, "%s", s_dl_installed ?
-                     "缺失应用已补齐，可立即打开" : "云端应用均已安装");
+                     "所选应用已安装或更新，可立即打开" : "没有可安装的更新");
         else if (s_dl_state == DL_FAILED)
             snprintf(message, message_bytes, "应用同步失败，轻点重试");
-        else if (s_manifest_loaded && s_manifest_catalog_ready)
-            snprintf(message, message_bytes, "云端目录 %u 项 · 选择要下载的应用", s_manifest_count);
+        else if (s_manifest_loaded && s_manifest_catalog_ready) {
+            unsigned updates=0,unknown=0;
+            for(unsigned i=0;i<s_manifest_count;i++) {
+                if(s_manifest_installed[i]&&app_eligible(i))updates++;
+                if(s_manifest_installed[i]&&!s_manifest_remote_version[i])unknown++;
+            }
+            snprintf(message,message_bytes,unknown?"目录 %u 项 · %u 项可更新 · %u 项版本未确认":"目录 %u 项 · %u 项可更新",
+                s_manifest_count,updates,unknown);
+        }
         else if (s_apps)
             snprintf(message, message_bytes, "云端目录 %u 项 · 选择应用", s_apps);
         else
@@ -772,10 +866,12 @@ bool ps_updates_tick(void) {
             s_dl_state = DL_FAILED;
         } else {
             s_dl_installed++;
+            s_manifest_installed[s_dl_index]=true;
+            s_manifest_local_version[s_dl_index]=s_manifest_remote_version[s_dl_index];
             s_dl_index++;
 #ifdef ESP_PLATFORM
             s_dl_state = s_dl_index < s_manifest_count ? DL_BUSY : DL_DONE;
-            if (s_dl_state == DL_BUSY) (void)apps_worker_start(false);
+            if (s_dl_state == DL_BUSY) (void)apps_worker_start(s_dl_job);
 #else
             s_dl_state = DL_DONE;
 #endif

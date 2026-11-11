@@ -65,7 +65,7 @@ def about_rect(landscape):
 
 def guide_rect(landscape):
     width = 640 if landscape else 360
-    return (16, 298, (width - 44) // 2, 34) if landscape else (16, 576, width - 32, 34)
+    return (16, 310, (width - 44) // 2, 34) if landscape else (16, 576, width - 32, 34)
 
 
 def center(rect):
@@ -96,6 +96,7 @@ def main():
     parser.add_argument('--font', type=Path, default=ROOT / 'sdcard/fonts/MiSansVF.ttf')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--version', help='Expected binary version; defaults to its bound native-preview-build.json manifest')
+    parser.add_argument('--skip-ocr', action='store_true', help='Run controller checks only; report OCR as unverified')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -279,6 +280,12 @@ def main():
                 runtime.close()
                 (output / ('transcript-' + label + '.json')).write_text(json.dumps(runtime.transcript, ensure_ascii=False, indent=2) + '\n')
 
+        if args.skip_ocr:
+            report['result']='PASS'
+            report['ocr_verified']=False
+            report['ocr_limit']='Controller checks only; OCR was explicitly skipped.'
+            print('Native grouped settings controller PASS:',len(report['checks']),'checks;',len(report['scenes']),'scenes; OCR unverified')
+            return
         source, decoder = output / 'settings-ocr.swift', output / 'settings-ocr'
         source.write_text(OCR)
         subprocess.run(['swiftc', str(source), '-o', str(decoder)], check=True)

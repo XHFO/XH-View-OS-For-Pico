@@ -75,11 +75,10 @@ def main():
                 runtime.capture("drawing-tool-" + label, state)
                 assert runtime.command("key 1 click")["route"] == 33
                 for game in range(6):
-                    if game == 3:
+                    if game == 2:
                         runtime.tap(width - 50, height - 50)
-                    # 第二页前三格是三个独立工具，随后才是六个游戏。
-                    # Three standalone tools lead the second page; the six games follow contiguously.
-                    slot = 3 + game if game < 3 else game - 3
+                    # 第二页四个独立工具后是游戏；打印机有独立入口。/ Four tools precede games; Printers has its own entry.
+                    slot = 4 + game if game < 2 else game - 2
                     state = runtime.tap(*card_center(slot, landscape))
                     assert state["route"] == (14 if game < 4 else 23) and not state["games_error"], (game, state)
                     runtime.capture(f"game-{game}-from-apps-{label}", state)

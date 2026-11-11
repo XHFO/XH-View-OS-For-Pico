@@ -33,7 +33,7 @@ def main() -> None:
         decoded = gzip.decompress(encoded)
         assert decoded == (ROOT / "components/read_pico_home_link/assets/home_link_portal.html").read_bytes()
         text = decoded.decode("utf-8", errors="strict")
-        assert all(item in text for item in ("X-Pico-Portal-Key", "/api/lan/home", "ha_token", "cf_access_client_id", "Bambu", "隔离"))
+        assert all(item in text for item in ("X-Pico-Portal-Key", "/api/lan/home", "ha_token", "cf_access_client_id", "原直连凭据", "隔离"))
         assert not re.search(r"[0-9a-fA-F]{32}", text)
         html.write_bytes(decoded)
         subprocess.run([os.environ.get("NODE", "node"), str(ROOT / "tools/home_link_portal_frontend_test.js"),

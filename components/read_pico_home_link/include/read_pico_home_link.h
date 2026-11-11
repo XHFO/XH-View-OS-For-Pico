@@ -20,6 +20,12 @@
 #define RP_HOME_CONFIG_VERSION 3u
 #define RP_HOME_CONFIG_PACK_LIMIT 16800u
 #define RP_HOME_CONFIG_SIZE_V2 16116u
+#define RP_HOME_AREA_MAX 32u
+#define RP_HOME_DEVICE_LIMIT 64u
+/// 独立保存的房间范围，不改变已发布的凭据配置布局。/ Separately persisted room scope, preserving the shipped credential layout.
+typedef struct { uint32_t version,count; char ids[RP_HOME_AREA_MAX][64]; } rp_home_area_scope_t;
+typedef struct { char id[64],name[64]; uint16_t devices; } rp_home_area_t;
+typedef struct { uint32_t count,total; bool truncated; rp_home_area_t items[RP_HOME_AREA_MAX]; } rp_home_areas_t;
 /// v2 packed sizeof before Cloudflare Access token fields. / Prior packed size before CF Access fields.
 
 
@@ -124,6 +130,10 @@ bool rp_home_form_body(const char *id,const char *secret,char *body,size_t capac
 /// 阻塞式工作器入口；UI只排队，不在绘制/触摸线程调用。/ Blocking worker entry; UI queues requests and never invokes it while drawing/handling touch.
 rp_home_result_t rp_home_fetch(const rp_home_config_t *,rp_home_snapshot_t *,rp_home_token_t tokens[RP_HOME_PRINTERS],
     const rp_home_transport_t *,bool network_online,bool at_home,int64_t now_ms);
+/// 轻量房间目录与服务端范围投影；scope未选时不获取家庭设备。/ Lightweight room catalog and server-side projection; unset scope fetches no home entities.
+rp_home_result_t rp_home_fetch_areas(const rp_home_config_t *,rp_home_areas_t *,const rp_home_transport_t *,bool at_home,int *http_status);
+rp_home_result_t rp_home_fetch_scoped(const rp_home_config_t *,rp_home_snapshot_t *,rp_home_token_t tokens[RP_HOME_PRINTERS],
+    const rp_home_transport_t *,bool network_online,bool at_home,int64_t now_ms,const rp_home_area_scope_t *);
 /// 仅允许支持的HA实体与明确动作，打印机没有控制入口。/ Only allow supported HA entities and explicit actions; printers have no control API.
 rp_home_result_t rp_home_control(const rp_home_config_t *,const rp_home_entity_t *,const char *action,float value,
     const rp_home_transport_t *,bool at_home,int *http_status);

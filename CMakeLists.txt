@@ -5,7 +5,7 @@ option(PICO_OTA_UPDATER "Build the small ota_1 TF updater" OFF)
 if(PICO_OTA_UPDATER)
     set(PROJECT_VER "ota-updater-1")
 else()
-    set(PROJECT_VER "0.40.0-dual97")
+    set(PROJECT_VER "0.40.0-dual98")
 endif()
 # OFF：家庭 HA/打印机静态栈改为 TF tools/home-link.pga；固件仅薄宿主空状态。
 # OFF: Home HA/printer static stack moves to TF tools/home-link.pga; firmware keeps thin empty host.

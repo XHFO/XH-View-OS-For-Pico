@@ -22,6 +22,8 @@ typedef struct {
 
 void ps_home_portal_register(void);
 bool ps_home_portal_start(int owner);
+/// 同一短时门户按入口分别显示家庭或打印机表单。/ Scope the temporary portal form to Home or Printers.
+void ps_home_portal_set_printers(bool printers);
 void ps_home_portal_stop(void);
 void ps_home_portal_stop_if_home(void);
 bool ps_home_portal_active(void);

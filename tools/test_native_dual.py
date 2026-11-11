@@ -92,7 +92,13 @@ try:
     # A peer in ordinary settings must still follow an explicit book open; edit screens stay protected.
     b.cmd('route 0');pump(10);assert b.state['dual_secondary_shelf'] and b.state['dual_synced']
     b.capture('dual-secondary-progress-shelf')
+    for style in range(3):
+        b.cmd(f'status-style {style}');pump(3);b.capture(f'status-connected-secondary-{style}')
+    b.cmd('status-style 0')
     a.cmd('route 5');pump(3)
+    for style in range(3):
+        a.cmd(f'status-style {style}');pump(3);a.capture(f'status-connected-primary-{style}')
+    a.cmd('status-style 0')
     b.tap(180,185)
     until(lambda:a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('book_page')==1 and b.state.get('book_page')==2,'open from secondary')
     until(lambda:a.state.get('dual_target')==b.state.get('dual_target')==0,'first spread settled');pump(20);a.capture('spread-1');b.capture('spread-1')

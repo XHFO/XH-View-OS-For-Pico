@@ -545,7 +545,7 @@ void ps_animation_render(uint8_t* fb) {
     ps_view_t v = ps_view();
     ps_heading(fb, "翻页动画", "控制双机阅读与单机阅读的翻页过渡");
     int x = 20, w = v.w - 40;
-    ps_button(fb, x, 150, w, 44, anim_enabled ? "翻页动画：开" : "翻页动画：关", anim_enabled);
+    ps_toggle(fb, x, 150, w, 44, "翻页动画", anim_enabled, true);
     ps_button(fb, x, 206, w, 40, anim_gray == 16 ? "动画灰阶：16 灰" : "动画灰阶：8 灰", anim_gray == 16);
     ps_text(fb, x, 266, 12, "关闭后翻页直接切换，不做过渡动画。", 4);
     ps_text(fb, x, 292, 12, "灰阶只影响动画渐变，不影响正文清晰度。", 4);
@@ -1028,6 +1028,23 @@ static unsigned dual_transfer_percent(void) {
     if (!status.expected || status.received > status.expected) return 0;
     return (unsigned)((uint64_t)status.received * 100 / status.expected);
 }
+// 向导绘制与命中共用几何，横屏保留所有出口。/ Share wizard geometry and keep all exits visible in landscape.
+static EpdRect dual_setup_choice(int row) {
+    ps_view_t v=ps_view();
+    if(v.landscape)return (EpdRect){v.w/2+8,168+row*54,v.w/2-28,44};
+    int y=primary_step==1?238:268;
+    if(row==2)y=primary_step==1?386:438;else y+=row*58;
+    return (EpdRect){20,y,v.w-40,row==2?40:44};
+}
+static EpdRect dual_pair_choice(int row) {
+    ps_view_t v=ps_view();
+    if(v.landscape)return (EpdRect){v.w/2+8,168+row*54,v.w/2-28,44};
+    int y=pair_failed?280+row*48:pair_found?292+row*46:pair_scanning?292+row*48:250+row*50;
+    return (EpdRect){20,y,v.w-40,42};
+}
+static bool dual_hit(const ps_event_t *e,EpdRect r) {
+    return ps_hit(e->x,e->y,r.x,r.y,r.width,r.height);
+}
 static EpdRect dual_status_rect(void) {
     ps_view_t v=ps_view();int w=v.w-40;
     return v.landscape?(EpdRect){20,154,(w-12)/2,150}:
@@ -1073,7 +1090,7 @@ static void dual_status_render(uint8_t *fb) {
         ps_wrap(fb,r.x+16,r.y+75,r.width-32,9,1,text,4);
     }else if(status.expected){
         snprintf(text,sizeof(text),"已接收 %u / %u KB · 完成后列表一致",
-                 (unsigned)(status.received/1024),(unsigned)status.expected);
+                 (unsigned)(status.received/1024),(unsigned)((status.expected+1023u)/1024u));
         ps_wrap(fb,r.x+16,r.y+75,r.width-32,9,1,text,4);
     }else{
         snprintf(text,sizeof(text),"本机 %u 项 · 对端 %u 项",status.books,status.peer_books);
@@ -1084,14 +1101,17 @@ static void dual_status_render(uint8_t *fb) {
     ps_box(fb,r.x+16,bar_y,r.width-32,10,5,12,false);
     if(percent)ps_box(fb,r.x+18,bar_y+2,(r.width-36)*percent/100,6,3,1,true);
     if(status.synced)snprintf(text,sizeof(text),"100%% · 已完成");
-    else if(status.expected)snprintf(text,sizeof(text),"%u%% · 正在补齐文件",percent);
+    else if(status.expected)snprintf(text,sizeof(text),"本文件 %u%% · 已补入 %u 项",percent,status.imported);
     else snprintf(text,sizeof(text),"%s",status.scanning?"校验中":"等待同步");
-    ps_text(fb,r.x+16,bar_y+16,9,text,status.synced?3:5);
+    if(!v.landscape)ps_text(fb,r.x+16,bar_y+16,10,text,status.synced?3:5);
     snprintf(text,sizeof(text),"%s",settings.role==1?(primary_ip[0]?primary_ip:"等待 Wi-Fi"):
              (settings.host[0]?settings.host:"等待主机地址"));
     if(v.landscape){
-        ps_text(fb,r.x+16,r.y+112,9,"地址",5);ps_text_fixed(fb,r.x+58,r.y+112,9,text,1);
-        ps_text(fb,r.x+16,r.y+132,9,"配对码",5);ps_text_fixed(fb,r.x+58,r.y+132,9,settings.code,1);
+        char line[96];
+        snprintf(line,sizeof(line),"%u%% · %.80s",percent,text);
+        ps_wrap(fb,r.x+16,r.y+112,r.width-32,10,1,line,1);
+        snprintf(line,sizeof(line),"%s · 配对码 %s",dual_net_label(),settings.code);
+        ps_wrap(fb,r.x+16,r.y+132,r.width-32,9,1,line,5);
     }else{
         ps_text(fb,r.x+16,r.y+136,9,"地址",5);ps_text_fixed(fb,r.x+58,r.y+136,10,text,1);
         ps_text(fb,r.x+16,r.y+158,9,"配对码",5);ps_text_fixed(fb,r.x+58,r.y+158,10,settings.code,1);
@@ -1110,17 +1130,12 @@ static void dual_controls_render(uint8_t *fb) {
     ps_text(fb,r.x+16,r.y+10,13,"显示与控制",1);
     bool primary_flip=orientation.primary_flip,secondary_flip=orientation.secondary_flip;
     bool guard=ps_touch_guard_enabled(),locked=ps_dual_rotation_locked(),calibrated=ps_dual_calibrated();
-    char label[48];
     EpdRect a=dual_control_rect(0,0),b=dual_control_rect(0,1);
-    snprintf(label,sizeof(label),"主机翻转：%s",primary_flip?"开":"关");
-    ps_button(fb,a.x,a.y,a.width,a.height,label,primary_flip);
-    snprintf(label,sizeof(label),"从机翻转：%s",secondary_flip?"开":"关");
-    ps_button(fb,b.x,b.y,b.width,b.height,label,secondary_flip);
+    ps_toggle(fb,a.x,a.y,a.width,a.height,"主机翻转",primary_flip,true);
+    ps_toggle(fb,b.x,b.y,b.width,b.height,"从机翻转",secondary_flip,true);
     a=dual_control_rect(1,0);b=dual_control_rect(1,1);
-    snprintf(label,sizeof(label),"贴合防误触：%s",guard?"开":"关");
-    ps_button(fb,a.x,a.y,a.width,a.height,label,guard);
-    snprintf(label,sizeof(label),"方向锁定：%s",locked?"开":"关");
-    ps_button(fb,b.x,b.y,b.width,b.height,label,locked);
+    ps_toggle(fb,a.x,a.y,a.width,a.height,"贴合防误触",guard,true);
+    ps_toggle(fb,b.x,b.y,b.width,b.height,"方向锁定",locked,true);
     EpdRect c=dual_control_rect(2,0);
     ps_button(fb,c.x,c.y,c.width,c.height,
               calibrated?"重新校准开合姿态":"校准开合姿态",!calibrated);
@@ -1129,73 +1144,42 @@ void ps_dual_render(uint8_t* fb) {
     ps_view_t v = ps_view();
     ps_heading(fb, "双机阅读 · 实验版", "两台小纸 Pico，共同打开一本书");
     int x = 20, w = v.w - 40;
-    char text[128];
-    ps_button(fb, x, 104, (w - 16) / 3, 40, "关闭", settings.role == 0);
-    ps_button(fb, x + (w - 16) / 3 + 8, 104, (w - 16) / 3, 40, "主机", settings.role == 1);
-    ps_button(fb, x + 2 * ((w - 16) / 3 + 8), 104, (w - 16) / 3, 40, "从机", settings.role == 2);
+    ps_button(fb, x, 104, (w - 16) / 3, 40, "关闭", settings.role == 0 && !primary_step && !pair_editing);
+    ps_button(fb, x + (w - 16) / 3 + 8, 104, (w - 16) / 3, 40, primary_step?"主机 · 设置中":"主机", settings.role == 1 || primary_step);
+    ps_button(fb, x + 2 * ((w - 16) / 3 + 8), 104, (w - 16) / 3, 40, pair_editing?"从机 · 配对中":"从机", settings.role == 2 || pair_editing);
     if (primary_step) {
-        if (primary_step == 1) {
-            ps_text(fb, x, 166, 16, "主机数据同步方式 1/2", 1);
-            ps_text(fb, x, 198, 11,
-                    read_pico_connectivity_online() ? "当前局域网 Wi-Fi 已连接" : "当前局域网 Wi-Fi 未连接",
-                    read_pico_connectivity_online() ? 3 : 5);
-            ps_button(fb, x, 238, w, 44, "使用同一局域网同步", read_pico_connectivity_online());
-            ps_button(fb, x, 296, w, 44, "由主机创建直连热点", true);
-            ps_text(fb, x, 348, 10, "热点无需路由器；两台靠近即可传输图书和字体", 4);
-            ps_button(fb, x, 386, w, 36, "取消", false);
-        } else {
-            ps_text(fb, x, 166, 16, "同步完成后的连接 2/2", 1);
-            ps_text(fb, x, 200, 11,
-                    primary_net_draft == DUAL_NET_HOTSPOT
-                        ? "当前选择：主机热点"
-                        : "当前选择：同一局域网",
-                    4);
-            ps_text(fb, x, 230, 10,
-                    primary_net_draft == DUAL_NET_HOTSPOT
-                        ? "保持热点会继续占用 Wi-Fi，但后续补书更方便"
-                        : "保持连接会保留本次 TCP 数据通道，便于后续补书",
-                    5);
-            ps_button(fb, x, 268, w, 44, "保持数据连接", primary_keep_draft != 0);
-            ps_button(fb, x, 326, w, 44, "仅保留蓝牙交互", primary_keep_draft == 0);
-            ps_text(fb, x, 378, 10,
-                    primary_net_draft == DUAL_NET_HOTSPOT
-                        ? "仅蓝牙：关闭主机热点，双页阅读和翻页继续"
-                        : "仅蓝牙：停止本次数据通道，双页阅读和翻页继续",
-                    4);
-            ps_text(fb, x, 408, 10, "之后可在“同步设置”重新开启数据传输", 5);
-            ps_button(fb, x, 438, w, 36, "返回上一步", false);
-        }
+        int tw=v.landscape?v.w/2-40:w;
+        ps_text(fb,x,166,16,primary_step==1?"设置主机 · 同步方式 1/2":"设置主机 · 同步后连接 2/2",1);
+        const char *info=primary_step==1?(read_pico_connectivity_online()?"当前已连接局域网":"当前未连接局域网"):
+            (primary_net_draft==DUAL_NET_HOTSPOT?"当前选择：主机热点":"当前选择：同一局域网");
+        ps_wrap(fb,x,198,tw,12,1,info,4);
+        if(primary_step==2)ps_wrap(fb,x,230,tw,11,v.landscape?3:1,
+            primary_net_draft==DUAL_NET_HOTSPOT?"仅蓝牙会关闭热点，双页阅读和翻页继续":"仅蓝牙会停止文件传输通道，双页阅读和翻页继续",5);
+        else if(v.landscape)ps_wrap(fb,x,234,tw,12,3,"热点无需路由器。两台靠近即可传输图书和字体。",5);
+        const char *labels[2]={primary_step==1?"使用同一局域网同步":"保持数据连接",
+                               primary_step==1?"由主机创建直连热点":"仅保留蓝牙交互"};
+        for(int i=0;i<2;i++){EpdRect r=dual_setup_choice(i);ps_button(fb,r.x,r.y,r.width,r.height,labels[i],false);}
+        EpdRect back=dual_setup_choice(2);
+        ps_button(fb,back.x,back.y,back.width,back.height,primary_step==1?"取消":"返回上一步",false);
+        if(!v.landscape)ps_wrap(fb,x,primary_step==1?348:378,w,11,2,
+            primary_step==1?"热点无需路由器；两台靠近即可同步。":"保持连接便于后续补书；仅蓝牙更省电。之后可在同步设置中修改。",5);
         return;
     }
     if (pair_editing || !settings.role) {
-        if (pair_scanning || pair_found || pair_failed) {
-            ps_text(fb, x, 170, 14, pair_found ? "发现主机" : "正在搜索主机…", 1);
-            if (pair_found) {
-                snprintf(text, sizeof(text), "主机地址  %s", pair_ip);
-                ps_text(fb, x, 200, 13, text, 1);
-                ps_text(fb, x, 228, 20, pair_ap_ssid[0] ? "主机直连热点" : "同一局域网", 1);
-                ps_text(fb, x, 258, 11, "配对码不会广播，请输入主机屏幕上的六位码", 4);
-                ps_button(fb, x, 292, w, 40, "输入配对码", true);
-                ps_button(fb, x, 340, w, 36, "重新搜索", false);
-                ps_button(fb, x, 384, w, 36, "取消", false);
-            } else if (pair_failed) {
-                ps_text(fb, x, 190, 14, "未找到主机", 1);
-                ps_text(fb, x, 220, 12, "请确认主机已开启并选择主机", 4);
-                ps_button(fb, x, 280, w, 40, "重新搜索", true);
-                ps_button(fb, x, 328, w, 36, "手动输入同一 Wi-Fi", false);
-                ps_button(fb, x, 372, w, 36, "取消", false);
-            } else {
-                ps_text(fb, x, 210, 12, "请让主机停留在双机阅读页", 4);
-                ps_button(fb, x, 292, w, 40, "取消搜索", false);
-                ps_button(fb, x, 340, w, 36, "改用同一 Wi-Fi 手动输入", false);
-            }
-            return;
-        }
-        ps_text(fb, x, 170, 14, "同一 Wi-Fi 或主机直连热点均可", 1);
-        ps_text(fb, x, 200, 12, "无需路由器；一台主机、另一台从机", 4);
-        ps_button(fb, x, 250, w, 42, "自动搜索主机", true);
-        ps_button(fb, x, 300, w, 38, "手动输入主机 IP 和配对码", false);
-        ps_button(fb, x, 348, w, 36, "打开 Wi-Fi 设置", false);
+        int tw=v.landscape?v.w/2-40:w;
+        const char *title=pair_failed?"未找到主机":pair_found?"发现主机":pair_scanning?"正在搜索主机…":"选择从机连接方式";
+        ps_text(fb,x,170,16,title,1);
+        const char *detail=pair_failed?"确认主机已开启蓝牙并选择主机，然后重新搜索。":
+            pair_found?"输入主机屏幕上的六位配对码，自动完成网络连接。":
+            pair_scanning?"请让主机停留在双机阅读页。优先通过蓝牙发现局域网或热点。":
+            "支持同一局域网和主机直连热点，无需路由器。";
+        ps_wrap(fb,x,202,tw,12,v.landscape?4:2,detail,5);
+        const char *labels[3];int count=3;
+        if(pair_failed){labels[0]="重新搜索";labels[1]="手动输入主机地址";labels[2]="取消";}
+        else if(pair_found){labels[0]="输入配对码";labels[1]="重新搜索";labels[2]="取消";}
+        else if(pair_scanning){labels[0]="取消搜索";labels[1]="手动输入主机地址";count=2;}
+        else{labels[0]="自动搜索主机";labels[1]="手动输入主机地址";labels[2]="打开 Wi-Fi 设置";}
+        for(int i=0;i<count;i++){EpdRect r=dual_pair_choice(i);ps_button(fb,r.x,r.y,r.width,r.height,labels[i],i==0&&!pair_scanning);}
         return;
     }
     dual_status_render(fb);
@@ -1502,7 +1486,7 @@ bool ps_dual_event(const ps_event_t* e) {
     }
     if (primary_step) {
         if (primary_step == 1) {
-            if (e->y >= 238 && e->y < 282) {
+            if (dual_hit(e,dual_setup_choice(0))) {
                 char lan[48];
                 if (!local_address(lan)) {
                     ps_toast("请先连接同一局域网 Wi-Fi，或改用主机热点");
@@ -1511,23 +1495,23 @@ bool ps_dual_event(const ps_event_t* e) {
                 primary_net_draft = DUAL_NET_LAN;
                 primary_step = 2;
                 ps_dirty();
-            } else if (e->y >= 296 && e->y < 340) {
+            } else if (dual_hit(e,dual_setup_choice(1))) {
                 primary_net_draft = DUAL_NET_HOTSPOT;
                 primary_step = 2;
                 ps_dirty();
-            } else if (e->y >= 386 && e->y < 422) {
+            } else if (dual_hit(e,dual_setup_choice(2))) {
                 primary_step = 0;
                 ps_dirty();
             }
             return true;
         }
-        if (e->y >= 268 && e->y < 312) {
+        if (dual_hit(e,dual_setup_choice(0))) {
             primary_keep_draft = 1;
             if (!primary_setup_finish()) ps_toast("双机设置保存失败");
-        } else if (e->y >= 326 && e->y < 370) {
+        } else if (dual_hit(e,dual_setup_choice(1))) {
             primary_keep_draft = 0;
             if (!primary_setup_finish()) ps_toast("双机设置保存失败");
-        } else if (e->y >= 438 && e->y < 474) {
+        } else if (dual_hit(e,dual_setup_choice(2))) {
             primary_step = 1;
             ps_dirty();
         }
@@ -1535,12 +1519,12 @@ bool ps_dual_event(const ps_event_t* e) {
     }
     if (pairing && (pair_scanning || pair_found || pair_failed)) {
         if (pair_failed) {
-            if (e->y >= 280 && e->y < 320) { pair_scan_start(); return true; }
-            if (e->y >= 328 && e->y < 364) { pair_stop(); pair_failed = false; secondary_begin(); return true; }
-            if (e->y >= 372 && e->y < 408) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
+            if (dual_hit(e,dual_pair_choice(0))) { pair_scan_start(); return true; }
+            if (dual_hit(e,dual_pair_choice(1))) { pair_stop(); pair_failed = false; secondary_begin(); return true; }
+            if (dual_hit(e,dual_pair_choice(2))) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
             return true;
         }
-        if (pair_found && e->y >= 292 && e->y < 332) {
+        if (pair_found && dual_hit(e,dual_pair_choice(0))) {
             snprintf(draft_host, sizeof(draft_host), "%s", pair_ip);
             snprintf(draft_ap_ssid, sizeof(draft_ap_ssid), "%s", pair_ap_ssid);
             draft_short = false;
@@ -1548,22 +1532,22 @@ bool ps_dual_event(const ps_event_t* e) {
             edit_code("");
             return true;
         }
-        if (pair_found && e->y >= 340 && e->y < 376) { pair_scan_start(); return true; }
-        if (pair_found && e->y >= 384 && e->y < 420) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
-        if (!pair_found && e->y >= 292 && e->y < 332) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
-        if (!pair_found && e->y >= 340 && e->y < 376) { pair_stop(); secondary_begin(); return true; }
+        if (pair_found && dual_hit(e,dual_pair_choice(1))) { pair_scan_start(); return true; }
+        if (pair_found && dual_hit(e,dual_pair_choice(2))) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
+        if (!pair_found && dual_hit(e,dual_pair_choice(0))) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
+        if (!pair_found && dual_hit(e,dual_pair_choice(1))) { pair_stop(); secondary_begin(); return true; }
         return true;
     }
-    if (pairing && e->y >= 250 && e->y < 292) {
+    if (pairing && dual_hit(e,dual_pair_choice(0))) {
         pair_scan_start();
         return true;
     }
-    if (pairing && e->y >= 300 && e->y < 338) {
+    if (pairing && dual_hit(e,dual_pair_choice(1))) {
         pair_failed = false;
         secondary_begin();
         return true;
     }
-    if (pairing && e->y >= 348 && e->y < 384) {
+    if (pairing && dual_hit(e,dual_pair_choice(2))) {
         ps_navigate(PS_WIFI);
         return true;
     }

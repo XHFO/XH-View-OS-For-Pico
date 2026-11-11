@@ -1,3 +1,21 @@
+## 0.40.0-dual98 · 测试频道 / Test channel
+
+- 应用目录与包地址随更新频道切换，测试包与稳定设备隔离；切换后清除旧目录选择，下载或安装期间禁止切换。/ Isolate test app feeds/packages, discard stale channel selections and reject channel changes during downloads/installation.
+- 打印机移除页只保留取消与移除两个按钮；查找完成清除加载提示，空结果正确显示。/ Use two removal actions and clear the discovery loading message when results arrive.
+
+- 家庭设备首次同步先选房间，HA 在服务端按范围投影，限制64项并显示数量；支持未分配房间、取消、失败重试及更换HA后重新选择。/ Select rooms before first sync, project server-side with a visible 64-item limit, and support unassigned rooms, cancel/retry and reselection after HA changes.
+- 打印机增加来源选择、HA发现和确认添加，自动匹配完整打印状态实体及相关字段；高级入口保留手动前缀。/ Add source selection, HA discovery and confirmation with complete printer-status suffix matching and an optional manual prefix.
+- 修复 Wi-Fi 特殊连字符缺字；横屏房间与设备管理说明不再叠字。/ Use a supported Wi-Fi hyphen and remove overlapping landscape room/device headings.
+
+- 双机配对与主机向导适配横竖屏，共用绘制和触摸几何；同步显示统一本文件进度与 KB 单位。/ Adapt pairing/setup to both orientations with shared hit geometry and accurate per-file progress.
+- 系统更新只由更新按钮触发；测试频道与安装使用可取消的持久确认，安装目标取自 TF 镜像。/ Updates require the explicit button and persistent, cancellable confirmation showing the cached image version.
+- 应用集增加可见管理与明确排序，移除显示具体目标并保留数据；已安装项与不可用下载状态更清楚。/ Add visible app management, explicit sorting, named removal with preserved data and clear download states.
+- 修复选中应用的下载任务在安装接力后变成全量下载，整批保留选择并固定目录快照。/ Preserve selected-only downloads and their catalog snapshot through every installation handoff.
+- 应用集增加独立的应用版本检查与选择更新；兼容旧网站清单的包头探测，同版或更旧版本不重复安装，更新保留存档。/ Add app version checks and selective upgrades, legacy-feed header probing, same/older-version skipping and preserved app data.
+- 家庭连接提供本机设备显示管理，保存不再强制启用服务；3D 打印机拆为独立包，支持 HA 来源添加、改名与移除，手机填写分别保存。旧直连凭据保留，未迁入协议明确提示暂不可用。/ Add local HA-device visibility management without forcing the service on; split Printers into its own package with HA setup, rename/removal and separate phone saves. Preserve legacy direct credentials and mark unavailable protocols honestly.
+- 统一开关与选择弹层，单机隐藏双机状态图标，完善电量对齐与四种票根内容边距；家庭连接高级认证按需展开。/ Unify toggles/pickers, hide unlinked pair icons, refine battery/card spacing and disclose advanced home authentication on demand.
+- 更新器失败页不再显示满格进度，保留低频刷新和现有轻量字模。/ Failed installs no longer show full progress; keep throttled refresh and the small existing font.
+
 ## 0.40.0-dual97（独立双机实验版）
 
 - 顶部状态栏统一 WiFi、双机和电池的视觉尺寸与垂直中心；电池外框、内部电量和右侧触点均使用小屏可辨识的圆角，并加入像素级圆角回归。

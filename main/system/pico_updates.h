@@ -17,6 +17,8 @@ typedef struct {
     char id[32];
     bool tool;
     bool installed;
+    bool update_available;
+    uint32_t local_version, remote_version;
 } ps_updates_app_t;
 
 /// 手动重新检查 xhfo.net；离线或已检查时返回 false。/ Recheck xhfo.net; false when offline or already busy.
@@ -38,6 +40,8 @@ bool ps_updates_download_apps_selected(const char *const *ids, unsigned count);
 bool ps_updates_download_firmware(void);
 /// TF中已有固件镜像和64字节SHA文件。/ A firmware image and 64-byte digest exist on TF.
 bool ps_updates_firmware_ready(void);
+/// 安装确认读取 TF 镜像的真实版本，仅在事件处理时调用。/ Read the TF image's actual version for an install event.
+bool ps_updates_firmware_version(char *out,size_t bytes);
 /// 确认入口调用；切换到ota_1更新器并重启。/ Called after confirmation; switch to the ota_1 updater and restart.
 bool ps_updates_arm_firmware(void);
 /// 复制最新版本、应用数量和最近状态供“关于本机”绘制。/ Copy latest version, app count and status for About.

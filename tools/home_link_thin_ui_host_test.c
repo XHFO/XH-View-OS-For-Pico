@@ -54,7 +54,7 @@ bool ps_hit(int x, int y, int rx, int ry, int w, int h) {
 void ps_toast(const char *text) { assert(text && *text); }
 void ps_apps_prepare_home(uint8_t page) { entry = page; }
 void ps_apps_expect_home_route(ps_route_t route) { (void)route; }
-bool ps_apps_open(const char *id) { assert(!strcmp(id, "home-link")); open_count++; return package_available; }
+bool ps_apps_open(const char *id) { assert(!strcmp(id, "home-link")||!strcmp(id,"printer-link")); open_count++; return package_available; }
 bool ps_home_portal_start(int owner) {
     assert(owner == PS_HOME_PORTAL_OWNER_HOME);
     portal.active = true;
@@ -62,6 +62,7 @@ bool ps_home_portal_start(int owner) {
     return true;
 }
 void ps_home_portal_stop(void) { stops++; portal.active = false; }
+void ps_home_portal_set_printers(bool printers) { (void)printers; }
 void ps_home_portal_view(ps_home_portal_view_t *out) { *out = portal; }
 bool ui_wifi_qr_prepare_url(const char *url) { return url && strstr(url, "/lan#key="); }
 void ui_wifi_qr_clear(void) { qr_clears++; }
@@ -106,7 +107,7 @@ static void portal_contract(void) {
         assert(tap(40, 36));
         assert(!thin_portal && !portal.active && stops == closed + 1 && qr_clears == cleared + 1);
         real_ha_settings_render(NULL);
-        assert(thin_open_portal() && thin_portal_back() && !thin_portal);
+        assert(thin_open_portal(THIN_HOME_MONITOR) && thin_portal_back() && !thin_portal);
         assert(!thin_portal_back());
         package_available = false;
         assert(real_ha_event(&(ps_event_t){.type = PS_TAP, .x = 40, .y = view.h - 80}));

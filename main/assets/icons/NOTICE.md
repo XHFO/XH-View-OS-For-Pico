@@ -12,6 +12,7 @@ that contain these icons. No Apple SF Symbols assets are included.
 
 `pico/sd-card.svg` is original artwork, copyright 2026 XH_Lab, licensed under the
 repository's Apache-2.0 license. It depicts a removable memory card rather than a SIM.
+`pico/speaker.svg` is original XH_Lab artwork under the same Apache-2.0 license.
 
 `tools/generate_pico_icons.py` compiles these vectors to
 `main/system/pico_icons_data.h`. The generated header is derived from both sources;
@@ -21,3 +22,4 @@ parse SVG, or allocate a framebuffer for icons.
 39 个 Lucide SVG 保持上游原样，ISC 许可与 Feather 衍生部分声明随包保留。
 SD 卡图形为 XH_Lab 原创，使用仓库 Apache-2.0 许可。网页原生预览和设备共用生成
 数据与 C 绘图，不包含 Apple SF Symbols 素材。
+扬声器图形同样为 XH_Lab 原创，使用 Apache-2.0 许可。

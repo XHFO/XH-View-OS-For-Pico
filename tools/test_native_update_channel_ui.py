@@ -26,11 +26,11 @@ try:
     runtime.capture("test-channel-warning", state)
     checks.append("first-test-tap-requires-confirmation")
 
-    runtime.tap(303, 174)
+    runtime.tap(260, 415)
     state = runtime.command("status")
     assert state["update_channel"] == 1, state
     runtime.capture("test-channel-selected", state)
-    checks.append("second-test-tap-selects")
+    checks.append("explicit-risk-confirm-selects")
 
     runtime.close()
     runtime.start()

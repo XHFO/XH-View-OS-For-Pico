@@ -342,7 +342,7 @@ static bool runtime_seed_tools(void){
     if(errno!=ENOENT)return false;
     if((mkdir("/sdcard/apps",0700)&&errno!=EEXIST)||(mkdir("/sdcard/apps/tools",0700)&&errno!=EEXIST))return false;
     bool old_defaults=stat("/sdcard/apps/.tools-defaults-v1",&st)==0;
-    const char *ids[]={"drawing-notes","weread","home-link"};
+    const char *ids[]={"drawing-notes","weread","home-link","printer-link"};
     for(size_t i=0;i<sizeof(ids)/sizeof(ids[0]);i++){
     if(i==0&&old_defaults)continue; /* Preserve a drawing app deliberately removed from a v1 session. */
     char target[160],staged[160],source[2048];snprintf(target,sizeof(target),"/sdcard/apps/tools/%s.pga",ids[i]);snprintf(staged,sizeof(staged),"/sdcard/apps/tools/%s.tmp",ids[i]);snprintf(source,sizeof(source),"%s/%s.pga",PICO_NATIVE_TOOL_PACKAGES,ids[i]);
