@@ -1,3 +1,11 @@
+if(PICO_OTA_UPDATER)
+    idf_component_register(
+        SRCS "updater_main.c"
+        REQUIRES read_pico app_update fatfs mbedtls esp_partition
+        INCLUDE_DIRS ".")
+    return()
+endif()
+
 set(main_requires
     espressif__cmake_utilities
     espressif__tinyusb
@@ -7,6 +15,7 @@ set(main_requires
     read_pico_ble_pager
     read_pico_home_link
     read_pico_apps
+    app_update
     esp_http_client
     esp-tls
     read_pico_search
@@ -41,6 +50,7 @@ idf_component_register(
         "system/pico_system.c"
         "system/dual_link.c"
         "system/pico_dual.c"
+        "system/pico_updates.c"
         "system/pico_connectivity.c"
         "system/pico_storage.c"
         "system/pico_usb.c"
@@ -166,6 +176,7 @@ set_source_files_properties(
     "system/pico_weread.c"
     "system/pico_weread_cover.c"
     "system/pico_launcher.c"
+    "system/pico_updates.c"
     "system/pico_games.c"
     "apps/app_transfer.c"
     "apps/app_font_pick.c"

@@ -79,10 +79,14 @@ static void random_bytes(void* p, size_t n) {
 #include "native_preview_book_vfs.h"
 #endif
 #endif
-#define CHUNK 4096u
+// 中文：大块减少 ESP32 每轮固定开销；缓冲区随会话放在 PSRAM，不占 UI 栈。
+// English: Larger chunks reduce ESP32 per-tick overhead; session buffers live in PSRAM, not the UI stack.
+#define CHUNK 16384u
 #define WIRE_MAX (CHUNK + 64u)
 #define PROTOCOL 3
-#define CONTROL_VERSION 5
+#define CONTROL_VERSION 6
+#define ANNOTATION_OUT_MAX 4
+#define ACK_OUT_MAX 8
 enum {
     CHALLENGE = 1,
     PROOF,
@@ -97,7 +101,10 @@ enum {
     STATE,
     OPEN,
     TURN,
-    PING
+    PING,
+    PROGRESS = 30,
+    ACK = 31,
+    ENDPOINT = 32
 };
 typedef struct {
     uint64_t inode;
@@ -111,20 +118,38 @@ typedef struct {
     uint8_t id[32];
     uint32_t bytes;
     char path[DL_PATH];
-    bool seen;
+    uint32_t progress_recent;
+    uint8_t progress_pct;
+    bool seen, progress_started, progress_loaded;
 } local_t;
 typedef struct {
     uint8_t id[32];
     uint32_t bytes;
     char name[240];
 } remote_t;
+typedef struct {
+    uint8_t id[32];
+    uint32_t recent;
+    uint8_t pct;
+    bool started, valid;
+} remote_progress_t;
+typedef struct {
+    uint8_t type;
+    uint32_t seq, chapter, start, end;
+    char text[80];
+} annotation_event_t;
+typedef struct {
+    uint8_t type;
+    uint32_t seq;
+} ack_event_t;
 struct dual_link {
     dl_config_t cfg;
     local_t local[DL_BOOKS];
     remote_t remote[DL_BOOKS];
+    remote_progress_t progress[DL_BOOKS];
     unsigned count, remote_count, list_at, list_limit, root_at, imports;
     bool scan, font_scanned, listed, peer_listed, done, peer_done, authenticated, connecting,
-        auth_sent, accept_pending;
+        auth_sent, accept_pending, network_used, fast_verified, peer_id_valid;
     int listener, fd, request_index;
     DIR* dir;
     FILE *hash_file, *sending, *receiving;
@@ -135,14 +160,15 @@ struct dual_link {
     bool resume_hashing, incoming_ready;
     stamp_t hash_stamp;
     hash_t scan_hash, receive_hash;
-    uint8_t incoming_id[32], sending_id[32], font_id[32], nonce[16];
+    uint8_t incoming_id[32], sending_id[32], font_id[32], peer_font_id[32], nonce[16];
     uint8_t tx[WIRE_MAX + 8], rx[WIRE_MAX + 8];
+    uint8_t scan_chunk[CHUNK], produce_chunk[CHUNK];
     size_t tx_len, tx_at, rx_len;
     bool send_begin, send_end, state_dirty, request_pending, left_ready;
     int request_direction;
     uint8_t request_book[32], request_px;
     uint32_t request_revision, request_page, pending_open_page;
-    int64_t now, retry_at, last_rx, last_tx, request_at;
+    int64_t now, retry_at, last_rx, last_tx, request_at, catalog_ready_at;
     const char* error;
     dl_reading_t reading;
     dl_orientation_t orientation;
@@ -154,12 +180,8 @@ struct dual_link {
     uint32_t base_seq;
     bool calibration_request;
     bool reading_active, peer_reading, reading_dirty;
-    bool remote_open;
-    bool annotation_dirty, annotation_valid;
-    bool annotation_ack_pending;
+    bool annotation_dirty, annotation_valid, annotation_inflight;
     uint32_t annotation_seq;
-    uint32_t annotation_ack_seq;
-    int64_t annotation_sent;
     uint8_t annotation_type;
     uint32_t annotation_chapter, annotation_start, annotation_end;
     char annotation_text[80];
@@ -167,26 +189,28 @@ struct dual_link {
     bool orientation_dirty, orientation_seen, control_compatible, orientation_last;
     uint8_t orientation_request;
     uint8_t game_input;
-    bool game_pending, game_ready;
-    bool game_active, game_open_pending, game_open_ready;
+    bool game_pending, game_ready, game_open_pending, game_open_ready;
     uint8_t game_open_kind;
-    uint32_t game_kind, game_session, game_open_request;
-    int64_t game_open_sent;
-    uint32_t game_ready_session, game_ready_request;
-    bool game_result_ready, game_result_accepted;
-    uint32_t game_result_request;
-    bool game_ack_pending, game_ack_accepted;
-    uint32_t game_ack_request, game_ack_session;
+    int64_t game_open_sent, game_open_until;
     uint8_t game_payload[32], game_payload_n;
-    bool game_payload_pending, game_payload_ready;
-    bool game_close_pending, game_close_ready, game_close_ack_pending, game_close_ack_accepted;
-    uint32_t game_close_request;
-    int64_t game_close_sent;
-    uint32_t game_close_ready_session, game_close_ready_request;
-    uint32_t game_close_ack_request;
+    bool game_payload_pending, game_payload_ready, game_payload_inflight;
+    bool game_payload_rx_seen;
+    uint32_t game_payload_seq;
+    uint32_t game_payload_rx_seq;
+    int64_t annotation_sent_at, game_payload_sent_at;
+    annotation_event_t annotations[ANNOTATION_OUT_MAX];
+    ack_event_t acks[ACK_OUT_MAX];
+    uint8_t annotation_head, annotation_count, ack_head, ack_count;
+    bool game_close_pending, game_close_ready;
     bool control_seen, control_connected, catalog_valid, catalog_dirty, peer_catalog_valid;
+    bool remote_open_pending;
+    bool endpoint_dirty;
     uint8_t catalog[32], peer_catalog[32];
+    uint8_t peer_device_id[8];
     unsigned catalog_count;
+    unsigned progress_at;
+    bool progress_dirty, current_progress_dirty;
+    uint32_t progress_revision;
     uint32_t request_sequence, peer_sequence;
     int64_t control_sent, request_started;
 };
@@ -231,6 +255,33 @@ static int find_id(const dual_link_t* d, const uint8_t id[32]) {
         if (d->local[i].seen && same(d->local[i].id, id, 32)) return (int)i;
     return -1;
 }
+static bool font_file_name(const char* name) {
+    const char* ext = name ? strrchr(name, '.') : NULL;
+    return ext && !strcasecmp(ext, ".ttf");
+}
+static bool preferred_font_name(const dual_link_t* d, const char* name) {
+    const char* expected = base(d->cfg.font);
+    return expected && *expected && name && !strcasecmp(name, expected);
+}
+static void choose_local_font(dual_link_t* d) {
+    if (nonzero(d->font_id)) return;
+    int fallback = -1, preferred = -1;
+    for (unsigned i = 0; i < d->count; ++i) {
+        if (!d->local[i].seen || !font_file_name(d->local[i].path)) continue;
+        if (fallback < 0) fallback = (int)i;
+        if (preferred_font_name(d, base(d->local[i].path))) {
+            preferred = (int)i;
+            break;
+        }
+    }
+    int picked = preferred >= 0 ? preferred : fallback;
+    if (picked >= 0) memcpy(d->font_id, d->local[picked].id, 32);
+}
+static void remember_peer_font(dual_link_t* d, const uint8_t id[32], const char* name) {
+    if (d->cfg.role != 1 || !font_file_name(name)) return;
+    if (!nonzero(d->peer_font_id) || preferred_font_name(d, name))
+        memcpy(d->peer_font_id, id, 32);
+}
 static void close_file(FILE** f) {
     if (*f) {
         fclose(*f);
@@ -257,6 +308,7 @@ static void drop(dual_link_t* d, const char* error) {
     d->auth_sent = d->accept_pending = false;
     d->send_begin = d->send_end = false;
     d->request_index = -1;
+    memset(d->peer_font_id, 0, sizeof(d->peer_font_id));
     close_file(&d->sending);
     // 仅本会话拥有的半文件可重试；重新读取前缀后才续传。/ Retry only this session's partial, rehashing its prefix first.
     if (d->receiving) {
@@ -281,6 +333,49 @@ static bool queue(dual_link_t* d, unsigned kind, const void* p, size_t n) {
     d->tx_at = 0;
     d->tx_len = n + 8;
     return true;
+}
+static remote_progress_t* progress_find(dual_link_t* d, const uint8_t id[32], bool create) {
+    for (unsigned i = 0; i < DL_BOOKS; ++i)
+        if (d->progress[i].valid && same(d->progress[i].id, id, 32)) return &d->progress[i];
+    if (!create) return NULL;
+    for (unsigned i = 0; i < DL_BOOKS; ++i) if (!d->progress[i].valid) {
+        memset(&d->progress[i], 0, sizeof(d->progress[i]));
+        memcpy(d->progress[i].id, id, 32);
+        d->progress[i].valid = true;
+        ++d->progress_revision;
+        return &d->progress[i];
+    }
+    return NULL;
+}
+static bool ack_queue(dual_link_t* d, uint8_t type, uint32_t seq) {
+    if (!seq || d->ack_count >= ACK_OUT_MAX) return false;
+    d->acks[(d->ack_head + d->ack_count) % ACK_OUT_MAX] = (ack_event_t){type, seq};
+    ++d->ack_count;
+    return true;
+}
+static bool ack_take(dual_link_t* d, ack_event_t* out) {
+    if (!d->ack_count) return false;
+    *out = d->acks[d->ack_head];
+    d->ack_head = (uint8_t)((d->ack_head + 1) % ACK_OUT_MAX);
+    --d->ack_count;
+    return true;
+}
+static bool ack_consume(dual_link_t* d, const uint8_t* p, size_t n) {
+    if (n != 6 || p[0] != ACK || !get32(p + 2)) return false;
+    uint32_t seq = get32(p + 2);
+    if (p[1] == 15 && d->annotation_count && d->annotations[d->annotation_head].seq == seq) {
+        d->annotation_head = (uint8_t)((d->annotation_head + 1) % ANNOTATION_OUT_MAX);
+        --d->annotation_count;
+        d->annotation_inflight = false;
+        d->annotation_dirty = d->annotation_count != 0;
+        return true;
+    }
+    if (p[1] == 22 && d->game_payload_inflight && d->game_payload_seq == seq) {
+        d->game_payload_inflight = d->game_payload_pending = false;
+        return true;
+    }
+    if (p[1] == 21 || p[1] == 23) return true;
+    return false;
 }
 static bool proof(dual_link_t* d, const char* role, uint8_t out[32]) {
     hash_t h;
@@ -325,6 +420,36 @@ static bool unchanged(const local_t* b, const struct stat* s) {
     stamp_t v = file_stamp(s);
     return b->bytes == (uint32_t)s->st_size && !memcmp(&b->stamp, &v, sizeof(v));
 }
+static void local_progress_load(dual_link_t* d, local_t* item) {
+    if (item->progress_loaded) return;
+    dl_book_progress_t progress = {0};
+    if (d->cfg.progress_get)
+        (void)d->cfg.progress_get(item->path, item->bytes, &progress, d->cfg.progress_context);
+    item->progress_started = progress.started;
+    item->progress_pct = progress.pct;
+    item->progress_recent = progress.recent;
+    item->progress_loaded = true;
+}
+static dl_book_progress_t current_progress(const dual_link_t* d) {
+    dl_book_progress_t saved = {0};
+    int at = find_id(d, d->reading.book);
+    if (at >= 0 && d->cfg.progress_get)
+        (void)d->cfg.progress_get(d->local[at].path, d->local[at].bytes, &saved, d->cfg.progress_context);
+    // 新开书时全书页数尚未统计，不能把已有进度短暂发布成 0%。
+    // The total is briefly unknown after opening; never publish an existing book as 0% during that window.
+    if (!d->reading.total) {
+        if (saved.started) return saved;
+        return (dl_book_progress_t){.started = true};
+    }
+    dl_book_progress_t result = {
+        .started = true,
+        .pct = (uint8_t)(((uint64_t)(d->reading.spread + 1) * 100u + d->reading.total - 1u) /
+                         d->reading.total),
+        .recent = saved.recent,
+    };
+    if (result.pct > 100) result.pct = 100;
+    return result;
+}
 static bool scan_start(dual_link_t* d, const struct stat* st) {
     for (unsigned i = 0; i < d->count; i++) {
         local_t* b = &d->local[i];
@@ -335,6 +460,8 @@ static bool scan_start(dual_link_t* d, const struct stat* st) {
                 if (i != j && d->local[j].seen && same(b->id, d->local[j].id, 32)) duplicate = true;
             if (!b->seen && !duplicate) d->reused++;
             b->seen = !duplicate;
+            b->progress_loaded = false;
+            local_progress_load(d, b);
             if (!strcmp(d->hash_path, d->cfg.font)) memcpy(d->font_id, b->id, 32);
             return true;
         }
@@ -346,16 +473,15 @@ static bool scan_start(dual_link_t* d, const struct stat* st) {
     return d->hash_file && hash_begin(&d->scan_hash);
 }
 static void scan_step(dual_link_t* d) {
-    uint8_t data[CHUNK];
     if (d->hash_file) {
-        size_t n = fread(data, 1, sizeof(data), d->hash_file);
-        if (n && !hash_add(&d->scan_hash, data, n)) {
+        size_t n = fread(d->scan_chunk, 1, sizeof(d->scan_chunk), d->hash_file);
+        if (n && !hash_add(&d->scan_hash, d->scan_chunk, n)) {
             d->error = "hash failed";
             goto failed;
         }
         d->hash_read += (uint32_t)n;
         d->verified_bytes += (uint32_t)n;
-        if (n == sizeof(data)) return;
+        if (n == sizeof(d->scan_chunk)) return;
         struct stat st;
         if (ferror(d->hash_file) || d->hash_read != d->hash_bytes ||
             !regular_file(d->hash_path, &st) || (uint32_t)st.st_size != d->hash_bytes ||
@@ -388,6 +514,8 @@ static void scan_step(dual_link_t* d) {
         local_t* b = &d->local[at];
         memcpy(b->id, id, 32);
         b->bytes = d->hash_bytes; b->stamp = d->hash_stamp; b->seen = true;
+        b->progress_loaded = false;
+        local_progress_load(d, b);
         snprintf(b->path, sizeof(b->path), "%s", d->hash_path);
         return;
     }
@@ -396,17 +524,18 @@ static void scan_step(dual_link_t* d) {
             if (!d->font_scanned && d->cfg.font[0]) {
                 d->font_scanned = true;
                 struct stat st;
-                if (!regular_file(d->cfg.font, &st)) {
-                    d->error = "primary font unavailable";
-                    goto failed;
+                if (regular_file(d->cfg.font, &st)) {
+                    snprintf(d->hash_path, sizeof(d->hash_path), "%s", d->cfg.font);
+                    if (!scan_start(d, &st)) {
+                        d->error = "cannot read shared font";
+                        goto failed;
+                    }
+                    return;
                 }
-                snprintf(d->hash_path, sizeof(d->hash_path), "%s", d->cfg.font);
-                if (!scan_start(d, &st)) {
-                    d->error = "cannot read primary font";
-                    goto failed;
-                }
-                return;
             }
+            // 字体允许由对端补入；空主机仍须发现对端并交换文件清单。
+            // The peer may supply the font; an empty primary must still discover it and exchange files.
+            choose_local_font(d);
             unsigned used = 0;
             for (unsigned i = 0; i < d->count; i++)
                 if (d->local[i].seen) d->local[used++] = d->local[i];
@@ -471,6 +600,7 @@ static void publish(dual_link_t* d, const uint8_t* id, int direction) {
     if (++d->reading.revision == 0) d->reading.revision = 1;
     d->left_ready = false;
     d->state_dirty = true;
+    d->current_progress_dirty = true;
 }
 static bool valid_px(uint8_t px) {
     return px >= DL_FONT_MIN && px <= DL_FONT_MAX && (px - DL_FONT_MIN) % DL_FONT_STEP == 0;
@@ -546,6 +676,13 @@ static bool incoming_end(dual_link_t* d) {
     // rename 可能更新 ctime；缓存发布后的元数据。/ Rename can update ctime; cache the published metadata.
     if (!file_stat(d->final, &st)) b->stamp = file_stamp(&st);
     snprintf(b->path, sizeof(b->path), "%s", d->final);
+    if (d->cfg.role == 1 && same(id, d->peer_font_id, 32)) {
+        memcpy(d->font_id, id, 32);
+        if (!nonzero(d->reading.font) || find_id(d, d->reading.font) < 0) {
+            memcpy(d->reading.font, id, 32);
+            d->state_dirty = true;
+        }
+    }
     d->imports++;
     d->content_revision++;
     d->request_index = -1;
@@ -583,6 +720,7 @@ static bool message(dual_link_t* d, unsigned type, const uint8_t* p, size_t n) {
                 return false;
             for (unsigned i = 0; i < d->remote_count; i++)
                 if (same(d->remote[i].id, p, 32)) return false;
+            remember_peer_font(d, p, (const char*)p + 36);
             remote_t* b = &d->remote[d->remote_count++];
             memcpy(b->id, p, 32);
             b->bytes = get32(p + 32);
@@ -633,6 +771,7 @@ static bool message(dual_link_t* d, unsigned type, const uint8_t* p, size_t n) {
         // Reading commands belong exclusively to the separate BLE channel.
         case STATE: case OPEN: case TURN: return false;
         case PING: return n == 0;
+        case PROGRESS: return false;
         default: return false;
     }
 }
@@ -659,6 +798,7 @@ static void network(dual_link_t* d) {
             }
             d->fd = accept(d->listener, NULL, NULL);
             if (d->fd < 0) return;
+            d->network_used = true;
             fcntl(d->fd, F_SETFL, O_NONBLOCK);
             random_bytes(d->nonce, sizeof(d->nonce));
             queue(d, CHALLENGE, d->nonce, 16);
@@ -671,6 +811,7 @@ static void network(dual_link_t* d) {
             }
             d->fd = socket(AF_INET, SOCK_STREAM, 0);
             if (d->fd < 0) return;
+            d->network_used = true;
             fcntl(d->fd, F_SETFL, O_NONBLOCK);
             if (connect(d->fd, (struct sockaddr*)&a, sizeof(a)) && errno != EINPROGRESS) {
                 drop(d, "primary unavailable");
@@ -753,7 +894,7 @@ static void network(dual_link_t* d) {
 }
 static void produce(dual_link_t* d) {
     if (d->fd < 0 || d->connecting || d->tx_len) return;
-    uint8_t p[CHUNK];
+    uint8_t* p = d->produce_chunk;
     if (d->accept_pending) {
         if (!proof(d, "primary", p)) {
             discard_partial(d);
@@ -795,7 +936,7 @@ static void produce(dual_link_t* d) {
             d->send_begin = false;
             return;
         }
-        size_t n = fread(p, 1, sizeof(p), d->sending);
+        size_t n = fread(p, 1, CHUNK, d->sending);
         if (n) {
             d->sent += (uint32_t)n;
             queue(d, DATA, p, n);
@@ -816,7 +957,7 @@ static void produce(dual_link_t* d) {
     }
     if (d->resume_hashing) {
         size_t n = d->received - d->resume_read;
-        if (n > sizeof(p)) n = sizeof(p);
+        if (n > CHUNK) n = CHUNK;
         if (fread(p, 1, n, d->receiving) != n || !hash_add(&d->receive_hash, p, n)) {
             discard_partial(d); drop(d, "source read failed"); return;
         }
@@ -878,7 +1019,7 @@ static void produce(dual_link_t* d) {
     if (d->now - d->last_tx > 2000) queue(d, PING, NULL, 0);
 }
 #ifdef ESP_PLATFORM
-#define DUAL_CACHE_MAGIC 0x31434c44u
+#define DUAL_CACHE_MAGIC 0x32434c44u
 static void cache_path(dual_link_t* d, char* out, size_t n) {
     snprintf(out, n, "%s/.dual-hash-cache", d->cfg.destination);
 }
@@ -898,6 +1039,7 @@ static void cache_load(dual_link_t* d) {
             !b.bytes || !memchr(b.path, 0, sizeof(b.path))) break;
         if (d->count < DL_BOOKS) {
             b.seen = false;
+            b.progress_loaded = false;
             d->local[d->count++] = b;
         }
     }
@@ -978,6 +1120,7 @@ static void catalog_update(dual_link_t* d) {
     if (d->scan || d->receiving || d->retry_at == INT64_MAX) {
         if (d->catalog_valid) d->catalog_dirty = true;
         d->catalog_valid = false;
+        d->fast_verified = false;
         return;
     }
     if (d->catalog_valid && d->catalog_count == d->count) return;
@@ -988,7 +1131,9 @@ static void catalog_update(dual_link_t* d) {
     for (unsigned i = 0; ok && i < d->count; ++i) ok = hash_add(&h, sorted[i]->id, 32);
     if (ok) ok = hash_end(&h, d->catalog);
     hash_abort(&h);
+    bool became_valid = ok && !d->catalog_valid;
     d->catalog_valid = ok; d->catalog_dirty = true; d->catalog_count = d->count;
+    if (became_valid) d->catalog_ready_at = d->now;
 }
 static bool control_ready(const dual_link_t* d) {
     return d->control_connected && d->catalog_valid && d->peer_catalog_valid &&
@@ -1006,6 +1151,7 @@ void dl_tick(dual_link_t* d, int64_t now, bool available) {
         if (d->listener >= 0) { close(d->listener); d->listener = -1; }
     }
     catalog_update(d);
+    d->fast_verified = control_ready(d) && !d->receiving && !d->sending;
     if (d->pending_open[0] && control_ready(d)) {
         char path[DL_PATH]; snprintf(path, sizeof(path), "%s", d->pending_open);
         d->pending_open[0] = 0;
@@ -1019,31 +1165,31 @@ void dl_tick(dual_link_t* d, int64_t now, bool available) {
 void dl_control_connected(dual_link_t* d, bool connected) {
     if (!d || d->control_connected == connected) return;
     d->control_connected = connected; d->peer_catalog_valid = false; d->control_seen = false;
+    d->peer_id_valid = false;
+    memset(d->peer_device_id, 0, sizeof(d->peer_device_id));
+    d->network_used = false;
+    d->fast_verified = false;
+    d->catalog_ready_at = connected ? d->now : 0;
     d->control_compatible = d->orientation_seen = false;
     d->orientation_sequence = d->orientation_request = 0;
     d->orientation_dirty = true; d->orientation_last = false;
     d->request_pending = false; d->request_at = 0;
     d->game_pending = d->game_ready = false;
-    d->game_payload_pending = d->game_payload_ready = false;
-    d->game_open_ready = d->game_close_ready = false;
-    d->game_ack_pending = d->game_close_ack_pending = false;
-    d->game_open_sent = d->game_close_sent = 0;
-    d->annotation_sent = 0;
-    d->peer_reading = false;
-    d->reading_dirty = true;
-    if (connected) {
-        // 已确认的游戏会话在重连后重新声明；对端可按 session 幂等确认。
-        // Reassert an accepted game session after reconnect; the peer can ACK it idempotently.
-        if (d->game_active && d->game_session) {
-            if (++d->game_open_request == 0) d->game_open_request = 1;
-            d->game_open_pending = true;
-            d->game_open_sent = 0;
-        }
-        if (d->game_close_pending) d->game_close_sent = 0;
-    }
+    d->game_open_pending = d->game_open_ready = false; d->game_open_sent = d->game_open_until = 0;
+    if (!connected) d->game_payload_inflight = false;
+    d->game_payload_ready = false;
+    d->game_close_pending = d->game_close_ready = false;
+    d->remote_open_pending = false;
+    d->annotation_inflight = false;
+    d->ack_head = d->ack_count = 0;
     d->left_ready = false;
     d->request_sequence = d->peer_sequence = 0;
+    d->progress_at = 0;
+    d->progress_dirty = connected;
+    d->current_progress_dirty = connected;
+    d->endpoint_dirty = connected && d->cfg.role == 1 && d->cfg.host[0];
     d->face_sent = false;
+    d->reading_dirty = !d->reading_active;
     d->catalog_dirty = d->state_dirty = true; d->control_sent = 0;
 }
 size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
@@ -1054,48 +1200,42 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         (d->cfg.role == 1 || d->orientation_request);
     // 先排空待发状态再发周期心跳，慢速tick不能被心跳反复插队。
     // Drain queued updates before periodic heartbeats so slow ticks cannot starve them.
-    if (d->game_close_ack_pending && d->control_connected) {
-        p[0] = 25; p[1] = d->game_close_ack_accepted; put32(p + 2, d->game_close_ack_request);
-        d->game_close_ack_pending = false; return 6;
+    ack_event_t ack;
+    if (ack_take(d, &ack)) {
+        p[0] = ACK; p[1] = ack.type; put32(p + 2, ack.seq);
+        return 6;
     }
-    if (d->annotation_ack_pending && d->control_connected) {
-        p[0] = 16; put32(p + 1, d->annotation_ack_seq);
-        d->annotation_ack_pending = false; return 5;
-    }
-    if (d->game_ack_pending && d->control_connected) {
-        p[0] = 24; p[1] = d->game_ack_accepted;
-        put32(p + 2, d->game_ack_request); put32(p + 6, d->game_ack_session);
-        d->game_ack_pending = false; return 10;
-    }
-    if (d->game_close_pending && d->control_connected &&
-        (!d->game_close_sent || d->now - d->game_close_sent >= 500)) {
-        p[0] = 23; put32(p + 1, d->game_session); put32(p + 5, d->game_close_request);
-        d->game_close_sent = d->now; return 9;
+    if (d->game_close_pending && d->control_connected) {
+        d->game_open_pending = false;
+        p[0] = 23; d->game_close_pending = false; return 1;
     }
     if (d->game_open_pending && d->control_connected &&
         (!d->game_open_sent || d->now - d->game_open_sent >= 500)) {
         p[0] = 21; p[1] = d->game_open_kind;
-        put32(p + 2, d->game_session); put32(p + 6, d->game_open_request);
-        p[10] = (uint8_t)d->cfg.role;
-        d->game_open_sent = d->now; return 11;
+        d->game_open_sent = d->now;
+        if (d->now >= d->game_open_until) d->game_open_pending = false;
+        return 2;
     }
-    if (d->game_payload_pending && d->control_connected) {
-        p[0] = 22; put32(p + 1, d->game_session); p[5] = d->game_payload_n;
-        memcpy(p + 6, d->game_payload, d->game_payload_n);
-        d->game_payload_pending = false; return 6 + d->game_payload_n;
+    if (d->game_payload_pending && d->control_connected &&
+        (!d->game_payload_inflight || d->now - d->game_payload_sent_at >= 750)) {
+        p[0] = 22; p[1] = d->game_payload_n; memcpy(p + 2, d->game_payload, d->game_payload_n);
+        put32(p + 2 + d->game_payload_n, d->game_payload_seq);
+        d->game_payload_inflight = true; d->game_payload_sent_at = d->now;
+        return 6 + d->game_payload_n;
     }
     if (d->cfg.role == 2 && d->game_pending && d->control_connected) {
-        p[0] = 20; put32(p + 1, d->game_session); p[5] = d->game_input;
-        d->game_pending = false; return 6;
+        p[0] = 20; p[1] = d->game_input; d->game_pending = false;
+        return 2;
     }
     if (d->catalog_dirty || (d->now - d->control_sent >= 1500 && !reading_pending && !orientation_pending)) {
         p[0] = 1; p[1] = d->catalog_valid;
         memcpy(p + 2, d->catalog, 32); p[34] = CONTROL_VERSION;
+        memcpy(p + 35, d->cfg.device_id, 8);
         d->catalog_dirty = false; d->control_sent = d->now;
         // 周期校验后重发最终状态，覆盖通知丢失，重复帧不重复翻页。
         // Refresh authoritative state after the heartbeat; duplicates never advance twice.
-        d->state_dirty = d->orientation_dirty = d->guard_dirty = d->reading_dirty = true;
-        return 35;
+        d->state_dirty = d->orientation_dirty = true;
+        return 43;
     }
     if (orientation_pending && (!reading_pending || !d->orientation_last)) {
         d->orientation_last = true;
@@ -1109,15 +1249,23 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
             d->orientation_dirty = false; return 6;
         }
     }
-    if (d->annotation_dirty && d->control_compatible &&
-        (!d->annotation_sent || d->now - d->annotation_sent >= 500)) {
-        size_t len = strnlen(d->annotation_text, DL_CONTROL_MAX - 19);
-        p[0] = 15; p[1] = d->annotation_type;
-        put32(p + 2, d->annotation_seq); put32(p + 6, d->annotation_chapter);
-        put32(p + 10, d->annotation_start); put32(p + 14, d->annotation_end);
-        p[18] = (uint8_t)len; memcpy(p + 19, d->annotation_text, len);
-        d->annotation_sent = d->now;
+    if (d->annotation_count && d->control_compatible &&
+        (!d->annotation_inflight || d->now - d->annotation_sent_at >= 750)) {
+        const annotation_event_t* event = &d->annotations[d->annotation_head];
+        size_t len = strnlen(event->text, sizeof(event->text) - 1);
+        p[0] = 15; p[1] = event->type;
+        put32(p + 2, event->seq); put32(p + 6, event->chapter);
+        put32(p + 10, event->start); put32(p + 14, event->end);
+        p[18] = (uint8_t)len; memcpy(p + 19, event->text, len);
+        d->annotation_inflight = true; d->annotation_sent_at = d->now;
         return 19 + len;
+    }
+    if (d->cfg.role == 1 && d->endpoint_dirty && d->control_compatible) {
+        size_t len = strnlen(d->cfg.host, sizeof(d->cfg.host) - 1);
+        p[0] = ENDPOINT; p[1] = (uint8_t)len;
+        memcpy(p + 2, d->cfg.host, len);
+        d->endpoint_dirty = false;
+        return 2 + len;
     }
     if (!control_ready(d)) return 0;
     if (d->cfg.role == 1 && d->state_dirty && nonzero(d->reading.book)) {
@@ -1126,9 +1274,7 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         put32(p + 41, d->reading.total); memcpy(p + 45, d->reading.font, 32);
         put32(p + 77, d->peer_sequence); p[81] = d->left_ready;
         p[82] = d->reading.font_px; p[83] = d->reading.reflow_pending; p[84] = d->reading.reflow_from_px;
-        p[85] = d->reading_active;
-        p[86] = d->remote_open;
-        d->state_dirty = false; d->orientation_last = false; return 87;
+        d->state_dirty = false; d->orientation_last = false; return 85;
     }
     if (d->guard_dirty && d->control_compatible) {
         p[0] = d->cfg.role == 1 ? 9 : 10;
@@ -1169,24 +1315,76 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         if (p[0] == 6) { p[9] = d->request_px; return 10; }
         p[9] = d->request_direction > 0 ? 1 : 255; return 10;
     }
+    if (d->cfg.role == 1 && d->control_compatible && control_ready(d) &&
+        (d->current_progress_dirty || d->progress_dirty || d->progress_at < d->count)) {
+        uint8_t id[32] = {0};
+        dl_book_progress_t progress = {0};
+        if (d->current_progress_dirty && nonzero(d->reading.book)) {
+            memcpy(id, d->reading.book, 32);
+            progress = current_progress(d);
+            d->current_progress_dirty = false;
+        } else {
+            while (d->progress_at < d->count) {
+                local_t* item = &d->local[d->progress_at++];
+                local_progress_load(d, item);
+                if (!item->progress_loaded || !item->progress_started) continue;
+                progress = (dl_book_progress_t){true, item->progress_pct, item->progress_recent};
+                memcpy(id, item->id, 32);
+                break;
+            }
+            if (!nonzero(id)) {
+                d->progress_dirty = false;
+                if (d->progress_at >= d->count) d->progress_at = 0;
+            }
+        }
+        if (nonzero(id)) {
+            p[0] = PROGRESS; memcpy(p + 1, id, 32);
+            p[33] = progress.started ? 1 : 0; p[34] = progress.pct; put32(p + 35, progress.recent);
+            if (d->progress_at >= d->count) d->progress_dirty = false;
+            return 38;
+        }
+    }
     return 0;
 }
 bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
     if (!d || !p || !n || !d->control_connected || n > DL_CONTROL_MAX) return false;
+    if (p[0] == ACK) return ack_consume(d, p, n);
     if (p[0] == 1) {
-        if (n != 35 || p[1] > 1 || p[34] != CONTROL_VERSION) return false;
+        if (n != 43 || p[1] > 1 || p[34] != CONTROL_VERSION) return false;
         d->control_compatible = true;
         d->peer_catalog_valid = p[1]; memcpy(d->peer_catalog, p + 2, 32);
+        memcpy(d->peer_device_id, p + 35, 8); d->peer_id_valid = true;
+        d->fast_verified = d->catalog_valid && d->peer_catalog_valid && !d->network_used &&
+            same(d->catalog, d->peer_catalog, 32);
         return true;
     }
-    if (p[0] == 16) {
-        if (n != 5 || !get32(p + 1)) return false;
-        if (get32(p + 1) == d->annotation_seq) d->annotation_dirty = false;
+    if (p[0] == PROGRESS) {
+        if (n != 38 || d->cfg.role != 2 || p[33] > 1 || p[34] > 100) return false;
+        remote_progress_t* progress = progress_find(d, p + 1, true);
+        if (!progress) return false;
+        progress->started = p[33] != 0;
+        progress->pct = p[34];
+        progress->recent = get32(p + 35);
+        ++d->progress_revision;
+        return true;
+    }
+    if (p[0] == ENDPOINT) {
+        if (d->cfg.role != 2 || n < 3 || n > 49 || p[1] != n - 2) return false;
+        char host[48];
+        memcpy(host, p + 2, p[1]); host[p[1]] = 0;
+        struct in_addr addr;
+        if (inet_pton(AF_INET, host, &addr) != 1) return false;
+        if (strcmp(host, d->cfg.host)) {
+            snprintf(d->cfg.host, sizeof(d->cfg.host), "%s", host);
+            if (d->fd >= 0) drop(d, NULL);
+            d->retry_at = d->now;
+        }
         return true;
     }
     if (p[0] == 15) {
         if (n < 19 || p[18] > n - 19 || p[18] > sizeof(d->annotation_text) - 1) return false;
         d->annotation_seq = get32(p + 2);
+        if (!d->annotation_seq || !ack_queue(d, 15, d->annotation_seq)) return false;
         d->annotation_type = p[1];
         d->annotation_chapter = get32(p + 6);
         d->annotation_start = get32(p + 10);
@@ -1194,8 +1392,6 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         memcpy(d->annotation_text, p + 19, p[18]);
         d->annotation_text[p[18]] = 0;
         d->annotation_valid = true;
-        d->annotation_ack_seq = d->annotation_seq;
-        d->annotation_ack_pending = true;
         return true;
     }
     if (p[0] == 14) {
@@ -1249,84 +1445,40 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         }
         return true;
     }
-    if (p[0] == 25) {
-        if (n != 6 || p[1] > 1 || !get32(p + 2)) return false;
-        if (d->game_close_pending && get32(p + 2) == d->game_close_request) {
-            if (!p[1]) return true;
-            d->game_close_pending = false;
-            d->game_session = 0;
-        }
-        return true;
-    }
-    if (p[0] == 24) {
-        if (n != 10 || p[1] > 1 || !get32(p + 2) || !get32(p + 6) ||
-            get32(p + 2) != d->game_open_request) return true;
-        d->game_open_pending = false;
-        d->game_result_ready = true;
-        d->game_result_request = get32(p + 2);
-        d->game_result_accepted = p[1] != 0;
-        if (d->game_result_accepted) {
-            d->game_active = true;
-            d->game_session = get32(p + 6);
-        } else {
-            d->game_active = false;
-            d->game_session = 0;
-        }
-        return true;
-    }
     if (p[0] == 23) {
-        if (n != 9 || !get32(p + 1) || !get32(p + 5)) return false;
-        uint32_t session = get32(p + 1);
-        if (d->game_session && session != d->game_session && d->game_active) {
-            d->game_close_ack_request = get32(p + 5);
-            d->game_close_ack_accepted = false;
-            d->game_close_ack_pending = true;
-            return true;
-        }
+        if (n != 1) return false;
         d->game_close_ready = true;
-        d->game_close_ready_session = session;
-        d->game_close_ready_request = get32(p + 5);
+        (void)ack_queue(d, 23, 1);
         return true;
     }
     if (p[0] == 22) {
-        if (d->cfg.role != 2 || n < 6 || !get32(p + 1) || p[5] > n - 6 ||
-            p[5] > sizeof(d->game_payload)) return false;
-        if (!d->game_active || get32(p + 1) != d->game_session) return true;
-        memcpy(d->game_payload, p + 6, p[5]); d->game_payload_n = p[5]; d->game_payload_ready = true;
+        if (d->cfg.role != 2 || n < 7 || p[1] > n - 6 || p[1] > sizeof(d->game_payload) ||
+            n != 6 + p[1] || !get32(p + 2 + p[1])) return false;
+        uint32_t seq = get32(p + 2 + p[1]);
+        if (!d->game_payload_rx_seen || seq != d->game_payload_rx_seq) {
+            memcpy(d->game_payload, p + 2, p[1]);
+            d->game_payload_n = p[1];
+            d->game_payload_ready = true;
+            d->game_payload_rx_seen = true;
+            d->game_payload_rx_seq = seq;
+        }
+        (void)ack_queue(d, 22, seq);
         return true;
     }
-    if (p[0] == 21) {
-        if (n != 11 || p[10] < 1 || p[10] > 2 || p[10] == d->cfg.role ||
-            !get32(p + 2) || !get32(p + 6)) return false;
-        uint32_t session = get32(p + 2);
-        uint32_t request = get32(p + 6);
-        if (d->game_active && d->game_session == session) {
-            d->game_ack_request = request; d->game_ack_session = session;
-            d->game_ack_accepted = true; d->game_ack_pending = true;
-            return true;
-        }
-        // 主机已建立的会话优先；从机不能打断主机的活动会话。
-        // The primary's established session wins; a secondary cannot interrupt it.
-        if (d->cfg.role == 1 && d->game_active && d->game_session) {
-            d->game_ack_request = request; d->game_ack_session = session;
-            d->game_ack_accepted = false; d->game_ack_pending = true;
-            return true;
-        }
+    if (p[0] == 21 && n == 2) {
+        if (d->cfg.role != 2) return false;
         d->game_open_kind = p[1]; d->game_open_ready = true;
-        d->game_ready_session = session;
-        d->game_ready_request = request;
+        (void)ack_queue(d, 21, 1);
         return true;
     }
-    if (p[0] == 20) {
-        if (d->cfg.role != 1 || n != 6 || !get32(p + 1)) return false;
-        if (!d->game_active || get32(p + 1) != d->game_session) return true;
-        d->game_input = p[5]; d->game_ready = true;
+    if (p[0] == 20 && n == 2) {
+        if (d->cfg.role != 1) return false;
+        d->game_input = p[1]; d->game_ready = true;
         return true;
     }
     if (!control_ready(d)) return false;
     if (p[0] == 2 && d->cfg.role == 2) {
-        if (n != 87 || p[81] > 1 || !valid_px(p[82]) || p[83] > 1 || (p[81] && p[83]) ||
-            p[85] > 1 || p[86] > 1 ||
+        if (n != 85 || p[81] > 1 || !valid_px(p[82]) || p[83] > 1 || (p[81] && p[83]) ||
             (p[83] && !valid_px(p[84])) ||
             !get32(p + 33) || get32(p + 37) % 2 ||
             find_id(d, p + 1) < 0 || (nonzero(p + 45) && find_id(d, p + 45) < 0)) return false;
@@ -1341,8 +1493,7 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         d->reading.revision = revision; d->reading.spread = get32(p + 37);
         d->reading.total = get32(p + 41);
         d->reading.font_px = p[82]; d->reading.reflow_pending = p[83]; d->reading.reflow_from_px = p[84];
-        d->peer_reading = p[85] != 0;
-        d->remote_open = p[86] != 0;
+        if (d->request_pending) d->remote_open_pending = true;
         if (get32(p + 77) >= d->request_sequence) d->request_pending = false;
         return true;
     }
@@ -1358,20 +1509,24 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
     d->peer_sequence = seq;
     if (get32(p + 1) == d->reading.revision) {
         if (p[0] == 3) {
-            d->remote_open = true;
             bool current = same(d->reading.book, p + 9, 32);
             uint32_t spread = (get32(p + 41) - 1) & ~1u;
             if (!current || (!d->reading.reflow_pending && !d->sending && !d->receiving &&
                 (spread == d->reading.spread || d->left_ready))) {
                 publish(d, current ? NULL : p + 9, 0); d->reading.spread = spread;
+                d->remote_open_pending = true;
             }
         }
-        else if (nonzero(d->reading.book) && d->left_ready) {
+        else if (nonzero(d->reading.book) && (d->left_ready || !d->reading_active)) {
             if (p[0] == 5) { d->reading.spread = (get32(p + 9) - 1) & ~1u; publish(d, NULL, 0); }
             else if (p[0] == 6) { if (p[9] != d->reading.font_px) resize(d, p[9]); }
             else publish(d, NULL, p[9] == 1 ? 1 : -1);
         }
     }
+    // 主机离架后由仍在阅读的从机接力；权威进度直接接受为该版本已呈现。
+    // When the primary is away, accept the reading secondary's relayed page as the authoritative presented revision.
+    if (d->cfg.role == 1 && !d->reading_active && !d->receiving && !d->sending)
+        d->left_ready = true;
     d->state_dirty = true;
     return true;
 }
@@ -1380,6 +1535,12 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     if (!d) return;
     out->connected = d->control_connected;
     out->data_connected = d->authenticated;
+    out->peer_id_valid = d->peer_id_valid;
+    out->fast_verified = d->fast_verified;
+    memcpy(out->peer_device_id, d->peer_device_id, sizeof(out->peer_device_id));
+    memcpy(out->catalog, d->catalog, sizeof(out->catalog));
+    out->request_pending = d->request_pending;
+    memcpy(out->host, d->cfg.host, sizeof(out->host));
     out->scanning = d->scan;
     out->synced = control_ready(d);
     out->busy = d->scan || d->sending || d->receiving || d->request_pending ||
@@ -1408,9 +1569,6 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->base_seq = d->base_seq;
     out->calibration_request = d->calibration_request;
     out->peer_reading = d->peer_reading;
-    out->remote_open = d->remote_open;
-    out->game_active = d->game_active;
-    out->game_session = d->game_session;
     out->annotation_valid = d->annotation_valid;
     out->annotation_seq = d->annotation_seq;
     out->annotation_type = d->annotation_type;
@@ -1419,14 +1577,14 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->annotation_end = d->annotation_end;
     memcpy(out->annotation_text, d->annotation_text, sizeof(out->annotation_text));
 }
-static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool reopen) {
+static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool reopen, bool activate) {
     if (!d || !path || !page || page == UINT32_MAX || strlen(path) >= DL_PATH) return false;
     const char* extension = strrchr(path, '.');
     if (!extension || (strcasecmp(extension, ".txt") && strcasecmp(extension, ".epub")))
         return false;
     const char* current = dl_reading_path(d);
     if (current && !strcmp(current, path)) {
-        if (!reopen) return dl_seek(d, page);
+        if (!reopen && !activate) return dl_seek(d, page);
         if (!control_ready(d)) return false;
     }
     if (!control_ready(d)) {
@@ -1448,15 +1606,17 @@ static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool r
     }
     bool same_book = same(d->reading.book, d->local[at].id, 32);
     if (same_book) {
-        if (!reopen) return dl_seek(d, page);
+        if (!reopen && !activate) return dl_seek(d, page);
         if (d->reading.reflow_pending || d->request_pending || d->sending || d->receiving) return false;
-        page = d->reading.spread + 1;
+        if (reopen || activate) page = d->reading.spread + 1;
     }
     if (d->cfg.role == 1) {
         publish(d, same_book ? NULL : d->local[at].id, 0);
         d->reading.spread = (page - 1) & ~1u;
     } else {
-        if (d->request_pending) return false;
+        // 用户从书架换书必须覆盖尚未完成的旧请求；保留旧请求会让新书永远无法打开。
+        // A user shelf switch supersedes an unfinished request; retaining it would make the new book impossible to open.
+        d->request_pending = false;
         memcpy(d->request_book, d->local[at].id, 32);
         d->request_page = page;
         d->request_revision = d->reading.revision;
@@ -1468,55 +1628,38 @@ static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool r
     return true;
 }
 bool dl_open_path(dual_link_t* d, const char* path) {
-    return open_request(d, path, 1, true);
+    return open_request(d, path, 1, true, false);
 }
 bool dl_open_at(dual_link_t* d, const char* path, uint32_t page) {
-    return open_request(d, path, page, false);
+    return open_request(d, path, page, false, false);
 }
-bool dl_open_resume_at(dual_link_t* d, const char* path, uint32_t page) {
-    return open_request(d, path, page, true);
+bool dl_activate_path(dual_link_t* d, const char* path) {
+    return open_request(d, path, 1, false, true);
 }
 bool dl_game_close(dual_link_t* d) {
-    if (!d) return false;
-    if (++d->game_close_request == 0) d->game_close_request = 1;
-    d->game_close_pending = true;
-    d->game_close_sent = 0;
-    d->game_open_pending = false;
-    d->game_pending = d->game_ready = false;
-    d->game_payload_pending = d->game_payload_ready = false;
-    d->game_active = false;
-    return true;
+    if (!d || !d->control_connected) return false;
+    d->game_close_pending = true; return true;
 }
-bool dl_game_close_take(dual_link_t* d, uint32_t* session, uint32_t* request) {
-    if (!d || !session || !request || !d->game_close_ready) return false;
-    *session = d->game_close_ready_session;
-    *request = d->game_close_ready_request;
-    d->game_close_ready = false;
-    return true;
-}
-void dl_game_close_finish(dual_link_t* d, uint32_t request, bool accepted) {
-    if (!d || !request) return;
-    d->game_close_ack_request = request;
-    d->game_close_ack_accepted = accepted;
-    d->game_close_ack_pending = true;
-    if (accepted && d->game_session == d->game_close_ready_session) {
-        d->game_active = false;
-    }
+bool dl_game_close_take(dual_link_t* d) {
+    if (!d || !d->game_close_ready) return false;
+    d->game_close_ready = false; return true;
 }
 bool dl_game_packet(dual_link_t* d, const void* data, size_t bytes) {
-    if (!d || !data || !bytes || bytes > sizeof(d->game_payload) || d->cfg.role != 1 ||
-        !d->game_active || !d->game_session) return false;
+    if (!d || !data || !bytes || bytes > sizeof(d->game_payload) || d->cfg.role != 1 || !d->control_connected ||
+        d->game_payload_pending) return false;
     memcpy(d->game_payload, data, bytes); d->game_payload_n = (uint8_t)bytes; d->game_payload_pending = true;
+    ++d->game_payload_seq;
+    if (!d->game_payload_seq) d->game_payload_seq = 1;
+    d->game_payload_inflight = false;
     return true;
 }
 size_t dl_game_packet_take(dual_link_t* d, void* data, size_t capacity) {
-    if (!d || !data || d->cfg.role != 2 || !d->game_active || !d->game_payload_ready ||
-        d->game_payload_n > capacity) return 0;
+    if (!d || !data || d->cfg.role != 2 || !d->game_payload_ready || d->game_payload_n > capacity) return 0;
     memcpy(data, d->game_payload, d->game_payload_n); d->game_payload_ready = false;
     return d->game_payload_n;
 }
 bool dl_game_input(dual_link_t* d, uint8_t input) {
-    if (!d || d->cfg.role != 2 || !d->game_active || !d->game_session) return false;
+    if (!d || d->cfg.role != 2 || !d->control_connected) return false;
     d->game_input = input; d->game_pending = true;
     return true;
 }
@@ -1526,55 +1669,14 @@ bool dl_game_take(dual_link_t* d, uint8_t* input) {
     return true;
 }
 bool dl_game_open(dual_link_t* d, uint8_t kind) {
-    if (!d) return false;
-    if (!d->game_active || !d->game_session) {
-        random_bytes(&d->game_session, sizeof(d->game_session));
-        if (!d->game_session) d->game_session = 1;
-    }
-    if (++d->game_open_request == 0) d->game_open_request = 1;
-    d->game_kind = kind;
-    d->game_open_kind = kind;
-    d->game_active = true;
-    d->game_open_pending = true;
-    d->game_open_sent = 0;
-    d->game_result_ready = false;
-    d->game_close_pending = false;
-    d->game_pending = d->game_ready = false;
-    d->game_payload_pending = d->game_payload_ready = false;
+    if (!d || !d->control_connected) return false;
+    d->game_open_kind = kind; d->game_open_pending = true;
+    d->game_open_sent = 0; d->game_open_until = d->now + 3000;
     return true;
 }
-bool dl_game_open_pending(const dual_link_t* d) {
-    return d && d->game_open_ready;
-}
-bool dl_game_open_take(dual_link_t* d, uint8_t* kind, uint32_t* session, uint32_t* request) {
-    if (!d || !kind || !session || !request || !d->game_open_ready) return false;
-    *kind = d->game_open_kind;
-    *session = d->game_ready_session;
-    *request = d->game_ready_request;
-    d->game_open_ready = false;
-    return true;
-}
-void dl_game_open_finish(dual_link_t* d, uint32_t request, uint32_t session, bool accepted) {
-    if (!d || !request || !session) return;
-    d->game_ack_request = request;
-    d->game_ack_session = session;
-    d->game_ack_accepted = accepted;
-    d->game_ack_pending = true;
-    if (accepted) {
-        d->game_active = true;
-        d->game_session = session;
-        d->game_kind = d->game_open_kind;
-        d->game_open_pending = false;
-    } else {
-        d->game_active = false;
-        d->game_session = 0;
-    }
-}
-bool dl_game_open_result_take(dual_link_t* d, uint32_t* request, bool* accepted) {
-    if (!d || !request || !accepted || !d->game_result_ready) return false;
-    *request = d->game_result_request;
-    *accepted = d->game_result_accepted;
-    d->game_result_ready = false;
+bool dl_game_open_take(dual_link_t* d, uint8_t* kind) {
+    if (!d || !kind || !d->game_open_ready) return false;
+    *kind = d->game_open_kind; d->game_open_ready = false;
     return true;
 }
 bool dl_turn(dual_link_t* d, int direction) {
@@ -1607,7 +1709,8 @@ bool dl_seek(dual_link_t* d, uint32_t page) {
     // for the full timeout; let a new turn retry after 1.5 seconds.
     if (d && d->request_pending && d->request_started && d->now - d->request_started > 1500)
         d->request_pending = false;
-    if (!d || !page || page == UINT32_MAX || !control_ready(d) || !d->left_ready || !d->peer_reading ||
+    if (!d || !page || page == UINT32_MAX || !control_ready(d) ||
+        (d->peer_reading && !d->left_ready) ||
         !nonzero(d->reading.book) || d->request_pending || (d->reading.total && page > d->reading.total))
         return false;
     if (d->cfg.role == 1) {
@@ -1656,16 +1759,7 @@ void dl_total(dual_link_t* d, uint32_t total) {
     d->reading.total = total;
     if (d->reading.spread >= total) d->reading.spread = (total - 1) & ~1u;
     publish(d, NULL, 0);
-}
-void dl_remote_open_clear(dual_link_t* d) {
-    if (!d || !d->remote_open) return;
-    d->remote_open = false;
-    d->state_dirty = true;
-}
-void dl_remote_open_mark(dual_link_t* d) {
-    if (!d) return;
-    d->remote_open = true;
-    d->state_dirty = true;
+    d->current_progress_dirty = true;
 }
 const char* dl_reading_path(const dual_link_t* d) {
     if (!d) return NULL;
@@ -1676,6 +1770,45 @@ const char* dl_font_path(const dual_link_t* d) {
     if (!d) return NULL;
     int i = find_id(d, d->reading.font);
     return i < 0 ? NULL : d->local[i].path;
+}
+bool dl_book_progress(const dual_link_t* d, const char* path, uint32_t bytes, dl_book_progress_t* out) {
+    if (!d || !path || !out) return false;
+    int local = -1;
+    for (unsigned i = 0; i < DL_BOOKS; ++i)
+        if (d->local[i].bytes == bytes && !strcmp(d->local[i].path, path)) { local = (int)i; break; }
+    if (local < 0) return false;
+    // 主机当前共享书优先使用权威页组；其余条目继续读取主机本地进度。
+    // The primary's current shared book uses its authoritative spread; other rows keep primary-local progress.
+    if (d->cfg.role == 1 && same(d->local[local].id, d->reading.book, 32)) {
+        *out = current_progress(d);
+        return true;
+    }
+    if (d->cfg.role == 1 && d->cfg.progress_get)
+        return d->cfg.progress_get(path, bytes, out, d->cfg.progress_context);
+    for (unsigned i = 0; i < DL_BOOKS; ++i)
+        if (d->progress[i].valid && same(d->progress[i].id, d->local[local].id, 32)) {
+            *out = (dl_book_progress_t){d->progress[i].started, d->progress[i].pct, d->progress[i].recent};
+            return true;
+        }
+    return false;
+}
+uint32_t dl_progress_revision(const dual_link_t* d) {
+    return d ? d->progress_revision : 0;
+}
+bool dl_remote_open_take(dual_link_t* d) {
+    if (!d || !d->remote_open_pending) return false;
+    d->remote_open_pending = false;
+    return true;
+}
+bool dl_remote_open_pending(const dual_link_t* d) {
+    return d && d->remote_open_pending;
+}
+void dl_endpoint(dual_link_t* d, const char* host) {
+    if (!d || d->cfg.role != 1 || !host || !host[0] || strlen(host) >= sizeof(d->cfg.host)) return;
+    struct in_addr addr;
+    if (inet_pton(AF_INET, host, &addr) != 1 || !strcmp(host, d->cfg.host)) return;
+    snprintf(d->cfg.host, sizeof(d->cfg.host), "%s", host);
+    d->endpoint_dirty = true;
 }
 const char* dl_entry(const dual_link_t* d, unsigned index, uint8_t id[32], uint32_t* bytes) {
     if (!d || d->scan || d->retry_at == INT64_MAX || index >= d->count) return NULL;
@@ -1693,15 +1826,17 @@ void dl_rescan(dual_link_t* d) {
         d->dir = NULL;
     }
     d->catalog_valid = false; d->catalog_dirty = true; d->request_pending = false;
+    d->network_used = false; d->fast_verified = false; d->catalog_ready_at = 0;
     for (unsigned i = 0; i < d->count; i++) d->local[i].seen = false;
     d->root_at = d->reused = d->verified_bytes = 0;
     memset(d->font_id, 0, sizeof(d->font_id));
+    memset(d->peer_font_id, 0, sizeof(d->peer_font_id));
     d->font_scanned = false;
     d->scan = true;
     d->retry_at = 0;
 }
 void dl_restore(dual_link_t* d, const dl_reading_t* s) {
-    if (d && s && s->revision && s->spread % 2 == 0 && !s->reflow_pending) {
+    if (d && s && d->cfg.role == 1 && s->revision && s->spread % 2 == 0 && !s->reflow_pending) {
         d->reading = *s;
         if (!valid_px(d->reading.font_px)) d->reading.font_px = DL_FONT_DEFAULT;
         d->reading.reflow_pending = false;
@@ -1744,19 +1879,23 @@ void dl_calibration_clear(dual_link_t* d) {
     if (d) d->calibration_request = false;
 }
 bool dl_annotation(dual_link_t* d, uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text) {
-    if (!d || type > 2 || !text) return false;
-    d->annotation_type = type;
-    d->annotation_chapter = chapter;
-    d->annotation_start = start;
-    d->annotation_end = end;
+    if (!d || type > 2 || !text || d->annotation_count >= ANNOTATION_OUT_MAX) return false;
+    annotation_event_t* event = &d->annotations[(d->annotation_head + d->annotation_count) % ANNOTATION_OUT_MAX];
+    memset(event, 0, sizeof(*event));
+    event->type = type;
+    event->chapter = chapter;
+    event->start = start;
+    event->end = end;
     size_t len = strlen(text);
     if (len > DL_CONTROL_MAX - 19) {
         len = DL_CONTROL_MAX - 19;
         while (len && ((unsigned char)text[len] & 0xc0) == 0x80) --len;
     }
-    memcpy(d->annotation_text, text, len);
-    d->annotation_text[len] = 0;
+    memcpy(event->text, text, len);
+    event->text[len] = 0;
     if (++d->annotation_seq == 0) d->annotation_seq = 1;
+    event->seq = d->annotation_seq;
+    ++d->annotation_count;
     d->annotation_dirty = true;
     return true;
 }

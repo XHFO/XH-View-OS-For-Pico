@@ -155,6 +155,10 @@ static bool ps_dual_enabled(void){return false;}
 static void ps_dual_suspend(void){}
 static void ps_dual_enter(void){}
 static bool ps_dual_event(const ps_event_t *e){(void)e;return false;}
+static bool ps_updates_tick(void){return false;}
+static bool ps_animation_event(const ps_event_t *e){(void)e;return false;}
+static bool dual_resume_visible(void){return false;}
+static EpdRect dual_resume_rect(void){return (EpdRect){0,0,0,0};}
 static bool ps_dual_service(app_ctx_t *ctx,const app_desc_t *app,app_redraw_t *redraw){(void)ctx;(void)app;(void)redraw;return false;}
 static ps_navigation_entry_t test_nav_items[PS_NAV_MAX_VISIBLE];
 static int test_navigation_count=3,test_navigation_enters,test_navigation_events;

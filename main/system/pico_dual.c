@@ -5,6 +5,7 @@
  * 同步不导出TF，不绕过编辑或电源保护。/ Synchronization never exports TF or bypasses edit/power guards.
  */
 #include "pico_dual.h"
+#include "book_progress.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,10 +28,15 @@
 #include "pico_connectivity.h"
 #include "pico_power.h"
 #include "pico_ink.h"
+#include "pico_theme.h"
 #include "read_pico_connectivity.h"
 #ifdef ESP_PLATFORM
+#include "esp_event.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "psa/crypto.h"
+#include "wifi_memory_config.h"
 #endif
 #include "read_pico_sd.h"
 #include "ttf_font.h"
@@ -42,7 +48,26 @@ typedef struct {
     uint8_t role;
     char host[48], code[7];
 } dual_settings_t;
+typedef struct {
+    uint32_t magic;
+    uint8_t role;
+    char host[48], code[7];
+    uint8_t net_mode;      // 0自动，1同一局域网，2主机热点。/ 0 auto, 1 LAN, 2 primary hotspot.
+    uint8_t keep_data;     // 1同步后保持数据通道，0仅保留蓝牙。/ 1 keep data, 0 BLE only.
+} dual_settings_v2_t;
+typedef struct {
+    uint32_t magic;
+    uint8_t role;
+    char host[48], code[7];
+} dual_settings_v1_t;
+typedef struct {
+    uint32_t magic;
+    uint8_t local_id[8], peer_id[8], catalog[32];
+} dual_peer_cache_t;
+enum { DUAL_NET_AUTO, DUAL_NET_LAN, DUAL_NET_HOTSPOT };
 static dual_settings_t settings;
+static uint8_t settings_net_mode = DUAL_NET_AUTO;
+static uint8_t settings_keep_data = 1;
 static dual_link_t* dual_session;
 static dl_status_t status;
 static bool loaded;
@@ -57,12 +82,17 @@ static uint32_t base_applied;
 static bool reading_active = true;
 static bool reading_known;
 static bool local_away;
-static bool open_intent;
 static bool contact_latched;
 static uint32_t annotation_applied;
 static int64_t contact_same_since;
 static bool manual_rotation;
 static int64_t orientation_store_at;
+static uint8_t primary_step;
+static uint8_t primary_net_draft, primary_keep_draft;
+static bool data_finished;
+static int64_t auto_shelf_at;
+static dual_peer_cache_t peer_cache;
+static bool peer_cache_loaded, same_peer;
 static uint8_t orientation_bits(void) {
     return orientation.inverted | (orientation.primary_flip << 1) | (orientation.secondary_flip << 2);
 }
@@ -76,12 +106,17 @@ static void orientation_save(void) {
 static uint32_t applied, presented, stored, content_revision;
 static int64_t last_tick, last_ip, last_work;
 static int pair_sock = -1;
-static bool pair_scanning, pair_found, pair_failed;
+static bool pair_scanning, pair_found, pair_failed, pair_editing;
 static int anim_gray = 16;
 static bool anim_enabled = true;
-static char pair_ip[48], pair_code[7];
+static char pair_ip[48], pair_code[7], pair_ap_ssid[33];
 static int64_t pair_started, pair_last_tx;
+static char auto_ap_ssid[33];
+static int64_t auto_ap_retry_at;
 static bool hotspot_active;
+static char hotspot_ssid[33];
+static bool hotspot_driver, hotspot_started, hotspot_loop_owned;
+static int64_t hotspot_retry_at;
 #ifdef ESP_PLATFORM
 static esp_netif_t* hotspot_netif;
 #endif
@@ -89,9 +124,12 @@ static void hotspot_stop(void);
 static void pair_stop(void);
 static void pair_scan_start(void);
 static void pair_scan_update(void);
+static void edit_code(const char* initial);
+static bool local_address(char out[48]);
 static unsigned library_revision;
 static char primary_ip[48];
 static char draft_host[48];
+static char draft_ap_ssid[33];
 static char draft_local_ip[48], draft_input[16];
 static bool draft_short;
 static uint32_t ble_generation;
@@ -102,9 +140,29 @@ void ps_dual_native_wifi(bool online) { native_wifi = online; }
 static void load(void) {
     if (loaded) return;
     loaded = true;
-    if (!ps_load("dualconfig1", &settings, sizeof(settings)) || settings.magic != 0x44554c31 ||
-        settings.role > 2)
-        memset(&settings, 0, sizeof(settings));
+    dual_settings_v2_t current;
+    memset(&settings, 0, sizeof(settings));
+    settings_net_mode = DUAL_NET_AUTO;
+    settings_keep_data = 1;
+    if (ps_load("dualconfig1", &current, sizeof(current)) && current.magic == 0x44554c31 &&
+        current.role <= 2 && current.net_mode <= DUAL_NET_HOTSPOT &&
+        current.keep_data <= 1) {
+        settings.magic = current.magic;
+        settings.role = current.role;
+        memcpy(settings.host, current.host, sizeof(settings.host));
+        memcpy(settings.code, current.code, sizeof(settings.code));
+        settings_net_mode = current.net_mode;
+        settings_keep_data = current.keep_data;
+    } else {
+        dual_settings_v1_t legacy;
+        if (ps_load("dualconfig1", &legacy, sizeof(legacy)) && legacy.magic == 0x44554c31 &&
+            legacy.role <= 2) {
+            settings.magic = legacy.magic;
+            settings.role = legacy.role;
+            memcpy(settings.host, legacy.host, sizeof(settings.host));
+            memcpy(settings.code, legacy.code, sizeof(settings.code));
+        }
+    }
     settings.host[47] = 0;
     settings.code[6] = 0;
     uint8_t bits;
@@ -126,6 +184,13 @@ static void load(void) {
         base = stored; calibrated = true;
     }
 }
+static bool settings_store(void) {
+    dual_settings_v2_t saved = {.magic = settings.magic, .role = settings.role,
+                                .net_mode = settings_net_mode, .keep_data = settings_keep_data};
+    memcpy(saved.host, settings.host, sizeof(saved.host));
+    memcpy(saved.code, settings.code, sizeof(saved.code));
+    return ps_store("dualconfig1", &saved, sizeof(saved));
+}
 bool ps_dual_enabled(void) {
     load();
     return settings.role != 0;
@@ -134,34 +199,103 @@ int ps_dual_role(void) {
     load();
     return settings.role;
 }
-bool ps_dual_holds_awake(void) {
-    return ps_dual_enabled() && dual_session &&
-        (status.connected || status.data_connected || status.scanning || status.busy);
+bool ps_dual_connected(void) {
+    dl_status_t current;
+    ps_dual_status(&current);
+    return ps_dual_enabled() && current.connected;
 }
-static bool hotspot_start(void) {
+bool ps_dual_synced(void) {
+    dl_status_t current;
+    ps_dual_status(&current);
+    return ps_dual_enabled() && current.connected && current.synced;
+}
+bool ps_dual_secondary_shelf(void) {
+    return ps_dual_enabled() && ps_dual_role() == 2 && ps_dual_synced();
+}
+bool ps_dual_has_reading(void) {
+    return ps_dual_enabled() && ps_dual_synced() && dual_session &&
+        dl_reading_path(dual_session) && dl_font_path(dual_session);
+}
+bool ps_dual_book_progress(const char* path, uint32_t bytes, bool* started, uint8_t* pct, uint32_t* recent) {
+    dl_book_progress_t progress;
+    if (!ps_dual_synced() || !dual_session || !dl_book_progress(dual_session, path, bytes, &progress)) return false;
+    if (started) *started = progress.started;
+    if (pct) *pct = progress.pct;
+    if (recent) *recent = progress.recent;
+    return true;
+}
+uint32_t ps_dual_progress_revision(void) {
+    return dual_session ? dl_progress_revision(dual_session) : 0;
+}
+bool ps_dual_holds_awake(void) {
+    return ps_dual_enabled() &&
+        (hotspot_active || (dual_session &&
+        (status.connected || status.data_connected || status.scanning || status.busy)));
+}
+static void direct_password(const char* code, const char* ssid, char out[33]) {
+    char source[80];
+    uint8_t digest[32];
+    snprintf(source, sizeof(source), "XH-DUAL-AP-2|%s|%s", code ? code : "", ssid ? ssid : "");
+#ifdef ESP_PLATFORM
+    size_t written = 0;
+    if (psa_crypto_init() != PSA_SUCCESS ||
+        psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t*)source, strlen(source),
+                         digest, sizeof(digest), &written) != PSA_SUCCESS ||
+        written != sizeof(digest))
+        memset(digest, 0, sizeof(digest));
+#else
+    uint32_t h = 2166136261u;
+    for (const unsigned char* p = (const unsigned char*)source; *p; ++p) h = (h ^ *p) * 16777619u;
+    for (unsigned i = 0; i < sizeof(digest); ++i) { h = h * 1664525u + 1013904223u; digest[i] = (uint8_t)(h >> 24); }
+#endif
+    for (unsigned i = 0; i < 16; ++i) snprintf(out + i * 2, 3, "%02x", digest[i]);
+    out[32] = 0;
+}
+static bool hotspot_start(const char* code) {
 #ifdef ESP_PLATFORM
     if (hotspot_active) return true;
-    if (read_pico_connectivity_quiesce(2500) != ESP_OK) return false;
-    esp_wifi_stop();
+    if (read_pico_connectivity_quiesce(5000) != ESP_OK) return false;
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+    err = esp_event_loop_create_default();
+    if (err == ESP_OK) hotspot_loop_owned = true;
+    else if (err != ESP_ERR_INVALID_STATE) return false;
     hotspot_netif = esp_netif_create_default_wifi_ap();
-    if (!hotspot_netif) { (void)read_pico_connectivity_resume(); return false; }
+    if (!hotspot_netif) {
+        if (hotspot_loop_owned) { esp_event_loop_delete_default(); hotspot_loop_owned = false; }
+        (void)read_pico_connectivity_resume(); return false;
+    }
+    wifi_init_config_t init = read_pico_wifi_init_config();
+    err = esp_wifi_init(&init);
+    if (err != ESP_OK) goto fail;
+    hotspot_driver = true;
+    uint8_t mac[6];
+    err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    if (err != ESP_OK) goto fail;
+    snprintf(hotspot_ssid, sizeof(hotspot_ssid), "PicoDual-%02X%02X", mac[4], mac[5]);
     wifi_config_t ap = {0};
-    snprintf((char*)ap.ap.ssid, sizeof(ap.ap.ssid), "PicoDual");
-    snprintf((char*)ap.ap.password, sizeof(ap.ap.password), "readpico");
-    ap.ap.ssid_len = (uint8_t)strlen((char*)ap.ap.ssid);
+    size_t ssid_len = strlen(hotspot_ssid);
+    if (ssid_len > sizeof(ap.ap.ssid)) goto fail;
+    memcpy(ap.ap.ssid, hotspot_ssid, ssid_len);
+    direct_password(code, hotspot_ssid, (char*)ap.ap.password);
+    ap.ap.ssid_len = (uint8_t)ssid_len;
     ap.ap.channel = 1;
     ap.ap.max_connection = 2;
     ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
+    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (!err) err = esp_wifi_set_mode(WIFI_MODE_AP);
     if (!err) err = esp_wifi_set_config(WIFI_IF_AP, &ap);
     if (!err) err = esp_wifi_start();
-    if (err != ESP_OK) {
-        esp_netif_destroy(hotspot_netif); hotspot_netif = NULL;
-        (void)read_pico_connectivity_resume();
-        return false;
-    }
+    if (err != ESP_OK) goto fail;
+    hotspot_started = true;
     hotspot_active = true;
     return true;
+fail:
+    if (hotspot_driver) { (void)esp_wifi_deinit(); hotspot_driver = false; }
+    if (hotspot_netif) { esp_netif_destroy_default_wifi(hotspot_netif); hotspot_netif = NULL; }
+    if (hotspot_loop_owned) { esp_event_loop_delete_default(); hotspot_loop_owned = false; }
+    (void)read_pico_connectivity_resume();
+    return false;
 #else
     return false;
 #endif
@@ -169,9 +303,13 @@ static bool hotspot_start(void) {
 static void hotspot_stop(void) {
 #ifdef ESP_PLATFORM
     if (!hotspot_active) return;
-    esp_wifi_stop();
-    if (hotspot_netif) { esp_netif_destroy(hotspot_netif); hotspot_netif = NULL; }
+    if (hotspot_started) (void)esp_wifi_stop();
+    if (hotspot_driver) (void)esp_wifi_deinit();
+    if (hotspot_netif) { esp_netif_destroy_default_wifi(hotspot_netif); hotspot_netif = NULL; }
+    if (hotspot_loop_owned) { esp_event_loop_delete_default(); hotspot_loop_owned = false; }
+    hotspot_started = hotspot_driver = false;
     hotspot_active = false;
+    hotspot_ssid[0] = 0;
     (void)read_pico_connectivity_resume();
 #else
     hotspot_active = false;
@@ -186,14 +324,19 @@ void ps_dual_suspend(void) {
         dual_session = NULL;
     }
     memset(&status, 0, sizeof(status));
-    open_intent = false;
     applied = presented = stored = content_revision = 0;
+    reading_known = false;
+    reading_active = true;
+    local_away = false;
 }
-bool ps_dual_configure(int role, const char* host, const char* code) {
+static bool configure_full(int role, const char* host, const char* code, uint8_t net_mode, uint8_t keep_data) {
     load();
     if (role < 0 || role > 2 || ps_power_pending() || ps_storage_busy() || ps_usb_held())
         return false;
-    dual_settings_t next = { .magic = 0x44554c31, .role = (uint8_t)role };
+    if (net_mode > DUAL_NET_HOTSPOT || keep_data > 1) return false;
+    dual_settings_v2_t next = { .magic = 0x44554c31, .role = (uint8_t)role,
+                                .net_mode = role == 1 ? net_mode : DUAL_NET_AUTO,
+                                .keep_data = role == 1 ? keep_data : 1 };
     if (role) {
         if (!code || strlen(code) != 6) return false;
         for (int i = 0; i < 6; i++)
@@ -202,27 +345,87 @@ bool ps_dual_configure(int role, const char* host, const char* code) {
         snprintf(next.host, sizeof(next.host), "%s", host ? host : "");
         snprintf(next.code, sizeof(next.code), "%s", code);
     }
-    if (role == 2 && host && !strncmp(host, "192.168.4.1", 11))
-        (void)read_pico_connectivity_connect("PicoDual", "readpico");
     if (!ps_store("dualconfig1", &next, sizeof(next))) {
         ps_toast("设置保存失败，请检查 TF 卡");
         return false;
     }
+    pair_stop();
+    pair_editing = false;
+    primary_step = 0;
     ps_dual_suspend();
-    settings = next;
-    local_away = false;
-    open_intent = false;
-    reading_known = false;
-    reading_active = false;
+    pico_dual_ble_request_restart();
+    settings = (dual_settings_t){.magic = next.magic, .role = next.role};
+    memcpy(settings.host, next.host, sizeof(settings.host));
+    memcpy(settings.code, next.code, sizeof(settings.code));
+    settings_net_mode = next.net_mode;
+    settings_keep_data = next.keep_data;
+    data_finished = false;
+    primary_ip[0] = 0;
+    last_ip = 0;
+    auto_shelf_at = 0;
+    auto_ap_ssid[0] = 0;
+    auto_ap_retry_at = 0;
     ps_dual_rotation_changed();
     ps_dirty();
     return true;
+}
+bool ps_dual_configure(int role, const char* host, const char* code) {
+    return configure_full(role, host, code, DUAL_NET_AUTO, 1);
+}
+static bool dual_progress_get(const char* path, uint32_t bytes, dl_book_progress_t* out, void* context) {
+    (void)context;
+    book_progress_t progress;
+    if (!out || !book_progress_load(path, bytes, &progress)) return false;
+    *out = (dl_book_progress_t){.started = true, .pct = progress.pct, .recent = progress.last_open_s};
+    return true;
+}
+static void device_id_get(uint8_t out[8]) {
+    memset(out, 0, 8);
+#ifdef ESP_PLATFORM
+    (void)esp_read_mac(out, ESP_MAC_WIFI_STA);
+#else
+    unsigned pid = (unsigned)getpid();
+    out[0] = 0x58; out[1] = 0x50; out[2] = (uint8_t)(pid >> 24);
+    out[3] = (uint8_t)(pid >> 16); out[4] = (uint8_t)(pid >> 8); out[5] = (uint8_t)pid;
+#endif
+    out[6] = 0x44; out[7] = 0x31;
+}
+static bool peer_cache_update(const dl_status_t* state) {
+    if (!state || !state->peer_id_valid) {
+        same_peer = false;
+        return false;
+    }
+    if (!peer_cache_loaded) {
+        peer_cache_loaded = true;
+        if (!ps_load("dualpeer1", &peer_cache, sizeof(peer_cache)) ||
+            peer_cache.magic != 0x50445531u) {
+            memset(&peer_cache, 0, sizeof(peer_cache));
+            peer_cache.magic = 0x50445531u;
+        }
+    }
+    uint8_t local[8];
+    device_id_get(local);
+    same_peer = !memcmp(peer_cache.local_id, local, 8) &&
+        !memcmp(peer_cache.peer_id, state->peer_device_id, 8);
+    if (!state->synced) return same_peer;
+    bool changed = memcmp(peer_cache.local_id, local, 8) ||
+        memcmp(peer_cache.peer_id, state->peer_device_id, 8) ||
+        memcmp(peer_cache.catalog, state->catalog, 32);
+    if (changed) {
+        memcpy(peer_cache.local_id, local, 8);
+        memcpy(peer_cache.peer_id, state->peer_device_id, 8);
+        memcpy(peer_cache.catalog, state->catalog, 32);
+        (void)ps_store("dualpeer1", &peer_cache, sizeof(peer_cache));
+    }
+    return same_peer;
 }
 static bool start(void) {
     read_pico_sd_info_t sd = { 0 };
     read_pico_sd_get_info(&sd);
     if (!sd.mounted || !sd.present) return false;
     dl_config_t cfg = { .role = settings.role, .port = DL_PORT };
+    device_id_get(cfg.device_id);
+    cfg.progress_get = dual_progress_get;
     snprintf(cfg.host, sizeof(cfg.host), "%s", settings.host);
     snprintf(cfg.code, sizeof(cfg.code), "%s", settings.code);
     book_store_root_t roots[2];
@@ -235,16 +438,9 @@ static bool start(void) {
         }
     if (!cfg.root_count) return false;
     snprintf(cfg.roots[cfg.root_count++], DL_PATH, "/sdcard");
-    if (settings.role == 1) {
-        const char* font = ttf_font_path();
-        if (!font || ttf_font_path_is_builtin(font)) font = TTF_FONT_DEFAULT_SD;
-        struct stat st;
-        if (stat(font, &st) || !S_ISREG(st.st_mode)) {
-            status.error = "primary font unavailable";
-            return false;
-        }
-        snprintf(cfg.font, sizeof(cfg.font), "%s", font);
-    }
+    const char* font = ttf_font_path();
+    if (!font || ttf_font_path_is_builtin(font)) font = TTF_FONT_DEFAULT_SD;
+    snprintf(cfg.font, sizeof(cfg.font), "%s", font);
     dual_session = dl_create(&cfg);
     if (!dual_session) {
         status.error = "allocation or configuration failed";
@@ -253,15 +449,17 @@ static bool start(void) {
     dl_orientation_restore(dual_session, &orientation);
     if (!guard_enabled) (void)dl_guard(dual_session, false);
     dl_reading_t saved = { 0 };
-    // 两端都保存最后共享位置；主机离线时从机仍可先恢复，重连后由主机快照收敛。
-    // Both roles persist the last shared position; the primary snapshot wins after reconnect.
-    bool restored = ps_load("dualreading2", &saved, sizeof(saved));
-    if (!restored) {
-        memset(&saved, 0, sizeof(saved));
-        restored = ps_load("dualreading1", &saved, offsetof(dl_reading_t, font_px));
-        saved.font_px = DL_FONT_DEFAULT;
+    if (settings.role == 1) {
+        // 旧记录是新结构的76字节前缀；保留原书和页码，并使用原固定48字号。
+        // The old record is the 76-byte prefix; retain its book/spread with the former fixed size of 48.
+        bool restored = ps_load("dualreading2", &saved, sizeof(saved));
+        if (!restored) {
+            memset(&saved, 0, sizeof(saved));
+            restored = ps_load("dualreading1", &saved, offsetof(dl_reading_t, font_px));
+            saved.font_px = DL_FONT_DEFAULT;
+        }
+        if (restored) dl_restore(dual_session, &saved);
     }
-    if (restored) dl_restore(dual_session, &saved);
     library_revision = book_store_revision();
     return true;
 }
@@ -392,33 +590,19 @@ int ps_dual_game_recv(void) {
     return dual_session && dl_game_take(dual_session, &input) ? (int)input : -1;
 }
 bool ps_dual_game_open(uint8_t kind) {
-    if (!ps_dual_enabled()) return false;
-    if (!dual_session && !start()) return false;
-    return dl_game_open(dual_session, kind);
+    return dual_session && dl_game_open(dual_session, kind);
 }
-bool ps_dual_game_open_pending(void) {
-    return dual_session && dl_game_open_pending(dual_session);
-}
-bool ps_dual_game_open_take(uint8_t* kind, uint32_t* session, uint32_t* request) {
-    return dual_session && dl_game_open_take(dual_session, kind, session, request);
-}
-void ps_dual_game_open_finish(uint32_t request, uint32_t session, bool accepted) {
-    if (dual_session) dl_game_open_finish(dual_session, request, session, accepted);
-}
-bool ps_dual_game_open_result_take(uint32_t* request, bool* accepted) {
-    return dual_session && dl_game_open_result_take(dual_session, request, accepted);
+bool ps_dual_game_open_take(uint8_t* kind) {
+    return dual_session && dl_game_open_take(dual_session, kind);
 }
 bool ps_dual_game_packet_send(const void* data,size_t bytes) {
     return dual_session && dl_game_packet(dual_session, data, bytes);
 }
 bool ps_dual_game_close(void) {
-    return ps_dual_enabled() && dual_session && dl_game_close(dual_session);
+    return dual_session && dl_game_close(dual_session);
 }
-bool ps_dual_game_close_take(uint32_t* session, uint32_t* request) {
-    return dual_session && dl_game_close_take(dual_session, session, request);
-}
-void ps_dual_game_close_finish(uint32_t request, bool accepted) {
-    if (dual_session) dl_game_close_finish(dual_session, request, accepted);
+bool ps_dual_game_close_take(void) {
+    return dual_session && dl_game_close_take(dual_session);
 }
 size_t ps_dual_game_packet_recv(void* data,size_t capacity) {
     return dual_session ? dl_game_packet_take(dual_session, data, capacity) : 0;
@@ -427,6 +611,7 @@ bool ps_dual_peer_reading(void) {
     return status.peer_reading;
 }
 void ps_dual_set_local_away(bool away) {
+    if (away && dual_session) (void)dl_remote_open_take(dual_session);
     local_away = away;
 }
 bool ps_dual_contact_likely(void) {
@@ -507,12 +692,8 @@ bool ps_dual_orient(int rotation) {
     orientation_update();
     return true;
 }
-static bool open_request(const char* path, uint32_t page, bool resume) {
-    bool opened = dual_session &&
-        (resume ? dl_open_resume_at(dual_session, path, page || 1)
-                : page ? dl_open_at(dual_session, path, page)
-                       : dl_open_path(dual_session, path));
-    if (!opened) {
+static bool open_request(const char* path, uint32_t page) {
+    if (!dual_session || !(page ? dl_open_at(dual_session, path, page) : dl_open_path(dual_session, path))) {
         ps_toast("请等待双机连接和书库同步完成");
         return false;
     }
@@ -526,19 +707,18 @@ static bool open_request(const char* path, uint32_t page, bool resume) {
 }
 bool ps_dual_open(const char* path) {
     if (!ps_dual_enabled()) return true;
-    bool ok=open_request(path, 0, false);
-    if (ok) { local_away=false; open_intent=true; dl_remote_open_mark(dual_session); }
-    return ok;
+    local_away = false;
+    return open_request(path, 0);
 }
 bool ps_dual_open_at(const char* path, uint32_t page) {
-    bool ok=ps_dual_enabled() && page && open_request(path, page, false);
-    if (ok) { local_away=false; open_intent=true; dl_remote_open_mark(dual_session); }
-    return ok;
+    if (!ps_dual_enabled() || !page) return false;
+    local_away = false;
+    return open_request(path, page);
 }
-bool ps_dual_open_resume(const char* path, uint32_t page) {
-    bool ok=ps_dual_enabled() && path && page && open_request(path, page, true);
-    if (ok) { local_away=false; open_intent=true; dl_remote_open_mark(dual_session); }
-    return ok;
+bool ps_dual_activate(const char* path) {
+    if (!ps_dual_enabled() || !dual_session || !path) return false;
+    local_away = false;
+    return dl_activate_path(dual_session, path);
 }
 bool ps_dual_turn(int direction) {
     if (!ps_dual_enabled()) return false;
@@ -570,8 +750,16 @@ bool ps_dual_resume(void) {
     return true;
 }
 void ps_dual_presented(uint32_t page) {
-    if (!dual_session || !applied) return;
+    if (!dual_session) return;
     dl_status_t current; dl_status(dual_session, &current);
+    // 主机单读时 revision 由本地翻页直接生成，不经过远端 apply；成功推屏后仍需释放 left_ready。
+    // A primary solo turn creates the revision locally without remote apply; successful paint still releases left_ready.
+    if (settings.role == 1 && !current.peer_reading && page == current.reading.spread + 1 &&
+        !current.reading.reflow_pending && dl_presented(dual_session, current.reading.revision)) {
+        applied = presented = current.reading.revision;
+        return;
+    }
+    if (!applied) return;
     if (current.reading.reflow_pending || current.reading.revision != applied || page != current.reading.spread + (settings.role == 2 ? 2u : 1u)) return;
     if (settings.role == 1) (void)dl_presented(dual_session, applied);
     presented = applied;
@@ -594,7 +782,10 @@ static bool idle_reading_route(void) {
     }
 }
 bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw) {
-    if (!ps_dual_enabled()) return false;
+    if (!ps_dual_enabled()) {
+        if (pair_scanning) pair_scan_update();
+        return false;
+    }
     bool safe = !ps_storage_busy() && !ps_usb_busy() && !ps_usb_held() && !ps_content_held() &&
                 !ps_transfer_prepared() && !ps_power_pending();
     if (!safe) {
@@ -605,7 +796,18 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     last_tick = ctx->now_ms;
     read_pico_connectivity_status_t* net = NULL;
     // 日常联网快照只用于设置页；读书不复制大扫描数组。/ Full Wi-Fi snapshots are only needed by setup, not each reading tick.
-    bool online = hotspot_active || read_pico_connectivity_online();
+    bool station_online = read_pico_connectivity_online();
+    bool online = hotspot_active || station_online;
+    bool want_hotspot = settings.role == 1 &&
+        (settings_net_mode == DUAL_NET_HOTSPOT ||
+         (settings_net_mode == DUAL_NET_AUTO && !station_online));
+    if (want_hotspot && !hotspot_active && !data_finished && ps_route() == PS_DUAL &&
+        ps_now() >= hotspot_retry_at) {
+        if (hotspot_start(settings.code)) {
+            online = true;
+            ps_dirty();
+        } else hotspot_retry_at = ps_now() + 10000;
+    }
 #ifdef PICO_NATIVE_PREVIEW
     online = native_wifi;
 #endif
@@ -629,38 +831,40 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     bool game_pad = ps_dual_game_role() == 2;
     if (!game_pad && ((ctx->touch && ctx->touch->touched) || ps_reader_editor_ink_active() || ps_ink_pending()))
         return false;
-    if (!dual_session && !start()) return false;
-    dl_status_t before = status;
     esp_err_t ble_result = pico_dual_ble_configure(settings.role, settings.code);
     pico_dual_ble_status_t ble;
     pico_dual_ble_status(&ble);
+    // 发现通道先于书库会话启动，空卡或字体待补时仍可找到主机并手动配置。
+    // Bring discovery up before the library session so an empty card or missing font cannot hide the primary.
+    pair_scan_update();
     if (ble_generation != ble.generation) {
-        dl_control_connected(dual_session, false);
+        if (dual_session) dl_control_connected(dual_session, false);
         ble_generation = ble.generation;
         applied = 0;
     }
+    if (!dual_session && !start()) return false;
+    dl_status_t before = status;
     if (!ble.connected) applied = 0;
     dl_control_connected(dual_session, ble.connected);
-    dl_tick(dual_session, ctx->now_ms, online);
+    bool data_available = !data_finished || settings_keep_data;
+    dl_tick(dual_session, ctx->now_ms, online && data_available);
     (void)dl_face(dual_session, contact_face());
     bool active = app == &app_book && app_book_dual_engaged();
     if (active && (!reading_known || !reading_active)) {
         reading_known = true;
         reading_active = true;
         local_away = false;
-        open_intent = false;
-        dl_remote_open_clear(dual_session);
         (void)dl_reading_active(dual_session, true);
         ps_dirty();
     } else if (!active && reading_known && reading_active) {
         reading_active = false;
         local_away = true;
+        (void)dl_remote_open_take(dual_session);
         app_book_dual_pause();
         (void)dl_reading_active(dual_session, false);
         ps_dirty();
     }
     last_work = ctx->now_ms;
-    pair_scan_update();
     uint8_t packet[DL_CONTROL_MAX];
     for (unsigned i = 0; i < 4; ++i) {
         size_t n = pico_dual_ble_receive(packet, sizeof(packet));
@@ -672,6 +876,41 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         if (n) (void)pico_dual_ble_send(packet, n);
     }
     dl_status(dual_session, &status);
+    (void)peer_cache_update(&status);
+    if (settings.role == 2 && status.host[0] && strcmp(settings.host, status.host)) {
+        snprintf(settings.host, sizeof(settings.host), "%s", status.host);
+        if (!settings_store()) ps_toast("主机地址更新保存失败");
+    }
+    bool transfer_idle = status.synced && !status.scanning && !status.receiving &&
+        !status.sending && !status.request_pending;
+    if (!data_finished && transfer_idle) {
+        data_finished = true;
+        auto_ap_ssid[0] = 0;
+        if (!settings_keep_data) {
+            if (settings.role == 1) {
+                hotspot_stop();
+                pico_dual_ble_set_pairing_info("", "");
+            }
+            primary_ip[0] = 0;
+            ps_toast(settings_net_mode == DUAL_NET_HOTSPOT
+                         ? "文件同步完成，主机热点已关闭，仅保留蓝牙"
+                         : "文件同步完成，数据通道已关闭，仅保留蓝牙");
+        }
+        if (ps_route() == PS_DUAL && !primary_step && !pair_editing && ps_background_io_allowed())
+            auto_shelf_at = ctx->now_ms + 1200;
+        ps_dirty();
+    }
+    if (auto_shelf_at && ctx->now_ms >= auto_shelf_at &&
+        ps_route() == PS_DUAL && !primary_step && !pair_editing) {
+        auto_shelf_at = 0;
+        ps_navigate(PS_SHELF);
+    }
+    bool explicit_remote_open = dl_remote_open_pending(dual_session) &&
+        (ps_background_io_blockers() & ~512u) == 0;
+    if (explicit_remote_open) {
+        (void)dl_remote_open_take(dual_session);
+        local_away = false;
+    }
     if (settings.role == 1 && status.calibration_request) {
         dl_calibration_clear(dual_session);
         (void)ps_dual_calibrate();
@@ -719,25 +958,32 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         (before.connected != status.connected || before.data_connected != status.data_connected || before.synced != status.synced ||
          before.scanning != status.scanning || before.books != status.books ||
          before.error != status.error || before.expected != status.expected ||
+         before.verified_bytes / 1048576 != status.verified_bytes / 1048576 ||
+         before.received / 1048576 != status.received / 1048576 ||
          (status.expected && (uint64_t)before.received * 20 / status.expected !=
                                  (uint64_t)status.received * 20 / status.expected)))
         ps_dirty();
-    if (!status.reading.reflow_pending && status.reading.revision != stored && dl_reading_path(dual_session)) {
+    if (settings.role == 1 && !status.reading.reflow_pending && status.reading.revision != stored && dl_reading_path(dual_session)) {
         if (ps_store("dualreading2", &status.reading, sizeof(status.reading)))
             stored = status.reading.revision;
     }
     const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
-    bool role_may_apply = settings.role == 1 || status.left_ready;
-    bool explicit_open = open_intent || status.remote_open;
-    if (ui_idle && status.connected && status.synced && role_may_apply && (!local_away || explicit_open) &&
+    app_book_dual_status_t book_state = {0};
+    if (app == &app_book) app_book_dual_status(&book_state);
+    bool local_solo = app == &app_book && book_state.solo && !status.peer_reading;
+    bool automatic_route = app == &app_book ||
+        (app->product_shell && idle_reading_route() && ps_route() != PS_DUAL);
+    bool explicit_idle = explicit_remote_open;
+    if ((ui_idle || explicit_idle) && !local_solo && status.connected && status.synced && !local_away &&
+        (settings.role == 1 || status.left_ready) &&
         path && font && status.reading.revision != applied &&
-        (app == &app_book || (app->product_shell && idle_reading_route()))) {
+        (explicit_remote_open || automatic_route)) {
+        if (app != &app_book && !ps_games_prepare_storage()) return false;
         if (app_book_dual_apply(path, font, status.reading.spread + (settings.role == 2 ? 2 : 1),
                 status.reading.font_px, status.reading.reflow_pending, status.reading.revision)) {
             applied = status.reading.revision;
-            local_away = false;
             ps_power_activity(ctx->now_ms);
-            if (app != &app_book) ps_legacy(&app_book);
+            if (app != &app_book) ps_open_legacy(ctx, &app_book);
         }
     }
     // 只响应书库变化；按时钟重扫会使大字库刚同步完就再次失去就绪状态。
@@ -753,6 +999,132 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
 void ps_dual_enter(void) {
     load();
 }
+static const char* dual_net_label(void) {
+    if (settings_net_mode == DUAL_NET_LAN) return "同一局域网";
+    if (settings_net_mode == DUAL_NET_HOTSPOT) return "主机热点";
+    return "自动选择";
+}
+static const char* dual_sync_title(void) {
+    if (status.synced && status.fast_verified) return "书库已同步 · 快速校验";
+    if (status.synced) return "书库已同步";
+    if (status.error) return "同步遇到问题";
+    if (status.scanning) return "正在校验本机文件";
+    if (!status.connected) return "等待另一台设备";
+    if (!status.peer_listed) return "正在读取对端清单";
+    return "正在补齐双方缺少的文件";
+}
+static const char* dual_sync_error(void) {
+    const char* error = status.error;
+    if (!error) return "";
+    if (strstr(error, "pairing code") || strstr(error, "protocol")) return "配对码不一致，或两台固件版本不同";
+    if (strstr(error, "primary unavailable") || strstr(error, "peer timeout")) return "主机数据通道暂不可达，请检查 Wi-Fi / 热点";
+    if (strstr(error, "font") || strstr(error, "book directory") || strstr(error, "book changed")) return "TF 卡文件不可读或校验中断";
+    if (strstr(error, "library limit")) return "文件数量超过 512 项上限";
+    if (strstr(error, "listen")) return "主机无法建立数据通道，请重试";
+    return "同步失败，请检查网络、TF 卡和配对码";
+}
+static unsigned dual_transfer_percent(void) {
+    if (status.synced) return 100;
+    if (!status.expected || status.received > status.expected) return 0;
+    return (unsigned)((uint64_t)status.received * 100 / status.expected);
+}
+static EpdRect dual_status_rect(void) {
+    ps_view_t v=ps_view();int w=v.w-40;
+    return v.landscape?(EpdRect){20,154,(w-12)/2,150}:
+        (EpdRect){20,154,w,230};
+}
+static EpdRect dual_controls_rect(void) {
+    ps_view_t v=ps_view();int w=v.w-40;
+    return v.landscape?(EpdRect){32+(w-12)/2,154,(w-12)/2,150}:
+        (EpdRect){20,394,w,158};
+}
+static EpdRect dual_control_rect(int row,int column) {
+    ps_view_t v=ps_view();EpdRect card=dual_controls_rect();
+    if(row==2)return (EpdRect){card.x+16,card.y+(v.landscape?106:118),card.width-32,34};
+    int gap=8,half=(card.width-40)/2;
+    return (EpdRect){card.x+16+column*(half+gap),card.y+(v.landscape?(row?68:30):(row?78:34)),half,34};
+}
+static int dual_actions_y(void) {
+    return ps_view().landscape?312:562;
+}
+static void dual_status_render(uint8_t *fb) {
+    ps_view_t v=ps_view();EpdRect r=dual_status_rect();char text[128];
+    ps_surface(fb,r.x,r.y,r.width,r.height,false);
+    const char *role=settings.role==1?"主机":"从机";
+    int role_w=settings.role==1?52:52;
+    ps_box(fb,r.x+16,r.y+14,role_w,26,8,settings.role==1?1:13,true);
+    ps_center(fb,r.x+16+role_w/2,r.y+19,10,role,
+              settings.role==1?PS_THEME_ON_SELECTED:PS_THEME_INK);
+    const char *state=status.connected?(status.synced?"已同步":"已连接"):"等待连接";
+    ps_text(fb,r.x+r.width-88,r.y+18,10,state,status.connected?3:5);
+    ps_text(fb,r.x+16,r.y+52,14,dual_sync_title(),status.synced?3:status.error?5:1);
+    if(status.error && !status.synced)ps_wrap(fb,r.x+16,r.y+75,r.width-32,9,1,dual_sync_error(),5);
+    else if(status.synced){
+        if(status.fast_verified)
+            snprintf(text,sizeof(text),"%s · 快速校验 · %u 项",
+                     same_peer?"上次设备与目录一致":"目录摘要一致",status.books);
+        else
+            snprintf(text,sizeof(text),"本机 %u 项 · 对端 %u 项 · 补入 %u 项",
+                     status.books,status.peer_books,status.imported);
+        ps_wrap(fb,r.x+16,r.y+75,r.width-32,9,1,text,4);
+    }else if(status.scanning){
+        snprintf(text,sizeof(text),"已读取 %u KB · 已确认 %u 项",
+                 (unsigned)(status.verified_bytes/1024),status.books);
+        ps_wrap(fb,r.x+16,r.y+75,r.width-32,9,1,text,4);
+    }else if(status.expected){
+        snprintf(text,sizeof(text),"已接收 %u / %u KB · 完成后列表一致",
+                 (unsigned)(status.received/1024),(unsigned)status.expected);
+        ps_wrap(fb,r.x+16,r.y+75,r.width-32,9,1,text,4);
+    }else{
+        snprintf(text,sizeof(text),"本机 %u 项 · 对端 %u 项",status.books,status.peer_books);
+        ps_text(fb,r.x+16,r.y+75,9,text,4);
+    }
+    unsigned percent=dual_transfer_percent();
+    int bar_y=r.y+(v.landscape?96:100);
+    ps_box(fb,r.x+16,bar_y,r.width-32,10,5,12,false);
+    if(percent)ps_box(fb,r.x+18,bar_y+2,(r.width-36)*percent/100,6,3,1,true);
+    if(status.synced)snprintf(text,sizeof(text),"100%% · 已完成");
+    else if(status.expected)snprintf(text,sizeof(text),"%u%% · 正在补齐文件",percent);
+    else snprintf(text,sizeof(text),"%s",status.scanning?"校验中":"等待同步");
+    ps_text(fb,r.x+16,bar_y+16,9,text,status.synced?3:5);
+    snprintf(text,sizeof(text),"%s",settings.role==1?(primary_ip[0]?primary_ip:"等待 Wi-Fi"):
+             (settings.host[0]?settings.host:"等待主机地址"));
+    if(v.landscape){
+        ps_text(fb,r.x+16,r.y+112,9,"地址",5);ps_text_fixed(fb,r.x+58,r.y+112,9,text,1);
+        ps_text(fb,r.x+16,r.y+132,9,"配对码",5);ps_text_fixed(fb,r.x+58,r.y+132,9,settings.code,1);
+    }else{
+        ps_text(fb,r.x+16,r.y+136,9,"地址",5);ps_text_fixed(fb,r.x+58,r.y+136,10,text,1);
+        ps_text(fb,r.x+16,r.y+158,9,"配对码",5);ps_text_fixed(fb,r.x+58,r.y+158,10,settings.code,1);
+        snprintf(text,sizeof(text),"网络：%s",dual_net_label());
+        ps_text(fb,r.x+16,r.y+182,9,text,4);
+        const char *data_state=data_finished&&!settings_keep_data?"仅蓝牙":
+            status.data_connected?"数据已连接":hotspot_active?"热点已开启":"数据等待";
+        snprintf(text,sizeof(text),"数据：%s · 蓝牙：%s",data_state,
+                 status.connected?"蓝牙已连接":"蓝牙等待");
+        ps_wrap(fb,r.x+16,r.y+202,r.width-32,9,1,text,status.connected?3:5);
+    }
+}
+static void dual_controls_render(uint8_t *fb) {
+    EpdRect r=dual_controls_rect();
+    ps_surface(fb,r.x,r.y,r.width,r.height,false);
+    ps_text(fb,r.x+16,r.y+10,13,"显示与控制",1);
+    bool primary_flip=orientation.primary_flip,secondary_flip=orientation.secondary_flip;
+    bool guard=ps_touch_guard_enabled(),locked=ps_dual_rotation_locked(),calibrated=ps_dual_calibrated();
+    char label[48];
+    EpdRect a=dual_control_rect(0,0),b=dual_control_rect(0,1);
+    snprintf(label,sizeof(label),"主机翻转：%s",primary_flip?"开":"关");
+    ps_button(fb,a.x,a.y,a.width,a.height,label,primary_flip);
+    snprintf(label,sizeof(label),"从机翻转：%s",secondary_flip?"开":"关");
+    ps_button(fb,b.x,b.y,b.width,b.height,label,secondary_flip);
+    a=dual_control_rect(1,0);b=dual_control_rect(1,1);
+    snprintf(label,sizeof(label),"贴合防误触：%s",guard?"开":"关");
+    ps_button(fb,a.x,a.y,a.width,a.height,label,guard);
+    snprintf(label,sizeof(label),"方向锁定：%s",locked?"开":"关");
+    ps_button(fb,b.x,b.y,b.width,b.height,label,locked);
+    EpdRect c=dual_control_rect(2,0);
+    ps_button(fb,c.x,c.y,c.width,c.height,
+              calibrated?"重新校准开合姿态":"校准开合姿态",!calibrated);
+}
 void ps_dual_render(uint8_t* fb) {
     ps_view_t v = ps_view();
     ps_heading(fb, "双机阅读 · 实验版", "两台小纸 Pico，共同打开一本书");
@@ -761,91 +1133,77 @@ void ps_dual_render(uint8_t* fb) {
     ps_button(fb, x, 104, (w - 16) / 3, 40, "关闭", settings.role == 0);
     ps_button(fb, x + (w - 16) / 3 + 8, 104, (w - 16) / 3, 40, "主机", settings.role == 1);
     ps_button(fb, x + 2 * ((w - 16) / 3 + 8), 104, (w - 16) / 3, 40, "从机", settings.role == 2);
-    if (!settings.role) {
+    if (primary_step) {
+        if (primary_step == 1) {
+            ps_text(fb, x, 166, 16, "主机数据同步方式 1/2", 1);
+            ps_text(fb, x, 198, 11,
+                    read_pico_connectivity_online() ? "当前局域网 Wi-Fi 已连接" : "当前局域网 Wi-Fi 未连接",
+                    read_pico_connectivity_online() ? 3 : 5);
+            ps_button(fb, x, 238, w, 44, "使用同一局域网同步", read_pico_connectivity_online());
+            ps_button(fb, x, 296, w, 44, "由主机创建直连热点", true);
+            ps_text(fb, x, 348, 10, "热点无需路由器；两台靠近即可传输图书和字体", 4);
+            ps_button(fb, x, 386, w, 36, "取消", false);
+        } else {
+            ps_text(fb, x, 166, 16, "同步完成后的连接 2/2", 1);
+            ps_text(fb, x, 200, 11,
+                    primary_net_draft == DUAL_NET_HOTSPOT
+                        ? "当前选择：主机热点"
+                        : "当前选择：同一局域网",
+                    4);
+            ps_text(fb, x, 230, 10,
+                    primary_net_draft == DUAL_NET_HOTSPOT
+                        ? "保持热点会继续占用 Wi-Fi，但后续补书更方便"
+                        : "保持连接会保留本次 TCP 数据通道，便于后续补书",
+                    5);
+            ps_button(fb, x, 268, w, 44, "保持数据连接", primary_keep_draft != 0);
+            ps_button(fb, x, 326, w, 44, "仅保留蓝牙交互", primary_keep_draft == 0);
+            ps_text(fb, x, 378, 10,
+                    primary_net_draft == DUAL_NET_HOTSPOT
+                        ? "仅蓝牙：关闭主机热点，双页阅读和翻页继续"
+                        : "仅蓝牙：停止本次数据通道，双页阅读和翻页继续",
+                    4);
+            ps_text(fb, x, 408, 10, "之后可在“同步设置”重新开启数据传输", 5);
+            ps_button(fb, x, 438, w, 36, "返回上一步", false);
+        }
+        return;
+    }
+    if (pair_editing || !settings.role) {
         if (pair_scanning || pair_found || pair_failed) {
             ps_text(fb, x, 170, 14, pair_found ? "发现主机" : "正在搜索主机…", 1);
             if (pair_found) {
                 snprintf(text, sizeof(text), "主机地址  %s", pair_ip);
                 ps_text(fb, x, 200, 13, text, 1);
-                snprintf(text, sizeof(text), "配对码  %s", pair_code);
-                ps_text(fb, x, 228, 20, text, 1);
-                ps_text(fb, x, 258, 11, "请确认与主机屏幕显示的六位码相同", 4);
-                ps_button(fb, x, 292, w, 40, "确认配对", true);
+                ps_text(fb, x, 228, 20, pair_ap_ssid[0] ? "主机直连热点" : "同一局域网", 1);
+                ps_text(fb, x, 258, 11, "配对码不会广播，请输入主机屏幕上的六位码", 4);
+                ps_button(fb, x, 292, w, 40, "输入配对码", true);
                 ps_button(fb, x, 340, w, 36, "重新搜索", false);
                 ps_button(fb, x, 384, w, 36, "取消", false);
             } else if (pair_failed) {
                 ps_text(fb, x, 190, 14, "未找到主机", 1);
                 ps_text(fb, x, 220, 12, "请确认主机已开启并选择主机", 4);
                 ps_button(fb, x, 280, w, 40, "重新搜索", true);
-                ps_button(fb, x, 328, w, 36, "取消", false);
+                ps_button(fb, x, 328, w, 36, "手动输入同一 Wi-Fi", false);
+                ps_button(fb, x, 372, w, 36, "取消", false);
             } else {
                 ps_text(fb, x, 210, 12, "请让主机停留在双机阅读页", 4);
                 ps_button(fb, x, 292, w, 40, "取消搜索", false);
+                ps_button(fb, x, 340, w, 36, "改用同一 Wi-Fi 手动输入", false);
             }
             return;
         }
-        ps_text(fb, x, 170, 14, "先将两台设备连接到同一个 Wi-Fi", 1);
-        ps_text(fb, x, 200, 12, "一台选择主机，另一台选择从机", 4);
+        ps_text(fb, x, 170, 14, "同一 Wi-Fi 或主机直连热点均可", 1);
+        ps_text(fb, x, 200, 12, "无需路由器；一台主机、另一台从机", 4);
         ps_button(fb, x, 250, w, 42, "自动搜索主机", true);
         ps_button(fb, x, 300, w, 38, "手动输入主机 IP 和配对码", false);
         ps_button(fb, x, 348, w, 36, "打开 Wi-Fi 设置", false);
         return;
     }
-    for (int role = 1; role <= 2; ++role) {
-        int center = x + role * ((w - 16) / 3 + 8) + (w - 16) / 6;
-        bool on = role == 1 ? orientation.primary_flip : orientation.secondary_flip;
-        ps_center(fb, center, 153, 10, "旋转屏幕 180°", 2);
-        ps_box(fb, center - 19, 171, 38, 22, 11, on ? 1 : 11, true);
-        ps_box(fb, center + (on ? 0 : -16), 174, 16, 16, 8, 15, true);
-    }
-    ps_text(fb, x, 156, 10, "自动方向", 4);
-    ps_text(fb, x, 174, 10, "同步主机", 4);
-    snprintf(
-        text, sizeof(text), "%s  %s", settings.role == 1 ? "主机地址" : "连接地址",
-        settings.role == 1 ? (primary_ip[0] ? primary_ip : "等待 Wi-Fi") : settings.host);
-    ps_text(fb, x, 224, 13, text, 1);
-    snprintf(text, sizeof(text), "配对码  %s", settings.code);
-    ps_text(fb, x, 252, 16, text, 1);
-    const char* state = status.synced      ? "双机书库一致，可以打开图书"
-                        : status.error     ? "请检查网络、TF 卡和配对码"
-                        : status.scanning  ? "正在校验本机书库"
-                        : status.data_connected ? "正在补齐图书与共享字体"
-                                           : "等待另一台设备连接";
-    ps_text(fb, x, 290, 12, state, 2);
-    snprintf(
-        text, sizeof(text), "本机 %u 项 · 对端 %u 项 · 新增 %u 项", status.books, status.peer_books,
-        status.imported);
-    ps_text(fb, x, 316, 11, text, 5);
-    if (status.error) {
-        ps_text(fb, x, 340, 10, status.error, 5);
-    } else if (status.expected) {
-        snprintf(text, sizeof(text), "接收进度 %u%% · %u / %u KB",
-                 (unsigned)((uint64_t)status.received*100/status.expected),
-                 (unsigned)(status.received/1024), (unsigned)((status.expected+1023)/1024));
-        ps_text(fb, x, 340, 10, text, 3);
-    }
-    snprintf(text, sizeof(text), "Wi-Fi 数据 %s · 蓝牙翻页 %s", status.data_connected ? "已连接" : "未连接",
-             status.connected ? "已连接" : "等待配对");
-    ps_text(fb, x, 362, 10, text, 3);
-    int bottom = 404;
-    ps_button(fb, x, bottom, (w - 8) / 2, 38, "重新连接与同步", false);
-    ps_button(fb, x + (w + 8) / 2, bottom, (w - 8) / 2, 38, "打开书架", false);
-    bool guard = ps_touch_guard_enabled();
-    bool locked = ps_dual_rotation_locked();
-    int half = (w - 8) / 2;
-    ps_button(fb, x, 450, half, 34, guard ? "贴合防误触：开" : "贴合防误触：关", guard);
-    ps_button(fb, x + half + 8, 450, w - half - 8, 34, locked ? "方向锁定：开" : "方向锁定：关", locked);
-    bool calibrated = ps_dual_calibrated();
-    ps_button(fb, x, 492, w, 34, calibrated ? "重新校准开合姿态" : "校准开合姿态（展开平放）", !calibrated);
-    ps_text(fb, x, 532, 11, calibrated ? "已校准：折叠时屏蔽触摸，展开时正常滑动" : "未校准：防误触暂不启用", calibrated ? 4 : 5);
-    if (!v.landscape) {
-        ps_text(fb, x, 560, 13, "主机显示单页，从机显示下一页", 1);
-        ps_text(fb, x, 588, 12, "主机电源短按：上一组双页", 3);
-        ps_text(fb, x, 614, 12, "从机电源短按：下一组双页", 3);
-        ps_text(fb, x, 640, 12, "长按电源：锁屏、关机或重启", 3);
-        ps_text(fb, x, 684, 10, "Wi-Fi 同步图书与字库，蓝牙同步翻页。", 5);
-        ps_text(fb, x, 706, 10, "书库一致后，Wi-Fi 断开仍可通过蓝牙翻页。", 5);
-    }
+    dual_status_render(fb);
+    dual_controls_render(fb);
+    int bottom=dual_actions_y(),bw=(w-16)/3;
+    ps_button(fb,x,bottom,bw,36,"重新同步",false);
+    ps_button(fb,x+bw+8,bottom,bw,36,settings.role==1?"同步设置":"修改配对",true);
+    ps_button(fb,x+2*(bw+8),bottom,bw,36,"打开书架",false);
 }
 // 只读当前网络，不扫描网段或保存未完成配置。/ Read the current network without scanning hosts or persisting an unfinished setup.
 static bool local_address(char out[48]) {
@@ -877,32 +1235,58 @@ static void pair_stop(void) {
     if (pair_scanning) pico_dual_ble_scan_stop();
     pair_scanning = false;
 }
+static void pair_edit_begin(void) {
+    pair_stop();
+    pair_found = pair_failed = false;
+    pair_editing = true;
+    pair_scan_start();
+}
+static void primary_setup_begin(void) {
+    pair_stop();
+    primary_step = 1;
+    primary_net_draft = settings.role == 1 ? settings_net_mode : DUAL_NET_LAN;
+    primary_keep_draft = settings.role == 1 ? settings_keep_data : 1;
+    ps_dirty();
+}
+static bool primary_setup_finish(void) {
+    char code[7];
+    if (settings.role == 1 && strlen(settings.code) == 6)
+        snprintf(code, sizeof(code), "%s", settings.code);
+    else
+        snprintf(code, sizeof(code), "%06u", (unsigned)(esp_random() % 1000000));
+    if (!configure_full(1, "", code, primary_net_draft, primary_keep_draft)) return false;
+    primary_step = 0;
+    ps_navigate(PS_DUAL);
+    return true;
+}
 static void pair_scan_start(void) {
     load();
-    if (!local_address(draft_local_ip)) {
-        ps_toast("请先连接与主机相同的 Wi-Fi");
-        return;
-    }
     pair_stop();
+    pair_editing = true;
     pair_found = false;
     pair_failed = false;
-    pair_ip[0] = pair_code[0] = 0;
+    pair_ip[0] = pair_code[0] = pair_ap_ssid[0] = 0;
     pair_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (pair_sock < 0) { ps_toast("无法启动配对搜索"); return; }
-    int yes = 1;
-    setsockopt(pair_sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(18772), .sin_addr.s_addr = htonl(INADDR_ANY) };
-    if (bind(pair_sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        pair_stop(); ps_toast("配对搜索端口被占用"); return;
+    if (pair_sock >= 0) {
+        int yes = 1;
+        setsockopt(pair_sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(18772), .sin_addr.s_addr = htonl(INADDR_ANY) };
+        if (bind(pair_sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+            close(pair_sock); pair_sock = -1;
+        } else {
+            int flags = fcntl(pair_sock, F_GETFL, 0);
+            fcntl(pair_sock, F_SETFL, flags | O_NONBLOCK);
+        }
     }
-    int flags = fcntl(pair_sock, F_GETFL, 0);
-    fcntl(pair_sock, F_SETFL, flags | O_NONBLOCK);
     pair_scanning = true;
     pair_started = ps_now();
     (void)pico_dual_ble_scan_start();
-    ps_toast("正在通过蓝牙搜索主机");
+    ps_toast("正在搜索主机；无局域网时会使用直连热点");
     ps_dirty();
 }
+#ifdef PICO_NATIVE_PREVIEW
+void ps_dual_native_scan_start(void) { pair_edit_begin(); }
+#endif
 static void pair_scan_update(void) {
     load();
     int64_t now = ps_now();
@@ -911,19 +1295,23 @@ static void pair_scan_update(void) {
         // Never wait for sync/verification or the dual page; broadcast whenever Wi-Fi has an address.
         if (!primary_ip[0] || now - last_ip >= 1000) {
             char ip[48];
-            if (local_address(ip)) snprintf(primary_ip, sizeof(primary_ip), "%s", ip);
+            if (hotspot_active) snprintf(primary_ip, sizeof(primary_ip), "192.168.4.1");
+            else if (local_address(ip)) snprintf(primary_ip, sizeof(primary_ip), "%s", ip);
             else primary_ip[0] = 0;
             last_ip = now;
         }
-        if (primary_ip[0] && settings.code[0]) pico_dual_ble_set_pairing_info(primary_ip, settings.code);
-        if (primary_ip[0] && settings.code[0] && now - pair_last_tx >= 500) {
+        if (primary_ip[0]) pico_dual_ble_set_pairing_info(primary_ip, hotspot_active ? hotspot_ssid : "");
+#ifndef PICO_NATIVE_PREVIEW
+        if (primary_ip[0] && dual_session) dl_endpoint(dual_session, primary_ip);
+#endif
+        if (primary_ip[0] && !hotspot_active && now - pair_last_tx >= 500) {
             pair_last_tx = now;
             int s = socket(AF_INET, SOCK_DGRAM, 0);
             if (s >= 0) {
                 int yes = 1;
                 setsockopt(s, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
                 char msg[80];
-                int n = snprintf(msg, sizeof(msg), "PICOPAIR1 %s %s", settings.code, primary_ip);
+                int n = snprintf(msg, sizeof(msg), "PICOPAIR2 %s -", primary_ip);
                 struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(18772) };
                 inet_pton(AF_INET, "255.255.255.255", &to.sin_addr);
                 (void)sendto(s, msg, (size_t)n, 0, (struct sockaddr*)&to, sizeof(to));
@@ -941,39 +1329,71 @@ static void pair_scan_update(void) {
             }
         }
     }
-    if (!pair_scanning) return;
     pico_dual_ble_peer_info_t ble;
     pico_dual_ble_peer_info(&ble);
-    if (ble.found && ble.ip[0] && strlen(ble.code) == 6) {
+    if (settings.role == 2 && !pair_editing && !data_finished && !status.synced &&
+        strlen(settings.code) == 6 &&
+        ble.found && ble.direct && ble.ap_ssid[0]) {
+        read_pico_connectivity_link_t link;
+        read_pico_connectivity_get_link(&link);
+        bool needed = !link.online || strcmp(link.ssid, ble.ap_ssid);
+        bool due = strcmp(auto_ap_ssid, ble.ap_ssid) || now >= auto_ap_retry_at;
+        if (needed && due) {
+            char password[33];
+            snprintf(auto_ap_ssid, sizeof(auto_ap_ssid), "%s", ble.ap_ssid);
+            auto_ap_retry_at = now + 8000;
+            direct_password(settings.code, ble.ap_ssid, password);
+            if (read_pico_connectivity_connect(ble.ap_ssid, password) == ESP_OK)
+                ps_toast("已发现主机热点，正在自动连接");
+            else
+                ps_toast("发现主机热点，但自动连接未启动");
+        }
+    }
+    if (!pair_scanning) return;
+    if (ble.found && ble.ip[0]) {
         snprintf(pair_ip, sizeof(pair_ip), "%s", ble.ip);
-        snprintf(pair_code, sizeof(pair_code), "%s", ble.code);
+        snprintf(pair_ap_ssid, sizeof(pair_ap_ssid), "%s", ble.ap_ssid);
+        pair_code[0] = 0;
         pair_found = true; pair_scanning = false;
         pico_dual_ble_scan_stop();
         if (pair_sock >= 0) { close(pair_sock); pair_sock = -1; }
-        ps_dirty();
+        if (pair_editing) {
+            snprintf(draft_host, sizeof(draft_host), "%s", pair_ip);
+            snprintf(draft_ap_ssid, sizeof(draft_ap_ssid), "%s", pair_ap_ssid);
+            draft_short = false;
+            pair_found = false;
+            ps_toast(pair_ap_ssid[0] ? "已发现主机热点，请输入六位配对码"
+                                     : "已发现同一局域网主机，请输入六位配对码");
+            edit_code("");
+        } else ps_dirty();
         return;
     }
     char buf[96];
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; pair_sock >= 0 && i < 4; i++) {
         struct sockaddr_in from;
         socklen_t len = sizeof(from);
         int n = (int)recvfrom(pair_sock, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&from, &len);
         if (n <= 0) break;
         buf[n] = 0;
-        char code[8] = {0}, ip[48] = {0};
+        char ip[48] = {0}, ap[33] = {0};
         unsigned a, b, c, d;
-        if (sscanf(buf, "PICOPAIR1 %7s %47s", code, ip) == 2 && strlen(code) == 6 &&
+        if (sscanf(buf, "PICOPAIR2 %47s %32s", ip, ap) == 2 &&
             sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-            bool digits = true;
-            for (int j = 0; j < 6; j++) if (code[j] < '0' || code[j] > '9') digits = false;
-            if (digits) {
-                snprintf(pair_code, sizeof(pair_code), "%.6s", code);
-                snprintf(pair_ip, sizeof(pair_ip), "%s", ip);
-                pair_found = true;
-                pair_scanning = false;
-                ps_dirty();
-                break;
-            }
+            snprintf(pair_ip, sizeof(pair_ip), "%s", ip);
+            snprintf(pair_ap_ssid, sizeof(pair_ap_ssid), "%s", strcmp(ap, "-") ? ap : "");
+            pair_code[0] = 0;
+            pair_found = true;
+            pair_scanning = false;
+            if (pair_editing) {
+                snprintf(draft_host, sizeof(draft_host), "%s", pair_ip);
+                snprintf(draft_ap_ssid, sizeof(draft_ap_ssid), "%s", pair_ap_ssid);
+                draft_short = false;
+                pair_found = false;
+                ps_toast(pair_ap_ssid[0] ? "已发现主机热点，请输入六位配对码"
+                                         : "已发现同一局域网主机，请输入六位配对码");
+                edit_code("");
+            } else ps_dirty();
+            break;
         }
     }
     if (pair_scanning && now - pair_started > 30000) {
@@ -1006,12 +1426,14 @@ static void secondary_begin(void) {
         return;
     }
     draft_input[0] = draft_host[0] = 0;
+    draft_ap_ssid[0] = 0;
     edit_host("");
 }
 static void secondary_host(const char* input) {
     char local[48], candidate[48];
     unsigned parts[4];
     snprintf(draft_input, sizeof(draft_input), "%s", input ? input : "");
+    draft_ap_ssid[0] = 0;
     if (!local_address(local)) {
         edit_host(draft_input);ps_toast("Wi-Fi 已断开，请返回连接网络");return;
     }
@@ -1039,97 +1461,152 @@ static void secondary_code(const char* input) {
     bool valid = strlen(code) == 6;
     for (int i = 0; code[i]; i++) if (code[i] < '0' || code[i] > '9') valid = false;
     if (!valid) {edit_code(code);ps_toast("请输入主机显示的六位数字");return;}
-    if (!local_address(local)) {edit_code(code);ps_toast("Wi-Fi 已断开，请返回连接网络");return;}
-    if (draft_short && strcmp(local, draft_local_ip)) {
+    bool direct = draft_ap_ssid[0] != 0;
+    if (!direct && !local_address(local)) {edit_code(code);ps_toast("请重新搜索主机或连接同一 Wi-Fi");return;}
+    if (!direct && draft_short && strcmp(local, draft_local_ip)) {
         snprintf(draft_local_ip, sizeof(draft_local_ip), "%s", local);
         edit_host(draft_input);ps_toast("本机地址已变化，请重新核对主机");return;
     }
     if (!ps_dual_configure(2, draft_host, code)) {
         edit_code(code);ps_toast("配置未保存，请检查 TF 卡是否可写");return;
     }
-    ps_toast("配置已保存，正在连接主机");
+    if (direct) {
+        char password[33];
+        direct_password(code, draft_ap_ssid, password);
+        if (read_pico_connectivity_connect(draft_ap_ssid, password) == ESP_OK)
+            ps_toast("配置已保存，正在连接主机直连热点");
+        else
+            ps_toast("配置已保存；直连热点启动失败，请重试");
+    } else {
+        ps_toast("配置已保存，正在连接主机");
+    }
 }
 bool ps_dual_event(const ps_event_t* e) {
     if (e->type != PS_TAP) return false;
     ps_view_t v = ps_view();
     int x = 20, w = v.w - 40;
+    bool pairing = pair_editing || !settings.role;
     if (e->y >= 104 && e->y < 144) {
         int role = (e->x - x) / ((w - 16) / 3 + 8);
-        if (role == 0)
+        if (role == 0) {
+            primary_step = 0;
             ps_dual_configure(0, "", "");
-        else if (role == 1) {
+        } else if (role == 1) {
             if (settings.role == 1) return true;
-            char code[7];
-            snprintf(code, sizeof(code), "%06u", (unsigned)(esp_random() % 1000000));
-            ps_dual_configure(1, "", code);
-        } else if (role == 2)
-            pair_scan_start();
+            primary_setup_begin();
+        } else if (role == 2) {
+            primary_step = 0;
+            pair_edit_begin();
+        }
         return true;
     }
-    if (!settings.role && (pair_scanning || pair_found || pair_failed)) {
+    if (primary_step) {
+        if (primary_step == 1) {
+            if (e->y >= 238 && e->y < 282) {
+                char lan[48];
+                if (!local_address(lan)) {
+                    ps_toast("请先连接同一局域网 Wi-Fi，或改用主机热点");
+                    return true;
+                }
+                primary_net_draft = DUAL_NET_LAN;
+                primary_step = 2;
+                ps_dirty();
+            } else if (e->y >= 296 && e->y < 340) {
+                primary_net_draft = DUAL_NET_HOTSPOT;
+                primary_step = 2;
+                ps_dirty();
+            } else if (e->y >= 386 && e->y < 422) {
+                primary_step = 0;
+                ps_dirty();
+            }
+            return true;
+        }
+        if (e->y >= 268 && e->y < 312) {
+            primary_keep_draft = 1;
+            if (!primary_setup_finish()) ps_toast("双机设置保存失败");
+        } else if (e->y >= 326 && e->y < 370) {
+            primary_keep_draft = 0;
+            if (!primary_setup_finish()) ps_toast("双机设置保存失败");
+        } else if (e->y >= 438 && e->y < 474) {
+            primary_step = 1;
+            ps_dirty();
+        }
+        return true;
+    }
+    if (pairing && (pair_scanning || pair_found || pair_failed)) {
         if (pair_failed) {
             if (e->y >= 280 && e->y < 320) { pair_scan_start(); return true; }
-            if (e->y >= 328 && e->y < 364) { pair_failed = false; ps_dirty(); return true; }
+            if (e->y >= 328 && e->y < 364) { pair_stop(); pair_failed = false; secondary_begin(); return true; }
+            if (e->y >= 372 && e->y < 408) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
             return true;
         }
         if (pair_found && e->y >= 292 && e->y < 332) {
-            if (ps_dual_configure(2, pair_ip, pair_code)) {
-                pair_stop(); ps_toast("配对已保存，正在连接主机");
-            }
+            snprintf(draft_host, sizeof(draft_host), "%s", pair_ip);
+            snprintf(draft_ap_ssid, sizeof(draft_ap_ssid), "%s", pair_ap_ssid);
+            draft_short = false;
+            pair_found = false;
+            edit_code("");
             return true;
         }
         if (pair_found && e->y >= 340 && e->y < 376) { pair_scan_start(); return true; }
-        if (pair_found && e->y >= 384 && e->y < 420) { pair_stop(); ps_dirty(); return true; }
-        if (!pair_found && e->y >= 292 && e->y < 332) { pair_stop(); ps_dirty(); return true; }
+        if (pair_found && e->y >= 384 && e->y < 420) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
+        if (!pair_found && e->y >= 292 && e->y < 332) { pair_stop(); pair_editing = false; ps_dirty(); return true; }
+        if (!pair_found && e->y >= 340 && e->y < 376) { pair_stop(); secondary_begin(); return true; }
         return true;
     }
-    if (!settings.role && e->y >= 250 && e->y < 292) {
+    if (pairing && e->y >= 250 && e->y < 292) {
         pair_scan_start();
         return true;
     }
-    if (!settings.role && e->y >= 300 && e->y < 338) {
+    if (pairing && e->y >= 300 && e->y < 338) {
+        pair_failed = false;
         secondary_begin();
         return true;
     }
-    if (!settings.role && e->y >= 348 && e->y < 384) {
+    if (pairing && e->y >= 348 && e->y < 384) {
         ps_navigate(PS_WIFI);
         return true;
     }
-    if (settings.role && e->y >= 150 && e->y < 198) {
-        for (int role = 1; role <= 2; ++role) {
-            int left = x + role * ((w - 16) / 3 + 8);
-            if (e->x >= left && e->x < left + (w - 16) / 3) {
-                bool on = role == 1 ? orientation.primary_flip : orientation.secondary_flip;
-                if (!ps_dual_flip(role, !on)) ps_toast("请先连接主机再调整方向");
-                return true;
-            }
+    for(int role=1;role<=2;role++){
+        EpdRect flip=dual_control_rect(0,role-1);
+        if(ps_hit(e->x,e->y,flip.x,flip.y,flip.width,flip.height)){
+            bool on=role==1?orientation.primary_flip:orientation.secondary_flip;
+            if(!ps_dual_flip(role,!on))ps_toast("请先连接主机再调整方向");
+            return true;
         }
     }
-    if (settings.role && e->y >= 492 && e->y < 526) {
+    EpdRect guard=dual_control_rect(1,0);
+    if(ps_hit(e->x,e->y,guard.x,guard.y,guard.width,guard.height)){
+        bool on=ps_touch_guard_enabled();
+        if(ps_touch_guard_set(!on))ps_toast(on?"已关闭贴合防误触":"已开启贴合防误触");
+        return true;
+    }
+    EpdRect lock=dual_control_rect(1,1);
+    if(ps_hit(e->x,e->y,lock.x,lock.y,lock.width,lock.height)){
+        bool on=ps_dual_rotation_locked();
+        if(ps_dual_lock_set(!on))ps_toast(on?"已解除方向锁定":"已锁定当前方向");
+        return true;
+    }
+    EpdRect calibrate=dual_control_rect(2,0);
+    if(ps_hit(e->x,e->y,calibrate.x,calibrate.y,calibrate.width,calibrate.height)){
         (void)ps_dual_calibrate();
         return true;
     }
-    if (settings.role && e->y >= 450 && e->y < 484) {
-        int half = (w - 8) / 2;
-        if (e->x < x + half) {
-            bool on = ps_touch_guard_enabled();
-            if (ps_touch_guard_set(!on)) ps_toast(on ? "已关闭贴合防误触" : "已开启贴合防误触");
-        } else {
-            bool on = ps_dual_rotation_locked();
-            if (ps_dual_lock_set(!on)) ps_toast(on ? "已解除方向锁定" : "已锁定当前方向");
-        }
-        return true;
-    }
-    int bottom = 404;
-    if (settings.role && e->y >= bottom && e->y < bottom + 38) {
-        if (e->x < v.w / 2) {
-            if (dual_session)
-                dl_rescan(dual_session);
-            else
-                start();
+    int bottom=dual_actions_y(),bw=(w-16)/3;
+    if(ps_hit(e->x,e->y,x,bottom,w,36)){
+        if(e->x<x+bw){
+            data_finished = false;
+            if (dual_session) dl_rescan(dual_session);
+            else start();
             ps_dirty();
-        } else
+        }else if(e->x<x+2*(bw+8)){
+            if (settings.role == 1)
+                primary_setup_begin();
+            else
+                pair_edit_begin();
+        }else{
             ps_navigate(PS_SHELF);
+        }
         return true;
     }
     return false;
@@ -1158,54 +1635,10 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     bool guard = !strncmp(line, "RPICO DUAL GUARD ", 17);
     bool calibrate = !strcmp(line, "RPICO DUAL CALIBRATE");
     bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
-    bool game_item = !strncmp(line, "RPICO DUAL GAME ITEM ", 21);
-    bool game_open = !strncmp(line, "RPICO DUAL GAME OPEN ", 21);
-    bool game_input = !strncmp(line, "RPICO DUAL GAME INPUT ", 22);
-    bool game_status = !strcmp(line, "RPICO DUAL GAME STATUS");
-    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock &&
-        !guard && !calibrate && !font && !game_item && !game_open && !game_input && !game_status &&
-        strcmp(line, "RPICO DUAL STATUS")) return false;
+    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !guard && !calibrate && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
     load();
     bool accepted = true;
-    if (game_status) {
-        char event[24]={0};int kind=0;unsigned generation=0,aux=0;
-        accepted=ps_games_duo_status(event,sizeof(event),&kind,&generation,&aux);
-        snprintf(out,capacity,
-            "{\"dual_game_status\":true,\"accepted\":%s,\"event\":\"%s\",\"kind\":%d,\"generation\":%u,\"active\":%u}",
-            accepted?"true":"false",event,kind,generation,aux);
-        return true;
-    } else if (game_input) {
-        const char* digits=line+22;
-        unsigned code=0;
-        accepted=*digits!=0&&strlen(digits)<=3;
-        for(const char* c=digits;accepted&&*c;++c){
-            if(*c<'0'||*c>'9')accepted=false;
-            else code=code*10+(unsigned)(*c-'0');
-        }
-        accepted=accepted&&code<=255&&ps_dual_game_send((uint8_t)code);
-    } else if (game_item || game_open) {
-        const char* digits=line+21;
-        unsigned index=0;
-        accepted=*digits!=0&&strlen(digits)<=3;
-        for(const char* c=digits;accepted&&*c;++c){
-            if(*c<'0'||*c>'9')accepted=false;
-            else index=index*10+(unsigned)(*c-'0');
-        }
-        const char* id=NULL;const char* title=NULL;
-        ps_games_rescan();
-        accepted=accepted&&ps_games_item(index,&id,&title);
-        if(game_item){
-            snprintf(out,capacity,
-                "{\"dual_game\":true,\"accepted\":%s,\"index\":%u,\"id\":\"%s\",\"title\":\"%s\"}",
-                accepted?"true":"false",index,id?id:"",title?title:"");
-            return true;
-        }
-        if(accepted){
-            ps_navigate(PS_GAMES);
-            accepted=ps_games_open_id(id);
-            if(!accepted&&out[0]==0)snprintf(out,capacity,"{\"dual_game\":true,\"accepted\":false}");
-        }
-    } else if (item || open) {
+    if (item || open) {
         const char* digits = line + 16;
         unsigned index = 0;
         accepted = *digits != 0 && strlen(digits) <= 3;
@@ -1283,26 +1716,26 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     for (unsigned i=0; i<32; ++i) snprintf(book_id+2*i,3,"%02x",state.reading.book[i]);
     snprintf(
         out, capacity,
-        "{\"dual\":true,\"accepted\":%s,\"role\":%u,\"connected\":%s,\"synced\":%s,\"scanning\":%s,"
+        "{\"dual\":true,\"accepted\":%s,\"role\":%u,\"connected\":%s,\"synced\":%s,\"scanning\":%s,\"request_pending\":%s,"
         "\"books\":%u,\"peer_books\":%u,\"spread\":%u,\"data_connected\":%s,"
         "\"ble_active\":%s,\"ble_error\":%d,\"error\":%s,"
         "\"ui_block\":%u,\"tick_age\":%u,\"work_age\":%u,\"busy\":%s,\"received\":%u,\"expected\":%u,\"sent\":%u,\"receiving\":%s,\"sending\":%s,"
         "\"reused\":%u,\"verified_bytes\":%u,\"resumed\":%u,"
         "\"listed\":%s,\"peer_listed\":%s,\"done\":%s,\"peer_done\":%s,\"catalog_valid\":%s,\"peer_catalog_valid\":%s,"
-        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"game_active\":%s,\"game_session\":%u,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"base_valid\":%s,\"cal_request\":%s,\"peer_reading\":%s,\"remote_open\":%s,\"orientation\":%u,"
+        "\"revision\":%u,\"applied\":%u,\"presented\":%u,\"left_ready\":%s,\"rotation\":%d,\"rotation_locked\":%s,\"dual_locked\":%s,\"guard\":%s,\"face\":%d,\"peer_face\":%d,\"contact\":%s,\"calibrated\":%s,\"base_seq\":%u,\"base_valid\":%s,\"cal_request\":%s,\"peer_reading\":%s,\"orientation\":%u,"
         "\"font_px\":%u,\"book_font_px\":%u,\"reflow_pending\":%s,\"reading_open\":%s,\"target\":%u,\"page\":%u,\"blank\":%s,\"chapter\":%u,\"start\":%u,\"end\":%u,\"book\":\"%s\"}",
         accepted ? "true" : "false", settings.role, state.connected ? "true" : "false",
-        state.synced ? "true" : "false", state.scanning ? "true" : "false", state.books,
+        state.synced ? "true" : "false", state.scanning ? "true" : "false", state.request_pending ? "true" : "false", state.books,
         state.peer_books, (unsigned)state.reading.spread, state.data_connected ? "true" : "false",
-        ble.active ? "true" : "false", ble.error, state.error ? "true" : "false",
+        ble.active ? "true" : "false", ble.error, state.error && !state.synced ? "true" : "false",
         ps_background_io_blockers(),(unsigned)(ps_now()-last_tick),(unsigned)(ps_now()-last_work),
         state.busy?"true":"false",(unsigned)state.received,(unsigned)state.expected,(unsigned)state.sent,
         state.receiving?"true":"false",state.sending?"true":"false",
         state.reused,(unsigned)state.verified_bytes,(unsigned)state.resumed,
         state.listed?"true":"false",state.peer_listed?"true":"false",
         state.done?"true":"false",state.peer_done?"true":"false",state.catalog_valid?"true":"false",state.peer_catalog_valid?"true":"false",
-        (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",state.game_active?"true":"false",(unsigned)state.game_session,
-        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,status.base_valid?"true":"false",status.calibration_request?"true":"false",status.peer_reading?"true":"false",status.remote_open?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
+        (unsigned)state.reading.revision,(unsigned)applied,(unsigned)presented,state.left_ready?"true":"false",
+        (int)epd_get_rotation(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false",guard_enabled?"true":"false",(int)status.face,(int)status.peer_face,ps_dual_contact_likely()?"true":"false",ps_dual_calibrated()?"true":"false",(unsigned)status.base_seq,status.base_valid?"true":"false",status.calibration_request?"true":"false",status.peer_reading?"true":"false",(unsigned)orientation_bits(),(unsigned)state.reading.font_px,(unsigned)book.font_px,state.reading.reflow_pending?"true":"false",
         book.open?"true":"false",(unsigned)book.target,(unsigned)book.page,
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
     return true;

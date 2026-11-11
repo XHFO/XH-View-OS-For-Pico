@@ -8,7 +8,10 @@
 static ps_view_t view={360,640,false};
 static ps_route_t route=PS_APPS,history[8];
 static unsigned depth,game_count=6,scans,stores,opens,draws;
+static unsigned dirties,removals,catalog_refreshes,selected_downloads,app_catalog=9;
+static char selected_last[32];
 static bool blocked;
+static char removed[32];
 static const char *game_ids[]={"gomoku","go","xiangqi","chess","2048","snake"};
 static const char *game_titles[]={"五子棋","围棋","中国象棋","国际象棋","2048","贪吃蛇"};
 static char opened[32];
@@ -17,6 +20,7 @@ ps_route_t ps_route(void){return route;}
 void ps_navigate(ps_route_t next){assert(depth<8);history[depth++]=route;route=next;}
 void ps_back(void){assert(depth);route=history[--depth];}
 void ps_toast(const char *text){assert(text&&*text);}
+void ps_dirty(void){dirties++;}
 bool ps_load(const char *key,void *out,size_t bytes){(void)key;(void)out;(void)bytes;return false;}
 bool ps_store(const char *key,const void *data,size_t bytes){(void)key;(void)data;(void)bytes;stores++;return true;}
 unsigned ps_games_count(void){return game_count;}
@@ -24,6 +28,31 @@ void ps_games_rescan(void){scans++;}
 const char *ps_games_last_error(void){return "TF card unavailable";}
 bool ps_games_item(unsigned index,const char **id,const char **title){if(index>=game_count)return false;*id=game_ids[index];*title=game_titles[index];return true;}
 bool ps_games_open_id(const char *id){opens++;snprintf(opened,sizeof(opened),"%s",id);if(blocked)return false;ps_navigate(PS_PLAYGAME);return true;}
+bool ps_games_remove(const char *id){assert(id&&*id);snprintf(removed,sizeof(removed),"%s",id);removals++;return true;}
+bool ps_updates_download_apps(void){return true;}
+bool ps_updates_apps_status(unsigned *catalog,char *message,size_t bytes){
+    if(catalog)*catalog=app_catalog;
+    if(message&&bytes)snprintf(message,bytes,"云端目录 %u 项 · 补齐缺失应用",app_catalog);
+    return true;
+}
+bool ps_updates_apps_catalog_refresh(void){catalog_refreshes++;return true;}
+unsigned ps_updates_apps_catalog(ps_updates_app_t *out,unsigned capacity){
+    static const char *ids[]={"gomoku","go","xiangqi","chess","2048","snake","drawing-notes","weread","home-link"};
+    unsigned count=app_catalog<capacity?app_catalog:capacity;
+    for(unsigned i=0;i<count;i++){
+        memset(&out[i],0,sizeof(out[i]));snprintf(out[i].id,sizeof(out[i].id),"%s",ids[i]);
+        out[i].tool=i>=6;out[i].installed=i<2;
+    }
+    return count;
+}
+bool ps_updates_download_apps_selected(const char *const *ids,unsigned count){
+    assert(ids&&count);selected_downloads=count;
+    snprintf(selected_last,sizeof(selected_last),"%s",ids[0]);return true;
+}
+void ps_i18n_init(void){}
+const char *ps_tr(const char *key){return key;}
+void ps_i18n_chip(uint8_t *fb,int x,int y){(void)fb;(void)x;(void)y;}
+bool ps_i18n_chip_hit(int x,int y,int chip_x,int chip_y){(void)x;(void)y;(void)chip_x;(void)chip_y;return false;}
 static void launch_tool(uint16_t id){assert(id==600);ps_navigate(PS_APPLICATION);}
 bool ps_hit(int x,int y,int rx,int ry,int rw,int rh){return x>=rx&&x<rx+rw&&y>=ry&&y<ry+rh;}
 static void bounds(int x,int y,int w,int h){assert(x>=0&&y>=0&&w>0&&h>0);assert(x+w<=view.w&&y+h<=view.h);draws++;}
@@ -41,7 +70,12 @@ void ps_surface(uint8_t *fb,int x,int y,int w,int h,bool selected){(void)selecte
 void ps_wrap(uint8_t *fb,int x,int y,int w,int size,int lines,const char *text,int gray){(void)text;ps_fill(fb,x,y,w,size*lines,gray);}
 
 static bool tap(int x,int y){ps_event_t e={.type=PS_TAP,.x=x,.y=y};return ps_launcher_event(&e);}
+static bool hold(int x,int y){ps_event_t e={.type=PS_LONG,.x=x,.y=y};return ps_launcher_event(&e);}
 static void open_slot(unsigned slot){EpdRect r=card(slot);assert(tap(r.x+r.width/2,r.y+r.height/2));}
+static bool modal_action(bool confirm){
+    int w=view.w-40;if(w>500)w=500;int x=(view.w-w)/2,top=(view.h-220)/2,bw=(w-52)/2;
+    return tap(confirm?x+32+bw+bw/2:x+20+bw/2,top+171);
+}
 static void pure_render(void){unsigned before_scans=scans,before_stores=stores,before_opens=opens;navigation_saved_t saved=current;ps_launcher_render(NULL);assert(scans==before_scans&&stores==before_stores&&opens==before_opens);assert(!memcmp(&saved,&current,sizeof(saved)));}
 
 int main(void){
@@ -63,8 +97,24 @@ int main(void){
         route=PS_APPS;depth=0;open_slot(5);assert(route==PS_CLOUDFLARE);ps_back();assert(route==PS_APPS);
         page=1;open_slot(0);assert(route==PS_APPLICATION);ps_back();assert(route==PS_APPS);
         open_slot(1);assert(route==PS_PLAYGAME&&!strcmp(opened,"gomoku"));ps_back();
+        // 游戏页不再负责删除；应用集长按后才出现确认，取消不会删除。
+        // Games no longer own removal; long-press in Apps opens confirmation and cancel is inert.
+        EpdRect game_card=card(1);int cx=game_card.x+game_card.width/2,cy=game_card.y+game_card.height/2;
+        unsigned before_removals=removals;
+        assert(hold(cx,cy)&&modal_action(false));assert(removals==before_removals);
+        assert(hold(cx,cy));assert(remove_item==0);
+        assert(modal_action(true));assert(removals==before_removals+1&&!strcmp(removed,"gomoku"));
         blocked=true;open_slot(2);assert(route==PS_APPS&&!strcmp(opened,"go"));blocked=false;
         page=2;open_slot(1);assert(route==PS_DEVICE);ps_back();assert(route==PS_APPS);
+        EpdRect download=download_rect();
+        assert(tap(download.x+download.width/2,download.y+download.height/2));
+        assert(download_picker&&catalog_refreshes>0);
+        EpdRect pick=download_item_rect(2);
+        assert(tap(pick.x+pick.width/2,pick.y+pick.height/2));
+        EpdRect modal=download_picker_rect();
+        int by=modal.y+modal.height-48;
+        assert(tap(modal.x+164+(modal.width-180)/2,by+17));
+        assert(selected_downloads==1&&!strcmp(selected_last,"xiangqi")&&!download_picker);
         unsigned before=scans;assert(tap(view.w-40,97)&&scans==before+1);
         assert(ps_launcher_key(2)&&page==0);assert(ps_launcher_key(0)&&page==2);
         assert(!ps_launcher_key(-1));
@@ -74,6 +124,6 @@ int main(void){
     pure_render();assert(page==2);route=PS_APPS;depth=0;open_slot(0);assert(route==PS_DEVICE);ps_back();
     ps_launcher_enter();assert(page==1);pure_render();
     assert(stores==0);
-    printf("launcher contracts passed: %u draws, %u scans, %u game opens; no device access\n",draws,scans,opens);
+    printf("launcher contracts passed: %u draws, %u scans, %u catalog reads, %u selected-app downloads, %u game opens, %u dirtied, %u removals; no device access\n",draws,scans,catalog_refreshes,selected_downloads,opens,dirties,removals);
     return 0;
 }

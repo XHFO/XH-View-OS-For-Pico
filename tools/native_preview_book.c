@@ -15,8 +15,8 @@
 #include "book_epub.h"
 #include "book_store.h"
 #include "display.h"
-#include "e0470_epaper_waveform.h"
 #include "e0470_page_turn.h"
+#include "e0470_epaper_waveform.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -74,7 +74,7 @@ app_redraw_t native_preview_book_gesture(app_ctx_t *ctx, const ui_gesture_event_
 const char *native_preview_book_path(void) { return s_path; }
 const char *native_preview_book_kind(void) { return book_kind()==BOOK_KIND_EPUB ? "epub" : "txt"; }
 const char *native_preview_book_view(void) {
-    if (s_open_path[0]) return "loading";
+    if (s_open_path[0] || s_dual_wait) return "loading";
     if (s_page_jump_open) return "page-jump";
     if (s_image_confirm_open) return "image-confirm";
     if (s_cover_open) return "cover";

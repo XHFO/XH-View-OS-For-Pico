@@ -71,6 +71,18 @@ static read_pico_usb_status_t usb_status;
 const char *ps_version(void){return "maintenance-test";}
 void read_pico_usb_get_status(read_pico_usb_status_t *out){*out=usb_status;}
 static read_pico_connectivity_status_t wifi_status;
+bool read_pico_connectivity_online(void){return false;}
+bool ps_updates_check(void){return false;}
+bool ps_updates_download_firmware(void){return false;}
+bool ps_updates_firmware_ready(void){return false;}
+bool ps_updates_arm_firmware(void){return false;}
+bool ps_updates_status(char *latest,size_t latest_bytes,bool *newer,unsigned *apps,
+                       char *message,size_t message_bytes){
+    if(latest&&latest_bytes)snprintf(latest,latest_bytes,"test");
+    if(newer)*newer=false;if(apps)*apps=0;
+    if(message&&message_bytes)snprintf(message,message_bytes,"test");
+    return false;
+}
 static bool rtc_ready,rtc_null;
 static pmu_snapshot_t rtc_snapshot;
 static ps_datetime_status_t clock_status;

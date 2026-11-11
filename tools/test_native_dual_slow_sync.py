@@ -54,7 +54,10 @@ try:
     assert not a.state['panel']
     until(lambda:a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_page')==1 and b.state.get('dual_page')==2 and a.state.get('dual_target')==b.state.get('dual_target')==0,'slow-sync open')
     assert a.state['page_end']==b.state['page_start']
+    until(lambda:a.state['dual_left_ready'] and b.state['dual_left_ready'],'slow-sync pair ready')
     b.cmd('powerkey')
+    pump(10)
+    if (a.state.get('dual_page'),b.state.get('dual_page'))==(1,2):b.cmd('powerkey')
     until(lambda:a.state.get('dual_page')==3 and b.state.get('dual_page')==4,'slow-sync next')
     a.cmd('powerkey')
     until(lambda:a.state.get('dual_page')==1 and b.state.get('dual_page')==2,'slow-sync previous')

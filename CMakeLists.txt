@@ -1,7 +1,12 @@
 # The following lines of boilerplate have to be in your project's
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.22)
-set(PROJECT_VER "0.40.0-dual74")
+option(PICO_OTA_UPDATER "Build the small ota_1 TF updater" OFF)
+if(PICO_OTA_UPDATER)
+    set(PROJECT_VER "ota-updater-1")
+else()
+    set(PROJECT_VER "0.40.0-dual97")
+endif()
 # OFF：家庭 HA/打印机静态栈改为 TF tools/home-link.pga；固件仅薄宿主空状态。
 # OFF: Home HA/printer static stack moves to TF tools/home-link.pga; firmware keeps thin empty host.
 set(PICO_HOME_LINK_FULL OFF CACHE BOOL "Statically link full Home Assistant/printer stack")
@@ -9,7 +14,11 @@ set(PICO_HOME_LINK_FULL OFF CACHE BOOL "Statically link full Home Assistant/prin
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # "Trim" the build. Include the minimal set of components, main, and anything it depends on.
 idf_build_set_property(MINIMAL_BUILD ON)
-project(Read_Pico)
+if(PICO_OTA_UPDATER)
+    project(Read_Pico LANGUAGES C)
+else()
+    project(Read_Pico)
+endif()
 
 # 离线构建关闭组件管理器时，补上清单中的公开依赖。
 # Restore the manifest's public dependency for offline builds without the component manager.

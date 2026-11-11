@@ -20,6 +20,19 @@ typedef enum { PS_PRESS, PS_MOVE, PS_RELEASE, PS_TAP, PS_LONG, PS_SWIPE_L,
     PS_SWIPE_R, PS_SWIPE_U, PS_SWIPE_D, PS_CANCEL } ps_event_type_t;
 typedef struct { ps_event_type_t type; int x0,y0,x,y; int64_t ms; } ps_event_t;
 typedef struct { int w,h; bool landscape; } ps_view_t;
+typedef enum {
+    PS_STATUS_STYLE_LINE = 0,
+    PS_STATUS_STYLE_BOOK = 1,
+    PS_STATUS_STYLE_LINE_PERCENT = 2,
+    PS_STATUS_STYLE_COUNT
+} ps_status_style_t;
+typedef enum {
+    PS_SHELF_CARD_DEFAULT = 0,
+    PS_SHELF_CARD_BOARDING = 1,
+    PS_SHELF_CARD_TRAIN = 2,
+    PS_SHELF_CARD_CINEMA = 3,
+    PS_SHELF_CARD_STYLE_COUNT
+} ps_shelf_card_style_t;
 typedef enum { PI_BOOK, PI_HOME, PI_SETTINGS, PI_BACK, PI_CLOSE, PI_SEARCH,
     PI_IMPORT, PI_NOTE, PI_MARK, PI_LAYOUT, PI_CLOCK, PI_ROTATE, PI_WIFI,
     PI_LIGHT, PI_SWITCH, PI_FAN, PI_THERMOMETER, PI_CLIMATE, PI_PRINTER,
@@ -59,6 +72,8 @@ bool ps_touch_guard_set(bool enabled);
 void ps_book_rotation_enter(app_ctx_t* ctx);
 bool ps_book_rotation_tick(app_ctx_t* ctx, bool idle);
 void ps_toast(const char *text);
+/// 从产品书架恢复当前书或双机共享书；仅由主循环进入真实阅读页。/ Resume the current or paired book from the product shelf through the main loop.
+bool ps_global_resume_reading(void);
 /// 单行顶部提示，不弹底部气泡；用于防误触等状态。 / One-line top notice instead of a bottom toast.
 void ps_notice(const char *text);
 void ps_notice_draw(uint8_t *fb, int y);
@@ -122,6 +137,7 @@ bool ps_usb_back(void);
 void ps_maintenance_tick(void);
 /// 本机书架只读缓存快照，无文件访问。/ Read-only local shelf cache, without file access.
 void ps_reader_library_status(unsigned *count, bool *loading, bool *limited);
+bool ps_reader_shelf_choice_open(void);
 bool ps_reader_storage_save(void);
 /// 电源保存不释放当前显示所需的封面缓存。/ Persist for power states without releasing displayed cover caches.
 bool ps_reader_power_save(void);
@@ -181,6 +197,14 @@ bool ps_wall_time(struct tm *out);
 void ps_clock_set_utc(uint32_t utc);
 int ps_reader_cover_sources(char paths[][288],int capacity);
 int ps_battery_percent(void);
+/// 当前顶部状态栏图标外观；默认墨线极简。 / Current top status icon style, defaulting to line-minimal.
+uint8_t ps_status_style(void);
+/// 持久切换状态栏图标外观；写入失败时保留原值。 / Persist the status icon style, retaining the old value on failure.
+bool ps_status_style_set(uint8_t style);
+/// 书架“上次读到”卡片外观；默认简洁续读卡。/ Shelf continue-reading card style, defaulting to the simple card.
+uint8_t ps_shelf_card_style(void);
+/// 持久切换续读卡外观；写入失败时保留原值。/ Persist the card style, retaining the old value on failure.
+bool ps_shelf_card_style_set(uint8_t style);
 bool ps_charging(void);
 /// PMU缓存确认外接电源，包括满电仍供电；未知/故障不视为外电。/ Cached PMU-confirmed external power, including full charge; unknown/fault never proves external power.
 bool ps_external_power(void);
@@ -259,10 +283,12 @@ void ps_games_rescan(void);
 unsigned ps_games_count(void);
 /// 只读已扫描TF游戏目录；名称指针仅在下一次扫描前有效。/ Read the scanned TF-game catalog; labels remain valid until the next scan.
 bool ps_games_item(unsigned index,const char **id,const char **title);
+/// 当前应用排序名称；循环顺序为默认、名称、最近、安装、版本。/ Current app sort label; cycles default, name, recent, installed, version.
+const char *ps_games_sort_label(void);
+/// 循环并持久化应用排序，同时重排当前目录。/ Cycle and persist the app sort, then reorder the current catalog.
+bool ps_games_sort_cycle(void);
 /// 按稳定包ID启动游戏，复用保存、介质检查与单模块载入流程。/ Open a stable game package ID through existing save, media and single-module guards.
 bool ps_games_open_id(const char *id);
-/// 最近一次双机棋局启动动作，用于可信 USB 验收；不含棋局内容。 / Latest dual-game start action for trusted USB validation; no game content.
-bool ps_games_duo_status(char *event, size_t capacity, int *kind, unsigned *generation, unsigned *aux);
 bool ps_games_install(const char *staged_path,bool replace);
 bool ps_games_remove(const char *id);
 const char *ps_games_last_error(void);

@@ -41,17 +41,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-typedef struct { pico_app_package_t info; } game_item_t;
+enum { APP_SORT_DEFAULT, APP_SORT_NAME, APP_SORT_RECENT, APP_SORT_INSTALLED, APP_SORT_VERSION, APP_SORT_COUNT };
+#define APP_SORT_MAGIC 0x31545253u
+typedef struct { char id[32]; uint32_t sequence; } app_recent_t;
+typedef struct {
+    uint32_t magic, sequence;
+    uint8_t mode, count, reserved[2];
+    app_recent_t recent[PICO_APP_CATALOG_MAX];
+} app_sort_t;
+typedef struct { pico_app_package_t info; uint32_t installed; } game_item_t;
 // 应用目录仅由UI线程扫描/显示；载入器及AI不借用此表。 / Only the UI scans/paints this catalog; the loader and AI never borrow it.
 static PICO_UI_CACHE_ATTR game_item_t s_items[PICO_APP_CATALOG_MAX];
+static PICO_UI_CACHE_ATTR app_sort_t s_sort;
 static unsigned s_count,s_bad,s_page;
 static ps_scroll_track_t games_scroll;
 _Static_assert(PS_PRESS==0&&PS_MOVE==1&&PS_RELEASE==2&&PS_TAP==3&&PS_LONG==4&&PS_SWIPE_L==5&&PS_SWIPE_R==6&&PS_SWIPE_U==7&&PS_SWIPE_D==8&&PS_CANCEL==9,"pico_scroll.h event numbers");
 static ps_route_t s_origin=PS_GAMES;
 static bool s_scanned,s_in_call,s_pinned,s_catalog_dirty,s_discard;
+static bool s_sort_loaded;
 static bool s_power_paused,s_recovery_outside;
 static bool s_weread_setup;
 static bool s_weread_edit,s_weread_input_ready,s_weread_link;
@@ -61,14 +72,8 @@ enum { APP_NAV_WEREAD_SETUP=PGA_PAGE_APP+1,APP_NAV_WEREAD_EDIT };
 static int s_pending_route=-1;
 static char s_pending_id[32];
 static bool s_pending_tool;
-static int s_remove=-1,s_nav=-1;
+static int s_nav=-1;
 static bool s_dual_game_applying;
-static struct {
-    bool valid;
-    char event[24];
-    int kind;
-    unsigned generation, aux;
-} s_dual_game_status;
 static char s_error[160];
 static pico_app_package_t s_active_info;
 static const pico_app_exports_t *s_app;
@@ -79,6 +84,9 @@ static bool s_ink_reference;
 static int s_ink_width,s_ink_height;
 static struct {char id[32],title[64];uint16_t navigation;} s_tools[8];
 static unsigned s_tool_count;
+static void sort_save(void);
+static void sort_ensure(void);
+static int compare_item(const void *a,const void *b);
 static void unregister_tools(void) {
     for(unsigned i=0;i<s_tool_count;i++)ps_navigation_unregister(s_tools[i].navigation);
     s_tool_count=0;
@@ -91,6 +99,17 @@ bool ps_games_item(unsigned index,const char **id,const char **title) {
     if(index>=s_count||!id||!title)return false;
     *id=s_items[index].info.id;*title=s_items[index].info.title;return true;
 }
+const char *ps_games_sort_label(void) {
+    static const char *labels[APP_SORT_COUNT]={"默认","名称","最近","安装","版本"};
+    sort_ensure();
+    return labels[s_sort.mode<APP_SORT_COUNT?s_sort.mode:APP_SORT_DEFAULT];
+}
+bool ps_games_sort_cycle(void) {
+    sort_ensure();
+    s_sort.mode=(uint8_t)((s_sort.mode+1)%APP_SORT_COUNT);
+    sort_save();qsort(s_items,s_count,sizeof(*s_items),compare_item);
+    s_page=0;ps_dirty();return true;
+}
 static bool game_route(ps_route_t r) { return r==PS_PLAYGAME||r==PS_ARCADEGAME||r==PS_APPLICATION; }
 static ps_route_t app_route(uint32_t kind) { return kind>=128?PS_APPLICATION:kind>=PGA_2048?PS_ARCADEGAME:PS_PLAYGAME; }
 static void game_rotation(void);
@@ -102,8 +121,44 @@ static bool directory(void) {
 }
 static void package_path(char *out,size_t n,const char *id) { snprintf(out,n,PICO_APP_DIRECTORY "/%s.pga",id); }
 static bool ends(const char *s,const char *suffix) { size_t a=strlen(s),b=strlen(suffix);return a>b&&!strcmp(s+a-b,suffix); }
+static void sort_load(void) {
+    if(!ps_load("appsort1",&s_sort,sizeof(s_sort))||s_sort.magic!=APP_SORT_MAGIC||s_sort.mode>=APP_SORT_COUNT||s_sort.count>PICO_APP_CATALOG_MAX){
+        memset(&s_sort,0,sizeof(s_sort));s_sort.magic=APP_SORT_MAGIC;
+    }
+}
+static void sort_save(void) { (void)ps_store("appsort1",&s_sort,sizeof(s_sort)); }
+static void sort_ensure(void) {
+    if(!s_sort_loaded){sort_load();s_sort_loaded=true;}
+}
+static uint32_t recent_sequence(const char *id) {
+    for(unsigned i=0;i<s_sort.count;i++)if(!strcmp(s_sort.recent[i].id,id))return s_sort.recent[i].sequence;
+    return 0;
+}
+static void recent_mark(const char *id) {
+    sort_ensure();
+    unsigned slot=s_sort.count;
+    for(unsigned i=0;i<s_sort.count;i++)if(!strcmp(s_sort.recent[i].id,id)){slot=i;break;}
+    if(slot==s_sort.count){
+        if(s_sort.count<PICO_APP_CATALOG_MAX)slot=s_sort.count++;
+        else {
+            slot=0;for(unsigned i=1;i<s_sort.count;i++)if(s_sort.recent[i].sequence<s_sort.recent[slot].sequence)slot=i;
+        }
+    }
+    snprintf(s_sort.recent[slot].id,sizeof(s_sort.recent[slot].id),"%s",id);
+    s_sort.recent[slot].sequence=++s_sort.sequence;
+    sort_save();
+}
 static int compare_item(const void *a,const void *b) {
-    const game_item_t *x=a,*y=b;if(x->info.kind!=y->info.kind)return x->info.kind<y->info.kind?-1:1;return strcmp(x->info.id,y->info.id);
+    const game_item_t *x=a,*y=b;int result=0;
+    if(s_sort.mode==APP_SORT_NAME) result=strcasecmp(x->info.title,y->info.title);
+    else if(s_sort.mode==APP_SORT_RECENT) {
+        uint32_t rx=recent_sequence(x->info.id),ry=recent_sequence(y->info.id);
+        result=rx==ry?0:rx<ry?1:-1;
+    }
+    else if(s_sort.mode==APP_SORT_INSTALLED) result=x->installed==y->installed?0:x->installed<y->installed?1:-1;
+    else if(s_sort.mode==APP_SORT_VERSION) result=x->info.version==y->info.version?0:x->info.version<y->info.version?1:-1;
+    else if(x->info.kind!=y->info.kind) result=x->info.kind<y->info.kind?-1:1;
+    return result?result:strcmp(x->info.id,y->info.id);
 }
 static void recover_packages(const char *directory) {
     DIR *d=opendir(directory);if(!d)return;struct dirent *entry;
@@ -121,7 +176,7 @@ void ps_games_rescan(void) {
     // USB恢复挂载时可能尚未释放所有权；保留目录，交接完成后再扫描。
     // A USB remount may precede ownership release; retain the catalog until handoff completes.
     if(s_in_call||storage_held()){s_catalog_dirty=true;return;}
-    s_count=s_bad=0;s_remove=-1;s_scanned=true;s_catalog_dirty=false;
+    s_count=s_bad=0;s_scanned=true;s_catalog_dirty=false;
     if(!s_app){s_discard=false;s_pending_route=-1;s_pending_id[0]=0;}
     if(!ready()){unregister_tools();error("请插入并挂载 TF 卡");return;}
     if(!directory()){error("无法读取应用目录");return;}
@@ -136,8 +191,11 @@ void ps_games_rescan(void) {
         snprintf(expected,sizeof(expected),"%s.pga",p.id);
         if(strcmp(expected,entry->d_name)||p.kind>=128||!pico_app_package_payload(&p)){s_bad++;continue;}
         if(s_count==PICO_APP_CATALOG_MAX){s_bad++;continue;}
-        s_items[s_count++].info=p;
-    }closedir(d);qsort(s_items,s_count,sizeof(*s_items),compare_item);
+        struct stat installed;
+        s_items[s_count].info=p;
+        s_items[s_count].installed=stat(path,&installed)==0&&installed.st_mtime>0?(uint32_t)installed.st_mtime:0;
+        s_count++;
+    }closedir(d);sort_ensure();qsort(s_items,s_count,sizeof(*s_items),compare_item);
     if(s_page>=(s_count+5)/6)s_page=0;
     /* 家庭桥在首次 home_link 调用时才分配 PSRAM。扫描目录不占内部 RAM，否则 USB MSC 会以 257 失败。 */
     /* The home bridge allocates PSRAM on the first home_link call. Catalog scan must not take internal RAM or USB MSC fails with 257. */
@@ -209,20 +267,7 @@ static void host_worker_suspend(void) { vTaskSuspend(NULL); }
 static uint32_t host_worker_stack_free(void) { return (uint32_t)uxTaskGetStackHighWaterMark(NULL); }
 static void host_delay(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); }
 static void host_diagnostic(const char *event,int type,unsigned generation,unsigned stack_free) {
-    if (event && !strncmp(event, "duo_", 4)) {
-        snprintf(s_dual_game_status.event, sizeof(s_dual_game_status.event), "%s", event);
-        s_dual_game_status.kind = type;
-        s_dual_game_status.generation = generation;
-        s_dual_game_status.aux = stack_free;
-        s_dual_game_status.valid = true;
-    }
     ESP_LOGI("pico_apps","%s %s kind=%d generation=%u stack_free=%u",s_active_info.id,event,type,generation,stack_free);
-}
-bool ps_games_duo_status(char *event,size_t capacity,int *kind,unsigned *generation,unsigned *aux) {
-    if(!event||!capacity||!kind||!generation||!aux||!s_dual_game_status.valid)return false;
-    snprintf(event,capacity,"%s",s_dual_game_status.event);
-    *kind=s_dual_game_status.kind;*generation=s_dual_game_status.generation;*aux=s_dual_game_status.aux;
-    return true;
 }
 static bool host_weread(uint32_t command,pico_app_weread_status_t *out){
     if(!out||out->bytes<sizeof(*out)||!s_app||strcmp(s_active_info.id,"weread"))return false;
@@ -437,7 +482,7 @@ static bool open_package(pico_app_package_t info,const char *path) {
             clear_pending();snprintf(s_pending_id,sizeof(s_pending_id),"%s",info.id);s_pending_tool=info.kind>=128;
             recover_active();return error("请先保留或处理未保存的应用");
         }
-        retain_active();ps_navigate(app_route(info.kind));return true;
+        retain_active();ps_navigate(app_route(info.kind));recent_mark(info.id);return true;
     }
     if(!close_active()){
         clear_pending();snprintf(s_pending_id,sizeof(s_pending_id),"%s",info.id);s_pending_tool=info.kind>=128;
@@ -470,7 +515,7 @@ static bool open_package(pico_app_package_t info,const char *path) {
         if(!s_dual_game_applying)(void)ps_dual_game_open((uint8_t)info.kind);
     }
     s_origin=ps_route()==PS_APPS?PS_APPS:info.kind>=128?PS_SHELF:PS_GAMES;
-    ps_navigate(app_route(info.kind));return true;
+    ps_navigate(app_route(info.kind));recent_mark(info.id);return true;
 }
 static bool open_item(unsigned index) {
     if(index>=s_count)return error("应用暂不可用，请检查 TF 卡");
@@ -603,8 +648,9 @@ static void game_mark(uint8_t *fb,int x,int y,int kind) {
     if(kind==PGA_XIANGQI||kind==PGA_CHESS){ps_box(fb,x+11,y+11,16,16,8,15,true);ps_center(fb,x+19,y+12,12,kind==PGA_XIANGQI?"象":"棋",2);}
 }
 static void draw_launcher(uint8_t *fb) {
-    ps_view_t v=ps_view();char text[128];ps_fill(fb,0,76,v.w,v.h-76,14);ps_tabs(fb,2);ps_text(fb,16,87,25,"小游戏",1);ps_button(fb,v.w-90,87,74,30,"刷新",false);
-    snprintf(text,sizeof(text),"TF 应用 %u · 长按移除，保留存档",s_count);ps_text(fb,16,121,11,text,5);
+    ps_view_t v=ps_view();char text[128];ps_fill(fb,0,76,v.w,v.h-76,14);ps_tabs(fb,2);ps_text(fb,16,87,25,"小游戏",1);
+    ps_button(fb,v.w-178,87,80,30,ps_games_sort_label(),false);ps_button(fb,v.w-90,87,74,30,"刷新",false);
+    snprintf(text,sizeof(text),"TF 应用 %u · %s · 设置中管理",s_count,ps_games_sort_label());ps_text(fb,16,121,11,text,5);
     if(!s_count){ps_wrap(fb,24,190,v.w-48,18,3,"将游戏包放入 TF 卡的 apps/games 目录后点击刷新",2);if(s_error[0])ps_wrap(fb,24,310,v.w-48,13,3,s_error,4);}
     for(unsigned i=s_page*6;i<s_count&&i<(s_page+1)*6;i++){
         int x,y,w,h;card_rect(i%6,&x,&y,&w,&h);pico_app_package_t *p=&s_items[i].info;
@@ -620,7 +666,6 @@ static void draw_launcher(uint8_t *fb) {
     }
     if(s_count>6){int y=v.h-44;ps_button(fb,16,y,76,28,"上一页",false);ps_button(fb,v.w-92,y,76,28,"下一页",false);snprintf(text,sizeof(text),"%u / %u",s_page+1,(s_count+5)/6);ps_center(fb,v.w/2,y+6,12,text,3);}
     if(s_bad){snprintf(text,sizeof(text),"%u 个包不兼容或损坏，请重新导入",s_bad);ps_center(fb,v.w/2,v.h-68,11,text,4);}
-    if(s_remove>=0&&(unsigned)s_remove<s_count){int w=v.w-40;if(w>500)w=500;int x=(v.w-w)/2,y=(v.h-220)/2;ps_box(fb,x,y,w,220,8,15,true);ps_box(fb,x,y,w,220,8,0,false);ps_text(fb,x+20,y+20,20,"移除这个游戏？",0);ps_wrap(fb,x+20,y+65,w-40,13,2,"只移除应用，存档和成绩会保留",4);int bw=(w-52)/2;ps_button(fb,x+20,y+150,bw,42,"取消",false);ps_button(fb,x+32+bw,y+150,bw,42,"移除",true);}
 }
 static void recovery_rect(int *x,int *y,int *w,int *bw) {
     ps_view_t v=ps_view();*w=v.w-40;if(*w>500)*w=500;*x=(v.w-*w)/2;*y=(v.h-260)/2;*bw=(*w-52)/2;
@@ -651,7 +696,7 @@ static void resolve_recovery(bool discard) {
     }
     ps_navigate(route>=0?(ps_route_t)route:utility?PS_SHELF:PS_GAMES);
 }
-void ps_games_init(void) { s_catalog_dirty=true;s_scanned=false;s_tool_count=0; }
+void ps_games_init(void) { s_catalog_dirty=true;s_scanned=false;s_tool_count=0;s_sort_loaded=false;sort_ensure(); }
 static void game_rotation(void) {
     epd_set_rotation(ps_dual_role()==2?EPD_ROT_INVERTED_LANDSCAPE:EPD_ROT_LANDSCAPE);
 }
@@ -685,7 +730,7 @@ void ps_games_enter(ps_route_t route) {
 void ps_games_media_lost(void) {
     weread_child_clear();
     if(s_app){s_app->stop();s_pinned=true;}
-    unregister_tools();s_count=0;s_scanned=false;s_remove=-1;s_catalog_dirty=false;error("TF 卡已移除，应用暂不可用");
+    unregister_tools();s_count=0;s_scanned=false;s_catalog_dirty=false;error("TF 卡已移除，应用暂不可用");
 }
 bool ps_games_prepare_storage(void) {
     if(close_active())return true;
@@ -751,8 +796,8 @@ bool ps_games_event(const ps_event_t *event) {
     ps_view_t v=ps_view();
     if(s_pinned&&event->type==PS_TAP&&ps_hit(event->x,event->y,16,v.h-38,v.w-32,30)){clear_pending();recover_active();return true;}
     if(ps_route()==PS_GAMES){
-        if(s_remove>=0){if(event->type==PS_TAP){int w=v.w-40;if(w>500)w=500;int x=(v.w-w)/2,y=(v.h-220)/2,bw=(w-52)/2;if(!ps_hit(event->x,event->y,x,y,w,220)||ps_hit(event->x,event->y,x+20,y+150,bw,42))s_remove=-1;else if(ps_hit(event->x,event->y,x+32+bw,y+150,bw,42)){char id[32];snprintf(id,sizeof(id),"%s",s_items[s_remove].info.id);s_remove=-1;if(!ps_games_remove(id))ps_toast(s_error);}ps_dirty();}return true;}
         if(event->type==PS_TAP&&ps_hit(event->x,event->y,v.w-90,87,74,30)){ps_games_rescan();return true;}
+        if(event->type==PS_TAP&&ps_hit(event->x,event->y,v.w-178,87,80,30)){ps_games_sort_cycle();return true;}
         // 上下滑动越过阈值即翻页；底栏点击保持原范围。左右滑动不在此消费。
         // Vertical drags turn the page once they clear the threshold; the bottom bar keeps its hit area. Horizontal swipes are not consumed here.
         {
@@ -765,8 +810,8 @@ bool ps_games_event(const ps_event_t *event) {
                 return true;
             }
         }
-        if(event->type!=PS_TAP&&event->type!=PS_LONG)return false;
-        for(unsigned i=s_page*6;i<s_count&&i<(s_page+1)*6;i++){int x,y,w,h;card_rect(i%6,&x,&y,&w,&h);if(ps_hit(event->x,event->y,x,y,w,h)){if(event->type==PS_LONG)s_remove=(int)i;else if(!open_item(i))ps_toast(s_error);ps_dirty();return true;}}
+        if(event->type!=PS_TAP)return false;
+        for(unsigned i=s_page*6;i<s_count&&i<(s_page+1)*6;i++){int x,y,w,h;card_rect(i%6,&x,&y,&w,&h);if(ps_hit(event->x,event->y,x,y,w,h)){if(!open_item(i))ps_toast(s_error);ps_dirty();return true;}}
         return false;
     }
     if(!s_app||s_pinned||s_power_paused||!same_card())return false;
@@ -777,41 +822,25 @@ bool ps_games_key(int key) {
     if(s_weread_link){if(key==-1){s_weread_link=false;ui_wifi_qr_clear();ps_dirty();}return true;}
     if(key==-1&&s_discard){retain_active();return true;}
     if(key==-1&&s_pinned){clear_pending();recover_active();return true;}
-    if(ps_route()==PS_GAMES){if(key==-1&&s_remove>=0){s_remove=-1;ps_dirty();return true;}return false;}
+    if(ps_route()==PS_GAMES)return false;
     if(!s_app||s_pinned||s_power_paused||!same_card())return false;
     s_in_call=true;bool changed=s_app->key(key);finish_call();return changed;
 }
 bool ps_games_tick(void) {
-    uint32_t dual_request=0,dual_session=0;bool dual_result=false;
-    if(ps_dual_game_open_result_take(&dual_request,&dual_result)&&!dual_result)
-        ps_toast("另一台无法打开同一游戏");
-    if(ps_dual_game_close_take(&dual_session,&dual_request)){
+    if(ps_dual_game_close_take()){
         s_dual_game_applying=true;
         if(game_route(ps_route()))ps_navigate(PS_GAMES);
         s_dual_game_applying=false;
-        ps_dual_game_close_finish(dual_request,!game_route(ps_route()));
         return true;
     }
-    // 从机可能先进入游戏，此时主机仍在书架且目录尚未扫描；先就绪目录，
-    // 未取走 BLE 打开请求，下一轮继续处理，不能过早 NACK。
-    // The peer may enter first while this unit is still on the shelf; prepare
-    // the catalog before consuming the BLE request so it is not NACKed early.
-    if(ps_dual_game_open_pending()&&!storage_held()&&ps_background_io_allowed())ps_games_rescan();
     uint8_t open_kind=0;
-    if(s_count>0&&ps_dual_game_open_take(&open_kind,&dual_session,&dual_request)){
-        bool opened=false;
-        for(int attempt=0;attempt<2&&!opened;attempt++){
-            for(unsigned i=0;i<s_count;i++)if(s_items[i].info.kind==open_kind){
-                s_dual_game_applying=true;
-                opened=open_item(i);
-                if(!opened)ps_toast(s_error);
-                s_dual_game_applying=false;
-                break;
-            }
-            if(!opened&&attempt==0)ps_games_rescan();
+    if(ps_dual_game_open_take(&open_kind)){
+        for(unsigned i=0;i<s_count;i++)if(s_items[i].info.kind==open_kind){
+            s_dual_game_applying=true;
+            if(!open_item(i))ps_toast(s_error);
+            s_dual_game_applying=false;
+            return true;
         }
-        ps_dual_game_open_finish(dual_request,dual_session,opened);
-        return true;
     }
     if(s_catalog_dirty&&!storage_held()&&ps_background_io_allowed()){ps_games_rescan();return true;}
     if(s_home_portal)return ps_home_portal_tick();

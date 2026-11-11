@@ -22,8 +22,7 @@ enum { PGA_STATUS_ARCADE=1u, PGA_STATUS_SNAKE=2u, PGA_STATUS_PAUSED=4u,
 /// 双机游戏角色 / Dual-game role
 typedef enum { PGA_DUO_NONE, PGA_DUO_SCREEN, PGA_DUO_CONTROLLER } pico_app_duo_role_t;
 /// 方向 0..3；4 暂停；5 速度；6 重开 / Directions 0..3; 4 pause; 5 speed; 6 restart
-enum { PGA_DUO_PAUSE=4, PGA_DUO_SPEED=5, PGA_DUO_RESTART=6,
-       PGA_DUO_CONTINUE=7, PGA_DUO_NEW_GAME=8 };
+enum { PGA_DUO_PAUSE=4, PGA_DUO_SPEED=5, PGA_DUO_RESTART=6 };
 typedef struct { int32_t w,h; bool landscape; } pico_app_view_t;
 typedef struct { int32_t type,x0,y0,x,y; int64_t ms; } pico_app_event_t;
 

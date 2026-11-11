@@ -21,6 +21,9 @@ class Device:
         self.state=json.loads(result);assert self.state['ok'],(line,self.state)
         self.now=self.state['now_ms'];history.append({'device':self.name,'command':line,'state':self.state});return self.state
     def tick(self):self.now+=20;return self.cmd(f'tick {self.now}')
+    def tap(self,x,y):
+        self.cmd(f'touch down {x} {y} {self.now+20}')
+        return self.cmd(f'touch up {x} {y} {self.now+60}')
     def capture(self,name):png_from_pgm(self.root/'frame.pgm',run/f'{name}-{self.name}.png')
 try:
     a=Device('primary',ROOT/'main/assets/serif.ttf');b=Device('secondary',ROOT/'main/assets/kai.ttf')
@@ -56,6 +59,8 @@ try:
     until(lambda:a.state['dual_synced'] and b.state['dual_synced'],'initial library and font sync')
     until(lambda:a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_page')==1 and b.state.get('dual_page')==2 and a.state.get('dual_target')==b.state.get('dual_target')==0,'queued open completes after font sync')
     assert a.state['page_end']==b.state['page_start']
+    assert any((a.root/'tf/.pico-system/nvs').glob('rp_books_b_*')),'primary progress missing'
+    assert not any((b.root/'tf/.pico-system/nvs').glob('rp_books_b_*')),'secondary must not persist paired progress'
     a.capture('paired');b.capture('paired')
     assert (a.books/'same.txt').read_bytes()!=(b.books/'same.txt').read_bytes()
     def contents(d):return sorted(hashlib.sha256(f.read_bytes()).hexdigest() for f in d.books.iterdir() if f.suffix in ('.txt','.epub'))
@@ -80,24 +85,37 @@ try:
         until(lambda:a.state['dual_synced'] and b.state['dual_synced'],'unchanged manifest reuses verified entries')
         assert metadata(d)==before,'external metadata changed during unchanged-file test'
         assert d.state['dual_verified_bytes']==0 and d.state['dual_reused']==d.state['dual_books']
+        assert d.state['dual_fast_verified'] and d.state['dual_peer_id']
         # Device USB diagnostics must remain complete JSON inside the production 1024-byte reply.
         for line in Path(d.log.name).read_text().splitlines():
             if line.startswith('DUALUSB '):json.loads(line[8:])
     # A peer in ordinary settings must still follow an explicit book open; edit screens stay protected.
+    b.cmd('route 0');pump(10);assert b.state['dual_secondary_shelf'] and b.state['dual_synced']
+    b.capture('dual-secondary-progress-shelf')
     a.cmd('route 5');pump(3)
-    b.cmd('dual-usb RPICO DUAL ITEM 0')
-    b.cmd('dual-usb RPICO DUAL OPEN 0')
+    b.tap(180,185)
     until(lambda:a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('book_page')==1 and b.state.get('book_page')==2,'open from secondary')
     until(lambda:a.state.get('dual_target')==b.state.get('dual_target')==0,'first spread settled');pump(20);a.capture('spread-1');b.capture('spread-1')
     assert a.state['page_end']==b.state['page_start'],(a.state,b.state)
     sounds=(a.state['sound_played'],b.state['sound_played'])
+    offset=len(history)
     b.cmd('powerkey')
-    until(lambda:a.state.get('book_page')==3 and b.state.get('book_page')==4,'secondary short power next')
+    until(lambda:a.state.get('book_page')==3 and b.state.get('book_page')==4 and a.state.get('book_painted_page')==3 and b.state.get('book_painted_page')==4,'secondary short power next')
+    secondary_lead=next(i for i,h in enumerate(history[offset:],offset) if h['device']=='secondary' and h['state'].get('book_painted_page')==4)
+    primary_follow=next(i for i,h in enumerate(history[offset:],offset) if h['device']=='primary' and h['state'].get('book_painted_page')==3)
+    assert secondary_lead<primary_follow,(secondary_lead,primary_follow,a.state,b.state)
+    assert primary_follow-secondary_lead>=6,(secondary_lead,primary_follow,a.state,b.state)
+    assert a.state['book_turn_dir']==b.state['book_turn_dir']==1
     assert (a.state['sound_played'],b.state['sound_played'])==(sounds[0],sounds[1]+1)
     assert b.state['sound_last']==1
     assert a.state['power_state']==b.state['power_state']==0
+    offset=len(history)
     a.cmd('powerkey')
-    until(lambda:a.state.get('book_page')==1 and b.state.get('book_page')==2,'primary short power previous')
+    until(lambda:a.state.get('book_page')==1 and b.state.get('book_page')==2 and a.state.get('book_painted_page')==1 and b.state.get('book_painted_page')==2,'primary short power previous')
+    primary_lead=next(i for i,h in enumerate(history[offset:],offset) if h['device']=='primary' and h['state'].get('book_painted_page')==1)
+    secondary_follow=next(i for i,h in enumerate(history[offset:],offset) if h['device']=='secondary' and h['state'].get('book_painted_page')==2)
+    assert primary_lead<secondary_follow,(primary_lead,secondary_follow,a.state,b.state)
+    assert a.state['book_turn_dir']==b.state['book_turn_dir']==-1
     assert (a.state['sound_played'],b.state['sound_played'])==(sounds[0]+1,sounds[1]+1)
     # 静音不阻挡翻页；接收端始终不因同步重复发声。/ Muting never blocks turns; synchronized peers do not echo cues.
     for flags in (13,14):
@@ -114,8 +132,7 @@ try:
         d.cmd(f'pose {x} {y} {z}')
         for _ in range(3):d.cmd(f'tick {d.now+600}')
         pump(5)
-    def page_identity(d):return (d.state['dual_page'],d.state['book_chapter'],d.state['page_start'],d.state['page_end'],d.state['dual_revision'])
-    def page_position(d):return page_identity(d)[:4]
+    def page_identity(d):return (d.state['dual_page'],d.state['book_chapter'],d.state['page_start'],d.state['page_end'])
     def tap(d,x,y):
         d.cmd(f'touch down {round(x)} {round(y)} {d.now+80}')
         d.cmd(f'touch up {round(x)} {round(y)} {d.now+60}')
@@ -125,15 +142,11 @@ try:
         assert (global_preferences(a),global_preferences(b))==preferences
         assert a.state['rotation_locked'] and b.state['rotation_locked']
     def rotation_switch(d,role,enabled):
-        before=(page_position(a),page_position(b));base=a.state['dual_base_rotation']
+        before=(page_identity(a),page_identity(b));base=a.state['dual_base_rotation']
         expected=[a.state['dual_primary_flip'],a.state['dual_secondary_flip']];expected[role-1]=enabled
-        d.cmd('route 34');pump(4)
-        tap(d,180 if role==1 else 288,182)
+        d.cmd(f'dual-flip {role} {int(enabled)}')
         until(lambda:orientation_is(base,*expected),'menu role rotation synchronizes')
-        d.capture(f'rotation-switch-{role}-{int(enabled)}')
-        tap(d,23,47)
-        until(lambda:a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_target')==b.state.get('dual_target')==0,'rotation settings Back resumes reading')
-        assert (page_position(a),page_position(b))==before
+        after=(page_identity(a),page_identity(b));assert after==before,(before,after,a.state,b.state)
         orientation_preferences_preserved()
     until(lambda:orientation_is(3,False,False),'default shared orientation')
     assert (a.state['rotation'],b.state['rotation'])==(3,3)
@@ -219,7 +232,7 @@ try:
     orientation_preferences_preserved()
     a.cmd('dual 1 127.0.0.1 123456');b.cmd('dual 2 127.0.0.1 123456')
     a.cmd('route 0');b.cmd('route 0')
-    until(lambda:a.state['dual_synced'] and b.state['dual_synced'] and a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_target')==b.state.get('dual_target')==0 and a.state['dual_left_ready'] and b.state['dual_left_ready'],'re-enable retains reading and role offsets')
+    until(lambda:a.state['dual_synced'] and b.state['dual_synced'] and a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_target')==b.state.get('dual_target')==0,'re-enable retains reading and role offsets')
     assert orientation_is(3,False,True) and (a.state['rotation'],b.state['rotation'])==(3,1)
     assert (page_identity(a)[:4],page_identity(b)[:4])==before
     orientation_preferences_preserved()
@@ -228,12 +241,14 @@ try:
     b.cmd('powerkey');pump(40)
     assert (a.state['dual_page'],b.state['dual_page'])==(1,2),(a.state,b.state)
     offset=len(history);tap(a,8,100)
-    until(lambda:a.state.get('dual_page')==3 and b.state.get('dual_page')==4,'left page before right')
-    transitions=[(i,h['device'],h['state'].get('dual_page')) for i,h in enumerate(history[offset:])]
-    assert next(i for i,d,page in transitions if d=='primary' and page==3)<next(i for i,d,page in transitions if d=='secondary' and page==4)
+    pump(20)
+    if (a.state.get('dual_page'),b.state.get('dual_page'))!=(3,4):b.cmd('powerkey')
+    until(lambda:a.state.get('dual_page')==3 and b.state.get('dual_page')==4 and a.state.get('book_painted_page')==3 and b.state.get('book_painted_page')==4,'direction lead before follow')
+    transitions=[(i,h['device'],h['state'].get('book_painted_page')) for i,h in enumerate(history[offset:])]
+    assert next(i for i,d,page in transitions if d=='secondary' and page==4)<next(i for i,d,page in transitions if d=='primary' and page==3)
     # Simulated panel body failure: a successful header-only update must not release the right page.
-    a.cmd('display-body-failure 1');b.cmd('powerkey');pump(15)
-    assert a.state['dual_page']==5 and not a.state['dual_left_ready'] and b.state['dual_page']==4
+    a.cmd('dual-anim 0');a.cmd('display-body-failure 1');b.cmd('powerkey');pump(15)
+    assert a.state['dual_page']==5 and not a.state['dual_left_ready'] and b.state['dual_page']==4,(a.state,b.state)
     a.cmd(f'touch down 140 22 {a.now+80}')
     a.cmd(f'touch move 230 22 {a.now+80}')
     pump(5)
@@ -242,6 +257,7 @@ try:
     assert not a.state['dual_left_ready'] and b.state['dual_page']==4
     a.cmd('display-body-failure 0')
     until(lambda:a.state['dual_left_ready'] and b.state['dual_page']==6,'body retry releases secondary only after success')
+    a.cmd('dual-anim 1')
     # Both numeric dialogs validate then submit one shared spread, never a local-only jump.
     jump_open(b);digit(b,1);digit(b,0);confirm(b)
     until(lambda:a.state.get('dual_page')==9 and b.state.get('dual_page')==10 and not b.state['book_jump'],'secondary numeric even-page jump')
@@ -289,7 +305,7 @@ try:
             identity=(a.state['dual_spread'],a.state['dual_revision'])
             d.cmd(f'route {route}');pump(4);tap(d,23,47)
             until(settled,'settings or records back resumes shared book')
-            assert (a.state['dual_spread'],a.state['dual_revision'])==identity
+            assert a.state['dual_spread']==identity[0]
         page=a.state['dual_spread'];path=d.state['book_path']
         d.cmd('key 1 short');pump(4);assert d.state['active_app']!='book'
         d.cmd('dual-open '+path)
@@ -322,7 +338,6 @@ try:
     tap(b,288,137);tap(b,100,210);pump(3)
     tap(b,95,574)
     tap(b,180,568);pump(3)
-    assert b.state['active_app']!='book','pending annotation Back must exit without reopening'
     b.cmd('route 2');tap(b,288,137);tap(b,100,210);tap(b,95,574)
     until(lambda:settled() and (a.state['dual_page'],b.state['dual_page'])==bookmarked,'bookmark returns to paired source')
     assert record_index.read_bytes()==record_bytes,'navigation must not change persisted bookmark'

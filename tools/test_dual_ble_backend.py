@@ -6,6 +6,8 @@ from pathlib import Path
 import argparse, re, subprocess, tempfile
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=(ROOT/'components/read_pico_ble_pager/read_pico_dual_ble.c').read_text()
+advertisement=SOURCE[SOURCE.index('if(adv_ip[0])'):SOURCE.index('struct ble_gap_adv_params')]
+assert 'adv_code' not in SOURCE and 'strtoul(adv_code' not in advertisement
 def function(name):
     m=re.search(r'(?:^|\n)((?:static\s+)?[\w\s*]+?\b'+re.escape(name)+r'\([^;]*?\)\s*\{)',SOURCE)
     if not m:raise RuntimeError(name)

@@ -39,8 +39,27 @@ settings.nav.full	首页最多保留五个入口，请先隐藏或替换	Home ho
 settings.nav.none_left	所有可用入口都已显示	Every item is already on Home
 settings.nav.save_failed	未能保存，调整内容已保留，请重试	Couldn't save. Your edits are kept.
 launcher.title	应用集	Apps
-launcher.refresh	刷新	Refresh
-launcher.summary	系统与工具 %u · TF 游戏 %u	System %u · TF games %u
+launcher.refresh	扫描	Scan
+launcher.summary	系统 %u · TF 应用 %u · 长按管理	System %u · TF apps %u · Hold to manage
+launcher.download.title	应用下载	App downloads
+launcher.download.action	同步	Sync
+launcher.download.picker	选择要下载的应用	Choose apps to download
+launcher.download.all	全选	All
+launcher.download.selected	下载 %u 项	Download %u
+launcher.download.installed	已安装	Installed
+launcher.download.chosen	已选择	Selected
+launcher.download.available	可下载	Available
+launcher.download.need_selection	请先选择要下载的应用	Choose at least one app
+launcher.download.started	已开始下载所选应用	Selected app downloads started
+launcher.app.gomoku	五子棋	Gomoku
+launcher.app.go	围棋	Go
+launcher.app.xiangqi	中国象棋	Xiangqi
+launcher.app.chess	国际象棋	Chess
+launcher.app.2048	2048	2048
+launcher.app.snake	贪吃蛇	Snake
+launcher.app.drawing	画板笔记	Drawing notes
+launcher.app.weread	微信读书	WeRead
+launcher.app.home	家庭连接	Home Link
 launcher.settings	系统设置	Settings
 launcher.source.settings	设置	Settings
 launcher.source.system	系统应用	System

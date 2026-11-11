@@ -1,6 +1,8 @@
 # 双机独立实验分支；保持原硬件时序及分区，只缩小非热路径。
 # Independent dual-reader branch: retain board timings and partition geometry.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # 双机主机需要 GATT 服务端；从机保留 Central。/ Primary GATT server; secondary remains Central.
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
@@ -15,6 +17,16 @@ CONFIG_ESP_WIFI_RX_BA_WIN=4
 # 单连接加扫描/广播最多三个活动，不保留六路控制器资源。
 # One connection plus scanning/advertising needs at most three controller activities.
 CONFIG_BT_CTRL_BLE_MAX_ACT=3
+
+# 更新、家庭与微信读书共用较小TLS记录，避免Wi-Fi+BLE同时运行时内部RAM峰值不足。
+# Share smaller TLS records with updates, Home and WeRead to bound internal-RAM peaks.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
+# xhfo.net 当前使用 Cloudflare 的 GTS R4 交叉签名链；只启用官方包校验路径。
+# xhfo.net currently uses Cloudflare's cross-signed GTS R4 chain; use the official bundle path.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 
 # 普通中型缓冲优先 PSRAM，内部内存保留给双无线、任务栈及 TF DMA。
 # Prefer PSRAM for ordinary medium buffers; reserve internal memory for radios, stacks and TF DMA.

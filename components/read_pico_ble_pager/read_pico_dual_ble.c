@@ -30,11 +30,12 @@ static const ble_uuid128_t service_uuid = BLE_UUID128_INIT(0x8e,0xb1,0x76,0x9d,0
 static const ble_uuid128_t rx_uuid = BLE_UUID128_INIT(0x8e,0xb1,0x76,0x9d,0x60,0x54,0x4a,0x86,0x91,0x6f,0x18,0x67,0x02,0x02,0x48,0x58);
 static const ble_uuid128_t tx_uuid = BLE_UUID128_INIT(0x8e,0xb1,0x76,0x9d,0x60,0x54,0x4a,0x86,0x91,0x6f,0x18,0x67,0x03,0x02,0x48,0x58);
 typedef struct { uint32_t generation; uint8_t size, bytes[PICO_DUAL_BLE_PACKET_MAX]; } packet_t;
-typedef struct { int role; char code[7]; } config_t;
+typedef struct { int role; char code[7]; uint32_t epoch; } config_t;
 static portMUX_TYPE guard = portMUX_INITIALIZER_UNLOCKED;
 static config_t wanted, current;
 static pico_dual_ble_status_t snapshot;
 static bool worker, failed;
+static uint32_t config_epoch = 1;
 static QueueHandle_t incoming, outgoing;
 static uint16_t connection = NONE, local_tx, remote_rx, remote_tx, service_start, service_end;
 static uint8_t address_type;
@@ -42,7 +43,7 @@ static bool synced, subscribed, connecting, discovering, writing;
 static uint32_t epoch;
 static int64_t retry_at, setup_deadline;
 static bool scan_only;
-static char adv_ip[48], adv_code[7];
+static char adv_ip[48], adv_ap_ssid[33];
 static bool adv_info_dirty;
 static pico_dual_ble_peer_info_t peer_info;
 static struct ble_npl_callout ticker;
@@ -170,25 +171,37 @@ static void discover_peer(const struct ble_gap_disc_desc* disc) {
     if(connecting || connection != NONE)return;
     struct ble_hs_adv_fields fields;
     if(ble_hs_adv_parse_fields(&fields,disc->data,disc->length_data))return;
-    // 扫描响应是独立的 BLE_GAP_EVENT_DISC，只有厂商数据，没有服务 UUID。
-    // The scan response arrives as its own discovery event with manufacturer data
-    // but no service UUID; parse it before the UUID filter.
-    if(fields.mfg_data && fields.mfg_data_len >= 9 && fields.mfg_data[0] == 0xff && fields.mfg_data[1] == 0xff) {
-        unsigned a=fields.mfg_data[2],b=fields.mfg_data[3],c=fields.mfg_data[4],d=fields.mfg_data[5];
-        unsigned code=((unsigned)fields.mfg_data[6]<<16)|((unsigned)fields.mfg_data[7]<<8)|fields.mfg_data[8];
-        if (code <= 999999) {
+    bool ours=false;
+    if(fields.mfg_data && fields.mfg_data_len >= 8 && fields.mfg_data[0] == 0xfe && fields.mfg_data[1] == 0xfe) {
+        unsigned a=0,b=0,c=0,d=0,mode=0,ssid_len=0;
+        if(fields.mfg_data_len>=11&&fields.mfg_data[2]=='X'&&fields.mfg_data[3]=='P'){
+            a=fields.mfg_data[6];b=fields.mfg_data[7];c=fields.mfg_data[8];d=fields.mfg_data[9];
+            mode=fields.mfg_data[5];ssid_len=fields.mfg_data[10];
+            ours=fields.mfg_data[4]==1&&fields.mfg_data_len>=11+ssid_len;
+        }else if(fields.mfg_data_len>=8){
+            // 兼容首次广播格式；两端升级前仍可发现。/ Accept the first wire format while both readers upgrade.
+            a=fields.mfg_data[2];b=fields.mfg_data[3];c=fields.mfg_data[4];d=fields.mfg_data[5];
+            mode=fields.mfg_data[6]&1?2:1;ssid_len=fields.mfg_data[7];
+            ours=fields.mfg_data_len>=8+ssid_len;
+        }
+        if (ours&&ssid_len<=sizeof(peer_info.ap_ssid)-1) {
             portENTER_CRITICAL(&guard);
             snprintf(peer_info.ip,sizeof(peer_info.ip),"%u.%u.%u.%u",a,b,c,d);
-            snprintf(peer_info.code,sizeof(peer_info.code),"%06u",code);
-            peer_info.found=true;
+            const uint8_t* ssid=fields.mfg_data+(fields.mfg_data[2]=='X'?11:8);
+            memcpy(peer_info.ap_ssid,ssid,ssid_len);
+            peer_info.ap_ssid[ssid_len]=0;
+            peer_info.direct=mode==2;
+            peer_info.found=a||b||c||d;
             portEXIT_CRITICAL(&guard);
         }
     }
-    if(disc->event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP)return;
-    bool found=false;
-    for(unsigned i=0;i<fields.num_uuids128;i++)if(!ble_uuid_cmp(&fields.uuids128[i].u,&service_uuid.u))found=true;
-    if(!found)return;
+    for(unsigned i=0;i<fields.num_uuids128;i++)if(!ble_uuid_cmp(&fields.uuids128[i].u,&service_uuid.u))ours=true;
+    if(!ours)return;
     if(scan_only)return;
+    // 自动重连先取得扫描响应中的端点/热点名，避免连接后才发现子机不在主机热点上。
+    // Auto-reconnect waits for the scan response endpoint/AP name so the secondary can join the primary hotspot.
+    portENTER_CRITICAL(&guard);bool endpoint_known=peer_info.found;portEXIT_CRITICAL(&guard);
+    if(!endpoint_known)return;
     if(esp_timer_get_time()<reject_until)
         for(unsigned i=0;i<rejected_count;i++)if(!memcmp(&rejected[i],&disc->addr,sizeof(ble_addr_t)))return;
     attempted=disc->addr;connecting=true;setup_deadline=esp_timer_get_time()+25000000;
@@ -244,7 +257,7 @@ static void host_reset(int reason) { synced=false;clear_link(reason); }
 static void host_run(void* arg) { (void)arg;nimble_port_run();vTaskSuspend(NULL); }
 static void host_tick(struct ble_npl_event* ev) {
     (void)ev;
-    portENTER_CRITICAL(&guard);bool enabled=wanted.role==current.role&&!memcmp(wanted.code,current.code,7);portEXIT_CRITICAL(&guard);
+    portENTER_CRITICAL(&guard);bool enabled=wanted.role==current.role&&wanted.epoch==current.epoch&&!memcmp(wanted.code,current.code,7);portEXIT_CRITICAL(&guard);
     if(!enabled)return;
     int64_t now=esp_timer_get_time();
     if(connecting && now>setup_deadline)reject(BLE_HS_ETIMEOUT);
@@ -256,30 +269,32 @@ static void host_tick(struct ble_npl_event* ev) {
             ble_gap_adv_stop();
         }
         if(current.role==1 && !ble_gap_adv_active()){
-            struct ble_hs_adv_fields fields={.flags=BLE_HS_ADV_F_DISC_GEN|BLE_HS_ADV_F_BREDR_UNSUP,
-                .uuids128=(ble_uuid128_t*)&service_uuid,.num_uuids128=1,.uuids128_is_complete=1};
-            int rc=ble_gap_adv_set_fields(&fields);
-            static uint8_t mfr[9];
-            struct ble_hs_adv_fields rsp={0};
-            if(adv_ip[0] && strlen(adv_code)==6) {
-                unsigned a=0,b=0,c=0,d=0; char tail[4]={0};
-                if(sscanf(adv_ip,"%u.%u.%u.%u%1s",&a,&b,&c,&d,tail)==4 && !tail[0]) {
-                    mfr[0]=0xff;mfr[1]=0xff;mfr[2]=(uint8_t)a;mfr[3]=(uint8_t)b;mfr[4]=(uint8_t)c;mfr[5]=(uint8_t)d;
-                    unsigned code=(unsigned)strtoul(adv_code,NULL,10);
-                    mfr[6]=(uint8_t)(code>>16);mfr[7]=(uint8_t)(code>>8);mfr[8]=(uint8_t)code;
-                    rsp.mfg_data=mfr;rsp.mfg_data_len=9;
-                    (void)ble_gap_adv_rsp_set_fields(&rsp);
-                }
+            static uint8_t mfr[27];
+            unsigned a=0,b=0,c=0,d=0;char tail[4]={0};
+            if(adv_ip[0]) {
+                if(sscanf(adv_ip,"%u.%u.%u.%u%1s",&a,&b,&c,&d,tail)!=4||tail[0])a=b=c=d=0;
             }
+            size_t ssid_len=strnlen(adv_ap_ssid,sizeof(adv_ap_ssid)-1);
+            if(ssid_len>16)ssid_len=0;
+            mfr[0]=0xfe;mfr[1]=0xfe;mfr[2]='X';mfr[3]='P';mfr[4]=1;
+            mfr[5]=ssid_len?2:1;mfr[6]=(uint8_t)a;mfr[7]=(uint8_t)b;mfr[8]=(uint8_t)c;mfr[9]=(uint8_t)d;
+            mfr[10]=(uint8_t)ssid_len;memcpy(mfr+11,adv_ap_ssid,ssid_len);
+            struct ble_hs_adv_fields fields={.flags=BLE_HS_ADV_F_DISC_GEN|BLE_HS_ADV_F_BREDR_UNSUP,
+                .mfg_data=mfr,.mfg_data_len=(uint8_t)(11+ssid_len)};
+            int rc=ble_gap_adv_set_fields(&fields);
+            struct ble_hs_adv_fields rsp={.uuids128=(ble_uuid128_t*)&service_uuid,
+                .num_uuids128=1,.uuids128_is_complete=1};
+            int rsp_rc=ble_gap_adv_rsp_set_fields(&rsp);
+            if(!rc&&rsp_rc)rc=rsp_rc;
             struct ble_gap_adv_params params={.conn_mode=BLE_GAP_CONN_MODE_UND,.disc_mode=BLE_GAP_DISC_MODE_GEN,
                 .itvl_min=160,.itvl_max=240};
             if(!rc)rc=ble_gap_adv_start(address_type,NULL,BLE_HS_FOREVER,&params,gap_event,NULL);
             if(rc){error_set(rc);retry_at=now+2000000;}
-            else adv_info_dirty = false;
+            else {error_set(0);adv_info_dirty = false;}
         }else if(current.role==2 && !ble_gap_disc_active()){
             struct ble_gap_disc_params params={.itvl=0x50,.window=0x40,.passive=0,.filter_duplicates=0};
             int rc=ble_gap_disc(address_type,5000,&params,gap_event,NULL);
-            retry_at=now+6000000;if(rc)error_set(rc);
+            retry_at=now+6000000;if(rc)error_set(rc);else error_set(0);
         }
     }
     pico_dual_ble_status_t status;pico_dual_ble_status(&status);
@@ -328,7 +343,7 @@ static void supervisor(void* unused) {
         nimble_port_freertos_init(host_run);
         ble_npl_callout_reset(&ticker,ble_npl_time_ms_to_ticks32(20));
         for(;;){
-            portENTER_CRITICAL(&guard);bool same=wanted.role==current.role&&!memcmp(wanted.code,current.code,7);portEXIT_CRITICAL(&guard);
+            portENTER_CRITICAL(&guard);bool same=wanted.role==current.role&&wanted.epoch==current.epoch&&!memcmp(wanted.code,current.code,7);portEXIT_CRITICAL(&guard);
             if(!same)break;
             vTaskDelay(pdMS_TO_TICKS(50));
         }
@@ -341,14 +356,14 @@ static void supervisor(void* unused) {
     portENTER_CRITICAL(&guard);snapshot.active=false;snapshot.connected=false;worker=false;portEXIT_CRITICAL(&guard);
     vTaskDelete(NULL);
 }
-void pico_dual_ble_set_pairing_info(const char* ip, const char* code) {
-    char next_ip[48], next_code[7];
+void pico_dual_ble_set_pairing_info(const char* ip, const char* ap_ssid) {
+    char next_ip[48], next_ssid[33];
     snprintf(next_ip, sizeof(next_ip), "%s", ip ? ip : "");
-    snprintf(next_code, sizeof(next_code), "%s", code ? code : "");
+    snprintf(next_ssid, sizeof(next_ssid), "%s", ap_ssid ? ap_ssid : "");
     portENTER_CRITICAL(&guard);
-    if (strcmp(adv_ip, next_ip) || strcmp(adv_code, next_code)) {
+    if (strcmp(adv_ip, next_ip) || strcmp(adv_ap_ssid, next_ssid)) {
         memcpy(adv_ip, next_ip, sizeof(adv_ip));
-        memcpy(adv_code, next_code, sizeof(adv_code));
+        memcpy(adv_ap_ssid, next_ssid, sizeof(adv_ap_ssid));
         adv_info_dirty = true;
     }
     portEXIT_CRITICAL(&guard);
@@ -378,13 +393,22 @@ esp_err_t pico_dual_ble_configure(int role,const char* code) {
     if(!incoming || !outgoing)return ESP_ERR_NO_MEM;
     portENTER_CRITICAL(&guard);
     if(failed){portEXIT_CRITICAL(&guard);return ESP_ERR_INVALID_STATE;}
-    wanted.role=role;memcpy(wanted.code,code,7);
+    bool changed=wanted.role!=role||memcmp(wanted.code,code,7);
+    if(changed && ++config_epoch == 0) ++config_epoch;
+    wanted.role=role;memcpy(wanted.code,code,7);wanted.epoch=config_epoch;
+    if(changed&&role==2)memset(&peer_info,0,sizeof(peer_info));
     if(worker){portEXIT_CRITICAL(&guard);return ESP_OK;}
     worker=true;snapshot.active=true;portEXIT_CRITICAL(&guard);
     if(xTaskCreate(supervisor,"dual_ble",6144,NULL,3,NULL)!=pdPASS){
         portENTER_CRITICAL(&guard);worker=false;snapshot.active=false;portEXIT_CRITICAL(&guard);return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+void pico_dual_ble_request_restart(void) {
+    portENTER_CRITICAL(&guard);
+    if(++config_epoch == 0) ++config_epoch;
+    if(wanted.role) wanted.epoch=config_epoch;
+    portEXIT_CRITICAL(&guard);
 }
 void pico_dual_ble_stop(void) { portENTER_CRITICAL(&guard);wanted.role=0;portEXIT_CRITICAL(&guard); }
 void pico_dual_ble_status(pico_dual_ble_status_t* out) { portENTER_CRITICAL(&guard);*out=snapshot;portEXIT_CRITICAL(&guard); }

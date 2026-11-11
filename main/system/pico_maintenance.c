@@ -15,6 +15,7 @@
 #include "pico_connectivity.h"
 #include "pico_datetime.h"
 #include "pico_desktop.h"
+#include "pico_updates.h"
 #ifdef PICO_DUAL_READER
 #include "pico_dual.h"
 #endif
@@ -59,13 +60,16 @@ static void pm_status(void){
     read_pico_sd_info_t sd={0};read_pico_sd_get_info(&sd);
     read_pico_usb_status_t usb={0};read_pico_usb_get_status(&usb);
     read_pico_connectivity_status_t wifi;read_pico_connectivity_get_status(&wifi);
+    char update_latest[32], update_message[96];bool update_newer=false;unsigned update_apps=0;
+    (void)ps_updates_status(update_latest,sizeof(update_latest),&update_newer,&update_apps,update_message,sizeof(update_message));
     unsigned books=0;bool loading=false,limited=false;ps_reader_library_status(&books,&loading,&limited);
-    printf("\nRPICO {\"device\":\"read-pico\",\"version\":\"%s\",\"usb_held\":%s,\"usb_background_supported\":true,\"usb_background\":%s,\"usb_active\":%s,\"usb_connected\":%s,\"usb_host_ejected\":%s,\"usb_debug_restored\":%s,\"usb_error\":%d,\"route\":%d,\"storage_busy\":%s,\"present\":%s,\"mounted\":%s,\"state\":%d,\"stage\":%d,\"read_verified\":%s,\"write_verified\":%s,\"bytes\":%llu,\"free\":%llu,\"error\":%d,\"wifi_connected\":%s,\"transfer_active\":%s,\"transfer_url\":\"%s\",\"done\":%u,\"books_count\":%u,\"books_loading\":%s,\"books_limited\":%s,\"keep_awake\":%s,\"power\":%s}\n",
+    printf("\nRPICO {\"device\":\"read-pico\",\"version\":\"%s\",\"usb_held\":%s,\"usb_background_supported\":true,\"usb_background\":%s,\"usb_active\":%s,\"usb_connected\":%s,\"usb_host_ejected\":%s,\"usb_debug_restored\":%s,\"usb_error\":%d,\"route\":%d,\"storage_busy\":%s,\"present\":%s,\"mounted\":%s,\"state\":%d,\"stage\":%d,\"read_verified\":%s,\"write_verified\":%s,\"bytes\":%llu,\"free\":%llu,\"error\":%d,\"wifi_connected\":%s,\"transfer_active\":%s,\"transfer_url\":\"%s\",\"done\":%u,\"books_count\":%u,\"books_loading\":%s,\"books_limited\":%s,\"keep_awake\":%s,\"update_latest\":\"%s\",\"update_newer\":%s,\"update_apps\":%u,\"power\":%s}\n",
         ps_version(),ps_usb_held()?"true":"false",ps_usb_background()?"true":"false",usb.active?"true":"false",usb.connected?"true":"false",usb.host_ejected?"true":"false",usb.debug_restored?"true":"false",usb.last_error,
         ps_route(),ps_storage_busy()?"true":"false",sd.present?"true":"false",sd.mounted?"true":"false",sd.state,sd.stage,
         sd.read_verified?"true":"false",sd.write_verified?"true":"false",(unsigned long long)sd.capacity_bytes,
         (unsigned long long)sd.free_bytes,sd.error,wifi.connected?"true":"false",wifi.transfer_active?"true":"false",
-        wifi.transfer.url,wifi.transfer.done_count,books,loading?"true":"false",limited?"true":"false",app_settings_test_awake()?"true":"false",power);
+        wifi.transfer.url,wifi.transfer.done_count,books,loading?"true":"false",limited?"true":"false",app_settings_test_awake()?"true":"false",
+        update_latest,update_newer?"true":"false",update_apps,power);
 }
 // 只输出状态与错误阶段，不输出网络名称或凭据。/ Emit only state/error phases, never network names or credentials.
 static void pm_wifi_status(void){
@@ -76,6 +80,13 @@ static void pm_wifi_status(void){
         (unsigned)wifi.network_count,(unsigned)wifi.saved_count,(unsigned)wifi.submitted_seq,(unsigned)wifi.completed_seq,
         (unsigned)wifi.result_seq,wifi.last_operation,wifi.last_error,(unsigned)wifi.scan_completed_seq,wifi.scan_error,wifi.scan_failure);
 }
+static void pm_update_status(void){
+    char latest[32],message[96];bool newer=false,firmware_ready=ps_updates_firmware_ready();unsigned apps=0;
+    (void)ps_updates_status(latest,sizeof(latest),&newer,&apps,message,sizeof(message));
+    printf("\nRPICO {\"update_status\":true,\"latest\":\"%s\",\"newer\":%s,\"apps\":%u,\"firmware_ready\":%s,\"message\":\"%s\",\"online\":%s}\n",
+        latest,newer?"true":"false",apps,firmware_ready?"true":"false",message,
+        read_pico_connectivity_online()?"true":"false");
+}
 static void pm_command(void){
     bool accepted=false,background=false;
     if(!strncmp(pm_line,PS_WIRELESS_PREFIX,sizeof(PS_WIRELESS_PREFIX)-1)){
@@ -85,6 +96,22 @@ static void pm_command(void){
     }
     if(!strcmp(pm_line,"RPICO STATUS")){pm_status();return;}
     if(!strcmp(pm_line,"RPICO TIME")){pm_time_status();return;}
+    if(!strcmp(pm_line,"RPICO UPDATE STATUS")){pm_update_status();return;}
+    if(!strcmp(pm_line,"RPICO UPDATE CHECK")){
+        bool ok=ps_updates_check();
+        printf("\nRPICO {\"accepted\":%s,\"update_check\":true}\n",ok?"true":"false");
+        fflush(stdout);return;
+    }
+    if(!strcmp(pm_line,"RPICO UPDATE FIRMWARE")){
+        bool ok=ps_updates_download_firmware();
+        printf("\nRPICO {\"accepted\":%s,\"firmware_download\":true}\n",ok?"true":"false");
+        fflush(stdout);return;
+    }
+    if(!strcmp(pm_line,"RPICO UPDATE INSTALL CONFIRM_REBOOT")){
+        bool ok=ps_updates_arm_firmware();
+        printf("\nRPICO {\"accepted\":%s,\"firmware_install\":true}\n",ok?"true":"false");
+        fflush(stdout);return;
+    }
 #ifdef PICO_DUAL_READER
     if(!strncmp(pm_line,"RPICO DUAL ",11)){
         char out[1024];

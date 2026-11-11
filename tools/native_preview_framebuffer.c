@@ -7,7 +7,6 @@
 #include "ui_kit.h"
 #include "display.h"
 #include "continuous_du.h"
-#include "e0470_page_turn.h"
 #include <string.h>
 static enum EpdRotation host_rotation=EPD_ROT_INVERTED_PORTRAIT;
 static uint8_t *host_frame;
@@ -20,10 +19,6 @@ static EpdRect host_refresh_area;
 static enum EpdDrawMode host_refresh_mode;
 static bool host_refresh_partial;
 const EpdWaveform E0470_FOLLOW_WAVEFORM={0},E0470_WAVEFORM={0};
-// 主机预览不做面板错相动画，返回失败让阅读页走普通整页刷新。
-// Host preview skips panel phased animation and lets the reader use a normal full refresh.
-void e0470_page_turn_set_tick_us(int us){(void)us;}
-enum EpdDrawError e0470_page_turn(EpdiyHighlevelState *hl,EpdRect area,enum e0470_page_turn_direction direction){(void)hl;(void)area;(void)direction;return (enum EpdDrawError)-1;}
 int epd_width(void){return 1216;}
 int epd_height(void){return 684;}
 enum EpdRotation epd_get_rotation(void){return host_rotation;}

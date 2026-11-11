@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "nvs.h"
 #include "native_home_http_stub.h"
+#include "e0470_page_turn.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdarg.h>
@@ -155,8 +156,20 @@ int read_pico_pmu_cmd(uint16_t cmd,const uint8_t *data,size_t bytes){
     if(cmd!=PMU_CMD_TIME_SYNC||!data||bytes!=4)return ESP_ERR_INVALID_ARG;
     runtime_epoch=(uint32_t)data[0]|(uint32_t)data[1]<<8|(uint32_t)data[2]<<16|(uint32_t)data[3]<<24;runtime_epoch_ms=runtime_now;return ESP_OK;
 }
-static const char *route_names[]={"书架","阅读","书签与笔记","家庭","打印监看","系统设置","Wi-Fi","家庭设置","打印设置","阅读设置","输入设置","休眠设置","快捷编排","小游戏","棋类对局","首次引导","翻页时钟","划线摘录","导入图书","输入","TF 卡存储","Wi-Fi 传书","USB 传输","休闲游戏","蓝牙翻页器","日期与时间","电源与锁屏","首页导航","应用","电脑画布","无线管理","提示音","网站流量","应用集","双机阅读","翻页动画"};
+static const char *route_names[]={"书架","阅读","书签与笔记","家庭","打印监看","系统设置","Wi-Fi","家庭设置","打印设置","阅读设置","输入设置","休眠设置","快捷编排","小游戏","棋类对局","首次引导","翻页时钟","划线摘录","导入图书","输入","TF 卡存储","Wi-Fi 传书","USB 传输","休闲游戏","蓝牙翻页器","日期与时间","电源与锁屏","首页导航","应用","电脑画布","无线管理","提示音","网站流量","应用集","双机阅读","外观与操作"};
 _Static_assert(ARRAY_COUNT(route_names)==PS_ROUTE_COUNT,"Every native route needs a readable name");
+// 中文：宿主不执行面板波形，只让生产阅读页走其恢复路径；不伪造硬件时序。
+// English: The host has no panel waveform; force the production reader's recovery path without faking hardware timing.
+static int native_e0470_tick_us=E0470_TURN_DEFAULT_TICK_US;
+static int native_e0470_last_dir=-1;
+static unsigned native_e0470_calls;
+const char* e0470_turn_dir_name(e0470_turn_dir_t dir){return dir==E0470_TURN_RTL?"rtl":dir==E0470_TURN_TTB?"ttb":dir==E0470_TURN_BTT?"btt":"ltr";}
+void e0470_page_turn_set_tick_us(int us){native_e0470_tick_us=us>0?us:E0470_TURN_DEFAULT_TICK_US;}
+int e0470_page_turn_tick_us(void){return native_e0470_tick_us;}
+void e0470_page_turn_release(void){native_e0470_tick_us=E0470_TURN_DEFAULT_TICK_US;}
+enum EpdDrawError e0470_page_turn(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir){(void)hl;(void)area;native_e0470_last_dir=dir;native_e0470_calls++;return EPD_DRAW_NO_PHASES_AVAILABLE;}
+enum EpdDrawError e0470_page_turn_with_waveform(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir,const EpdWaveform*waveform,unsigned bands){(void)hl;(void)area;(void)waveform;(void)bands;native_e0470_last_dir=dir;native_e0470_calls++;return EPD_DRAW_NO_PHASES_AVAILABLE;}
+enum EpdDrawError e0470_page_turn_with_waveform_compact(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir,const EpdWaveform*waveform,unsigned bands){(void)hl;(void)area;(void)waveform;(void)bands;native_e0470_last_dir=dir;native_e0470_calls++;return EPD_DRAW_NO_PHASES_AVAILABLE;}
 static uint64_t frame_hash(void){uint64_t h=UINT64_C(1469598103934665603);for(size_t i=0;i<sizeof(runtime_fb);i++)h=(h^runtime_fb[i])*UINT64_C(1099511628211);return h;}
 void app_present(app_ctx_t *ctx,const app_desc_t *app,app_redraw_t redraw){
     if(redraw==APP_REDRAW_NONE||redraw==APP_REDRAW_DONE)return;
@@ -349,22 +362,29 @@ static bool runtime_seed_tools(void){
 #endif
 }
 static void state(bool ok,const char *error){bool changed=save_state();ps_view_t v=ps_view();printf("{\"ok\":%s,\"version\":\"%s\",\"width\":%d,\"height\":%d,\"logical_width\":%d,\"logical_height\":%d,\"route\":%d,\"route_name\":\"%s\",\"frame\":\"%s\",\"revision\":%llu,\"changed\":%s,\"now_ms\":%lld,\"panel\":%d,\"fan\":%s,\"fan_selected\":%d,\"fan_side\":%d,\"framebuffer\":\"packed4\",\"presents\":%u,\"active_app\":\"%s\",\"font_weight\":%d,\"rotation_locked\":%s,\"dual_locked\":%s",ok?"true":"false",PS_VERSION,epd_rotated_display_width(),epd_rotated_display_height(),v.w,v.h,(int)ps_route(),runtime_app==&app_font_pick?"字体选择":runtime_app==&app_transfer?"传书":route_names[ps_route()],runtime_frame,(unsigned long long)runtime_revision,changed?"true":"false",(long long)runtime_now,s_panel,s_fan?"true":"false",s_fan_selected,s_fan_side,native_preview_present_count(),runtime_app==&app_book?"book":runtime_app==&app_font_pick?"font":runtime_app==&app_transfer?"transfer":"system",ttf_get_weight(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false");
+    printf(",\"e0470_last_dir\":\"%s\",\"e0470_calls\":%u",native_e0470_last_dir<0?"none":e0470_turn_dir_name((e0470_turn_dir_t)native_e0470_last_dir),native_e0470_calls);
     printf(",\"rotation\":%d,\"physical_hash\":\"%llx\"",epd_get_rotation(),(unsigned long long)runtime_digest);
-    dl_status_t dual_status;ps_dual_status(&dual_status);printf(",\"dual_role\":%d,\"dual_connected\":%s,\"dual_synced\":%s,\"dual_scanning\":%s,\"dual_books\":%u,\"dual_spread\":%u,\"dual_revision\":%u",ps_dual_role(),dual_status.connected?"true":"false",dual_status.synced?"true":"false",dual_status.scanning?"true":"false",dual_status.books,dual_status.reading.spread,dual_status.reading.revision);
+    dl_status_t dual_status;ps_dual_status(&dual_status);printf(",\"dual_role\":%d,\"dual_connected\":%s,\"dual_synced\":%s,\"dual_fast_verified\":%s,\"dual_peer_id\":%s,\"dual_scanning\":%s,\"dual_secondary_shelf\":%s,\"dual_has_reading\":%s,\"dual_request_pending\":%s,\"dual_books\":%u,\"dual_spread\":%u,\"dual_revision\":%u",ps_dual_role(),dual_status.connected?"true":"false",dual_status.synced?"true":"false",dual_status.fast_verified?"true":"false",dual_status.peer_id_valid?"true":"false",dual_status.scanning?"true":"false",ps_dual_secondary_shelf()?"true":"false",ps_dual_has_reading()?"true":"false",dual_status.request_pending?"true":"false",dual_status.books,dual_status.reading.spread,dual_status.reading.revision);
+    printf(",\"shelf_open_choice\":%s",ps_reader_shelf_choice_open()?"true":"false");
     printf(",\"dual_left_ready\":%s",dual_status.left_ready?"true":"false");
-    printf(",\"dual_base_rotation\":%d,\"dual_primary_flip\":%s,\"dual_secondary_flip\":%s,\"dual_guard\":%s,\"dual_peer_reading\":%s,\"dual_remote_open\":%s,\"dual_game_active\":%s,\"dual_game_session\":%u",dual_status.orientation.inverted?EPD_ROT_INVERTED_PORTRAIT:EPD_ROT_PORTRAIT,dual_status.orientation.primary_flip?"true":"false",dual_status.orientation.secondary_flip?"true":"false",dual_status.guard?"true":"false",dual_status.peer_reading?"true":"false",dual_status.remote_open?"true":"false",dual_status.game_active?"true":"false",(unsigned)dual_status.game_session);
+    printf(",\"dual_base_rotation\":%d,\"dual_primary_flip\":%s,\"dual_secondary_flip\":%s,\"dual_guard\":%s,\"dual_peer_reading\":%s",dual_status.orientation.inverted?EPD_ROT_INVERTED_PORTRAIT:EPD_ROT_PORTRAIT,dual_status.orientation.primary_flip?"true":"false",dual_status.orientation.secondary_flip?"true":"false",dual_status.guard?"true":"false",dual_status.peer_reading?"true":"false");
     printf(",\"dual_reused\":%u,\"dual_verified_bytes\":%u,\"dual_resumed\":%u",dual_status.reused,dual_status.verified_bytes,dual_status.resumed);
     if(runtime_app==&app_book)printf(",\"book_page\":%zu,\"book_pages\":%zu,\"book_chapter\":%zu,\"book_jump\":%s,\"book_tools\":%s,\"selection\":%s",native_preview_book_page()+1,native_preview_book_pages(),native_preview_book_chapter()+1,native_preview_book_jump_open()?"true":"false",native_preview_book_tools_open()?"true":"false",native_preview_book_selection_active()?"true":"false");
     if(runtime_app==&app_book)printf(",\"book_px\":%u",native_preview_book_px());
     printf(",\"dual_font_px\":%u,\"dual_reflow\":%s",dual_status.reading.font_px,dual_status.reading.reflow_pending?"true":"false");
-    if(runtime_app==&app_book){printf(",\"dual_target\":%u,\"dual_page\":%u,\"dual_blank\":%s,\"page_start\":%zu,\"page_end\":%zu,\"book_path\":",native_preview_dual_target(),native_preview_dual_page(),native_preview_dual_blank()?"true":"false",native_preview_page_offset(false),native_preview_page_offset(true));runtime_json_string(native_preview_book_path());}
+    if(runtime_app==&app_book){app_book_dual_status_t book_dual;app_book_dual_status(&book_dual);printf(",\"dual_target\":%u,\"dual_page\":%u,\"dual_blank\":%s,\"book_solo\":%s,\"book_animation_lead\":%s,\"book_painted_page\":%u,\"book_turn_dir\":%d,\"page_start\":%zu,\"page_end\":%zu,\"book_path\":",native_preview_dual_target(),native_preview_dual_page(),native_preview_dual_blank()?"true":"false",book_dual.solo?"true":"false",book_dual.animation_lead?"true":"false",book_dual.painted_page,book_dual.turn_dir,native_preview_page_offset(false),native_preview_page_offset(true));runtime_json_string(native_preview_book_path());}
     if(runtime_app==&app_book)printf(",\"book_kind\":\"%s\",\"book_view\":\"%s\"",native_preview_book_kind(),native_preview_book_view());
     if(runtime_app==&app_book)printf(",\"book_images\":%zu,\"book_image_bytes\":%zu",native_preview_book_inline_images(),native_preview_book_image_bytes());
     if(error){printf(",\"error\":");runtime_json_string(error);}
     ps_sound_snapshot_t sound;ps_sound_snapshot(&sound);printf(",\"sound_played\":%u,\"sound_last\":%u,\"sound_options\":%u",(unsigned)sound.played,sound.last_event,sound.options);
     printf(",\"power_state\":%d,\"power_simulated\":true,\"power_long_available\":true,\"auto_sleep_minutes\":%u,\"doubletap_wake\":%s",ps_power_state(),ps_power_auto_minutes(),ps_power_doubletap()?"true":"false");
     printf(",\"games_count\":%u,\"games_error\":",ps_games_count());runtime_json_string(ps_games_last_error());
-    printf(",\"dual_wifi_connected\":%s,\"dual_ble_simulated\":true",dual_status.data_connected?"true":"false");
+    printf(",\"games_sort\":");runtime_json_string(ps_games_sort_label());printf(",\"games_order\":[");
+    for(unsigned i=0;i<ps_games_count();i++){const char *game_id=NULL,*game_title=NULL;if(ps_games_item(i,&game_id,&game_title)){if(i)putchar(',');runtime_json_string(game_id);}}
+    putchar(']');
+    printf(",\"dual_wifi_connected\":%s,\"dual_ble_simulated\":true,\"status_style\":%u,\"shelf_card_style\":%u",dual_status.data_connected?"true":"false",ps_status_style(),ps_shelf_card_style());
+    printf(",\"firmware_ready\":%s,\"update_channel\":%u",
+           ps_updates_firmware_ready()?"true":"false",ps_updates_channel());
     read_pico_ble_pager_status_t ble; read_pico_ble_pager_get_status(&ble);
     EpdRect refresh; int refresh_mode; bool partial;
     native_preview_last_refresh(&refresh,&refresh_mode,&partial);
@@ -415,6 +435,7 @@ int main(int argc,char **argv){
         else if(!strcmp(command,"library")){book_store_notify_changed();ps_navigate(PS_SHELF);step();}
         else if(!strcmp(command,"app-open")){char id[32]={0},extra[2]={0};if(sscanf(line,"%*s %31s %1s",id,extra)!=1){ok=false;error="invalid app id";}else{ok=ps_apps_open(id);if(!ok)error=ps_games_last_error();step();}}
         else if(!strcmp(command,"games")){ps_games_rescan();step();}
+        else if(!strcmp(command,"game-sort")){ps_games_sort_cycle();step();}
         else if(!strcmp(command,"game-install")){
             char name[121]={0},extra[2]={0},staged[256];
             if(sscanf(line,"%*s %d %120s %1s",&x,name,extra)!=2||(x!=0&&x!=1)||!runtime_stage_name(name)){ok=false;error="invalid game upload";}
@@ -425,9 +446,17 @@ int main(int argc,char **argv){
             else{ok=ps_games_remove(id);if(!ok)error=ps_games_last_error();step();}
         }
         else if(!strcmp(command,"dual")){char host[48]={0},code[7]={0};if(sscanf(line,"%*s %d %47s %6s",&x,host,code)!=3)ok=false;else ok=ps_dual_configure(x,host,code);step();}
+        else if(!strcmp(command,"dual-scan")){extern void ps_dual_native_scan_start(void);ps_dual_native_scan_start();step();}
         else if(!strcmp(command,"dual-open")){line[strcspn(line,"\r\n")]=0;ok=ps_dual_open(line+10);step();}
+        else if(!strcmp(command,"book-select")){line[strcspn(line,"\r\n")]=0;ps_dual_set_local_away(true);app_book_dual_pause();ok=app_book_open_path(line+12);step();}
         else if(!strcmp(command,"dual-wifi")){int enabled=0;ok=sscanf(line,"%*s %d",&enabled)==1;ps_dual_native_wifi(enabled!=0);step();}
+        else if(!strcmp(command,"update-channel")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>1)ok=false;else ok=ps_updates_channel_set((uint8_t)x);step();}
+        else if(!strcmp(command,"status-style")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>=PS_STATUS_STYLE_COUNT)ok=false;else ok=ps_status_style_set((uint8_t)x);step();}
+        else if(!strcmp(command,"shelf-card-style")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>=PS_SHELF_CARD_STYLE_COUNT)ok=false;else ok=ps_shelf_card_style_set((uint8_t)x);step();}
         else if(!strcmp(command,"dual-radio")){int enabled=0;ok=sscanf(line,"%*s %d",&enabled)==1;pico_dual_ble_test_enabled(enabled!=0);step();}
+        else if(!strcmp(command,"dual-peer")){int direct=0;char ip[48]={0},ssid[33]={0};if(sscanf(line,"%*s %47s %d %32s",ip,&direct,ssid)!=3)ok=false;else{extern void pico_dual_ble_test_peer(const char*,const char*);pico_dual_ble_test_peer(ip,direct?ssid:"");step();}}
+        else if(!strcmp(command,"dual-flip")){int role=0,enabled=0;ok=sscanf(line,"%*s %d %d",&role,&enabled)==2&&ps_dual_flip(role,enabled!=0);step();}
+        else if(!strcmp(command,"dual-anim")){int enabled=0;ok=sscanf(line,"%*s %d",&enabled)==1&&ps_dual_anim_set_enabled(enabled!=0);step();}
         else if(!strcmp(command,"dual-primary")){char reply[1024];ok=ps_dual_usb_command("RPICO DUAL PRIMARY",reply,sizeof(reply));step();}
         else if(!strcmp(command,"dual-usb")){char reply[1024];line[strcspn(line,"\r\n")]=0;ok=ps_dual_usb_command(line+9,reply,sizeof(reply));if(ok){fprintf(stderr,"DUALUSB %s\n",reply);ok=strstr(reply,"\"accepted\":true")!=NULL;}step();}
         else if(!strcmp(command,"status")){}

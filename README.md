@@ -1,6 +1,6 @@
 # XH View OS For Pico · Duo
 
-> **Dual-reader preview · 0.40.0-dual74** — Complete firmware source for `experiment/dual-pico-reader`. Wi-Fi synchronizes books and the shared font; authenticated BLE synchronizes opening, paired pages and turns. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system. The upstream hardware reference follows below.
+> **Dual-reader preview · 0.40.0-dual97** — Complete firmware source for `experiment/dual-pico-reader`. System updates and app downloads are separate, status icons offer three aligned appearances, and the last-read shelf card supports default, boarding-pass, train-ticket and cinema-stub styles. Direction-led page turns, relayed progress and atomic shelf return remain intact. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system.
 
 **Languages:** [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md)
 
@@ -241,7 +241,7 @@ Shenzhen MindReset Technology Co., Ltd.
 
 Enable “Clock with highlights” in Sleep & Orientation to show cached excerpt previews and sources alongside the flip clock. It defaults off and reuses the nine-item random queue, refresh interval and low-power pause. Ellipses mark long previews; complete text remains in excerpts and records. The original large clock layout remains when disabled.
 
-Games are independent `.pga` applications on the TF card at `/sdcard/apps/games/`. Rules, AI and game UI load from the package; removing a package retains saves. See the [TF app package specification](docs/TF-APPS.md) for the ABI, builds, migration and distribution catalog.
+Games are independent `.pga` applications on the TF card at `/sdcard/apps/games/`. Rules, AI and game UI load from the package. The Apps download banner fetches missing packages from XHFO.NET, while long-press removal keeps saves. See the [TF app package specification](docs/TF-APPS.md) for the ABI, builds, migration and distribution catalog.
 
 Power actions, four lock faces and offline date/time setup are described in [Power, lock and time](docs/POWER-AND-TIME.md).
 

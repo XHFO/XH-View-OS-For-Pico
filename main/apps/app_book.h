@@ -15,6 +15,10 @@
 /// 接受可用书根内的文件和 /sdcard 根目录直接文件；返回值只表示排队成功，实际解析错误在阅读页显示。
 /// Accept files within available book roots and direct files in /sdcard; success means queued, with parsing errors shown in the reader.
 bool app_book_open_path(const char* path);
+/// Open locally without joining or notifying the paired reader. / 本机独立打开，不联动对端。
+bool app_book_open_path_single(const char* path);
+/// Path retained for an explicit single-device reading session. / 显式单机阅读保留的路径。
+bool app_book_local_only_path(char* out,size_t capacity);
 typedef enum { BOOK_GLOBAL_TOOLS, BOOK_GLOBAL_READING, BOOK_GLOBAL_FONT,
     BOOK_GLOBAL_BACK, BOOK_GLOBAL_RECORDS, BOOK_GLOBAL_SELECT, BOOK_GLOBAL_BOOKMARK,
     BOOK_GLOBAL_TOC, BOOK_GLOBAL_HIGHLIGHTS, BOOK_GLOBAL_NOTES, BOOK_GLOBAL_FAVORITE,
@@ -37,8 +41,10 @@ bool app_book_open_annotation(const char* path, uint64_t file_bytes, uint32_t ch
 /// 双机主机仲裁后的精确全书页码；不重复发起网络开书。/ Apply an authoritative whole-book page without echoing an open request.
 bool app_book_dual_apply(const char *path,const char *font,uint32_t page,uint8_t px,bool reflow,uint32_t revision);
 typedef struct {
-    bool open, blank;
+    bool open, blank, solo, animation_lead;
     uint32_t target, page;
+    uint32_t painted_page;
+    int8_t turn_dir;
     uint8_t font_px;
     size_t chapter, start, end;
 } app_book_dual_status_t;

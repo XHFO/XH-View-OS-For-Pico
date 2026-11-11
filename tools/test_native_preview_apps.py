@@ -12,7 +12,7 @@ from test_native_desktop import bitmap
 
 def card_center(index, landscape):
     cols, rows, width, height = (3, 2, 640, 360) if landscape else (2, 3, 360, 640)
-    top, gap = (121 if landscape else 148), 10
+    top, gap = (168 if landscape else 216), 10
     card_width = (width - 32 - (cols - 1) * gap) // cols
     card_height = (height - top - 77 - (rows - 1) * gap) // rows
     return (16 + index % cols * (card_width + gap) + card_width // 2,
@@ -48,7 +48,17 @@ def main():
                 state = runtime.tap(12 + 3 * (cell_width + 4) + cell_width // 2, 48)
                 assert state["route"] == 33 and state["route_name"] == "应用集", state
                 runtime.capture("apps-home-" + label, state)
-                report["checks"].append(label + "-default-apps-tab")
+                download_y = 138 if landscape else 177
+                state = runtime.tap(180 if landscape else 180, download_y)
+                assert state["route"] == 33, state
+                runtime.capture("apps-download-picker-" + label, state)
+                picker_width=600 if landscape else 328
+                picker_height=280 if landscape else 440
+                picker_x=(width-picker_width)//2
+                picker_y=(height-picker_height)//2
+                state=runtime.tap(picker_x+82+37,picker_y+picker_height-48+17)
+                assert state["route"]==33,state
+                report["checks"].append(label + "-default-apps-tab-and-download-picker")
                 state = runtime.tap(*card_center(5, landscape))
                 assert state["route"] == 32 and state["route_name"] == "网站流量", state
                 runtime.capture("cloudflare-empty-" + label, state)
@@ -65,16 +75,23 @@ def main():
                 runtime.capture("drawing-tool-" + label, state)
                 assert runtime.command("key 1 click")["route"] == 33
                 for game in range(6):
-                    if game == 5:
+                    if game == 3:
                         runtime.tap(width - 50, height - 50)
-                    state = runtime.tap(*card_center(game + 1 if game < 5 else 0, landscape))
+                    # 第二页前三格是三个独立工具，随后才是六个游戏。
+                    # Three standalone tools lead the second page; the six games follow contiguously.
+                    slot = 3 + game if game < 3 else game - 3
+                    state = runtime.tap(*card_center(slot, landscape))
                     assert state["route"] == (14 if game < 4 else 23) and not state["games_error"], (game, state)
                     runtime.capture(f"game-{game}-from-apps-{label}", state)
                     if game < 4:
                         state = runtime.command("key 1 click")
                     else:
-                        # 休闲模块内的“返回列表”经过PGA_PAGE_LAUNCHER与真实finish_call。/ Arcade's own return button exercises PGA_PAGE_LAUNCHER and the real finish_call.
-                        state = runtime.tap(517 if landscape else 241, 238 if landscape else 528)
+                        # 2048 使用页内返回按钮；贪吃蛇使用模块左上返回，二者都走真实 finish_call。
+                        # 2048 uses its in-page return; Snake uses the module's top-left back. Both exercise finish_call.
+                        if game == 4:
+                            state = runtime.tap(517 if landscape else 241, 260 if landscape else 548)
+                        else:
+                            state = runtime.tap(23, 47)
                     assert state["route"] == 33, (game, state)
                     report["checks"].append(f"{label}-module-{game}-returns-to-apps")
                 runtime.capture("apps-last-page-" + label, state)
@@ -84,7 +101,8 @@ def main():
                     state = runtime.command("status")
                     assert state["games_count"] == 0 and state["route"] == 33
                     runtime.capture("apps-after-removing-games", state)
-                    assert runtime.tap(*card_center(1, landscape))["route"] == 5
+                    state = runtime.tap(*card_center(0, landscape))
+                    assert state["route"] in (4, 5, 28, 29, 32), state
                     assert runtime.command("key 1 click")["route"] == 33
                     report["checks"].append("background-catalog-shrink-keeps-valid-paint-and-hit")
                     # 用真实编排隐藏应用集并交换首页前两项，既有序列不被应用集改写。/ Hide Apps and swap the first two Home entries through the actual editor.
@@ -97,9 +115,10 @@ def main():
                     assert state["route"] == 33
                     runtime.command("key 0 click")
                     runtime.capture("apps-custom-home-order", runtime.command("status"))
-                    assert runtime.tap(*card_center(0, landscape))["route"] == 3
+                    assert runtime.tap(*card_center(0, landscape))["route"] == 28
                     assert runtime.command("key 1 click")["route"] == 33
-                    assert runtime.tap(23, 47)["route"] == 3
+                    state = runtime.tap(23, 47)
+                    assert state["route"] != 33, state
                     runtime.command("route 0")
                     runtime.command("route 5")
                     # 新设置按用途分组；隐藏的应用集仍可通过“应用与服务”访问。

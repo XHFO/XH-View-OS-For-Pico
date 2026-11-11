@@ -53,7 +53,7 @@ def prepare(output, device_packages=False, native_only=False):
     (stubs/'epdiy.h').write_text(epd_stub)
     with (stubs/'epdiy.h').open('a') as f:f.write('''\n#include <stdbool.h>
 enum EpdRotation {EPD_ROT_LANDSCAPE=0,EPD_ROT_PORTRAIT=1,EPD_ROT_INVERTED_LANDSCAPE=2,EPD_ROT_INVERTED_PORTRAIT=3};
-enum EpdDrawError {EPD_DRAW_SUCCESS=0};
+enum EpdDrawError {EPD_DRAW_SUCCESS=0,EPD_DRAW_NO_PHASES_AVAILABLE=3};
 enum EpdDrawMode {MODE_INIT=0,MODE_DU=1,MODE_GC16=2,MODE_GL16=5};
 typedef struct {uint8_t *front_fb,*back_fb;} EpdiyHighlevelState;
 typedef struct {int unused;} EpdWaveform;
@@ -82,13 +82,6 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
     cp('read_pico_dual_ble.h','components/read_pico_ble_pager/include/read_pico_dual_ble.h')
     cp('nvs.h','tools/book_storage_stubs/nvs.h')
     put('e0470_epaper_waveform.h','#pragma once\n#include "epdiy.h"\nextern const EpdWaveform E0470_FOLLOW_WAVEFORM,E0470_WAVEFORM;\n')
-    put('e0470_page_turn.h','''#pragma once
-#include "epdiy.h"
-#define E0470_TURN_FAST_TICK_US 11090
-enum e0470_page_turn_direction {E0470_TURN_RTL=1,E0470_TURN_LTR=-1};
-void e0470_page_turn_set_tick_us(int us);
-enum EpdDrawError e0470_page_turn(EpdiyHighlevelState *hl,EpdRect area,enum e0470_page_turn_direction direction);
-''')
     put('read_pico_init.h','#pragma once\n#include "app.h"\nesp_err_t read_pico_sensor_wake(sc7a20h_handle_t);esp_err_t read_pico_sensor_sleep(sc7a20h_handle_t);esp_err_t read_pico_accel_read(sc7a20h_handle_t,sc7a20h_sample_t*);\n')
     cp('read_pico_pmu_protocol.h','components/read_pico_pmu/include/read_pico_pmu_protocol.h')
     put('read_pico_pmu.h','#pragma once\n#include <stdint.h>\n#include <stdbool.h>\n#include "read_pico_pmu_protocol.h"\ntypedef struct {bool present,status_ok,time_ok,time_synced;int last_err;uint32_t flags;uint16_t last_op_status;uint16_t soc_permille;int charge_state;uint32_t unix_sec;} pmu_snapshot_t;bool read_pico_pmu_ready(void);int read_pico_pmu_cmd(uint16_t,const uint8_t*,size_t);int read_pico_pmu_refresh(void);const pmu_snapshot_t *read_pico_pmu_get(void);\n')
@@ -110,7 +103,7 @@ enum EpdDrawError e0470_page_turn(EpdiyHighlevelState *hl,EpdRect area,enum e047
     # English: Compile the production changed-area function; the browser replaces only display I/O.
     display_region=output/'native-display-region.c'
     display_region.write_text('#include "display.h"\n#include "e0470_epaper_waveform.h"\n#include <string.h>\n'+extract_function((ROOT/'main/display.c').read_text(),'update_display_changed_mode')+'\n')
-    flags=['-DPICO_NATIVE_PREVIEW=1','-DPICO_HOME_LINK_FULL=0','-DpdTRUE=1','-DpdFALSE=0','-std=gnu11','-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-Wno-unused-function','-Wno-unused-variable','-I',str(stubs),'-I',str(output),'-I',str(ROOT/'tools'),'-I',str(ROOT/'main/system'),'-I',str(ROOT/'main/book'),'-I',str(ROOT/'main/font'),'-I',str(ROOT/'main/ui'),'-I',str(ROOT/'components/read_pico_apps/include'),'-DPICO_NATIVE_GAME_PACKAGES='+json.dumps(str(game_packages)),'-include',str(ROOT/'tools/native_preview_hal.h')]
+    flags=['-DPICO_NATIVE_PREVIEW=1','-DPICO_HOME_LINK_FULL=0','-DpdTRUE=1','-DpdFALSE=0','-std=gnu11','-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-Wno-unused-function','-Wno-unused-variable','-I',str(stubs),'-I',str(output),'-I',str(ROOT/'tools'),'-I',str(ROOT/'main/system'),'-I',str(ROOT/'main/book'),'-I',str(ROOT/'main/font'),'-I',str(ROOT/'main/ui'),'-I',str(ROOT/'components/read_pico_apps/include'),'-I',str(ROOT/'components/e0470_page_turn/include'),'-DPICO_NATIVE_GAME_PACKAGES='+json.dumps(str(game_packages)),'-include',str(ROOT/'tools/native_preview_hal.h')]
     flags+=['-DPICO_NATIVE_IME_PACKAGE='+json.dumps(str(ROOT/'assets/tf-pack/readpico/ime/pinyin-v1.bin'))]
     flags+=['-DPICO_NATIVE_TOOL_PACKAGES='+json.dumps(str(tool_packages))]
     sources=[ROOT/'tools/native_preview_runtime.c',ROOT/'tools/native_preview_framebuffer.c',ROOT/'main/system/pico_draw.c',ROOT/'main/apps/app_font_pick.c',ROOT/'main/apps/app_transfer.c',ROOT/'main/system/pico_reader.c',ROOT/'main/system/pico_home.c',ROOT/'main/system/pico_games.c',ROOT/'main/font/ttf_font.c',ROOT/'main/ui/ui_kit.c',ROOT/'main/ui/ui_menu.c',ROOT/'main/ui/datamatrix.c',ROOT/'main/ui/ui_gesture.c',output/'native-geometry.c',output/'fonts.S']
@@ -130,7 +123,7 @@ enum EpdDrawError e0470_page_turn(EpdiyHighlevelState *hl,EpdRect area,enum e047
         if (ROOT/'tools'/extra).exists():sources.append(ROOT/'tools'/extra)
     for name in ['pico_connectivity.c','pico_storage.c','pico_usb.c','pico_bluetooth.c','pico_datetime.c','pico_power.c','pico_sound.c','pico_navigation.c','pico_lock_covers.c','pico_ink.c','pico_desktop.c','pico_launcher.c','pico_weread.c']:sources.append(ROOT/'main/system'/name)
     sources.append(ROOT/'main/system/pico_weread_cover.c')
-    sources += [ROOT/'main/system/dual_link.c',ROOT/'main/system/pico_dual.c']
+    sources += [ROOT/'main/system/dual_link.c',ROOT/'main/system/pico_dual.c',ROOT/'main/system/pico_updates.c']
     sources += [ROOT/'main/system/pico_board_data.c',ROOT/'main/system/pico_board_render.c',ROOT/'tools/native_board_sha256.c']
     # Optional book adapter contributes source files and generated HAL declarations.
     additions=ROOT/'tools/native_preview_book_build.py'

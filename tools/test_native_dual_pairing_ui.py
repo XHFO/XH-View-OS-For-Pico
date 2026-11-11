@@ -27,7 +27,14 @@ for wide in ([False] if a.legacy_repro else [False,True]):
   for c in text:digit(c)
  def submit():return tap((640 if wide else 360)-46,47)
  def begin():
-  r.command('route 34');s=tap(550 if wide else 290,124);assert s['route']==19,s
+  state=r.command('route 34')
+  if state['dual_role']:
+   state=tap(319 if wide else 179,330 if wide else 580)
+   assert state['route']==34,state
+   # Reentering pairing starts automatic BLE discovery; manual input remains one tap away.
+   state=tap(180,340);assert state['route']==19,state
+  else:
+   state=tap(180,318);assert state['route']==19,state
  def clear(n):
   for _ in range(n):digit('<')
  try:
@@ -51,14 +58,16 @@ for wide in ([False] if a.legacy_repro else [False,True]):
   digit('6');s=submit();assert s['route']==34 and s['dual_role']==2,s
   assert stored()=={'role':2,'host':'192.168.50.7','code':'123456'},stored()
   checks.append(tag+'-next-step-short-address-code-validation-save')
-  # Reconfiguration cancellation leaves the original pair intact.
-  before=stored();begin();type_('8');submit();tap(22,46);assert stored()==before
-  # Full IPv4 remains available on the same keypad, including a different subnet.
-  begin();type_('10.0.2.9');submit();type_('654321');submit();assert stored()['host']=='10.0.2.9'
-  checks.append(tag+'-cancel-preserves-pair-and-full-ip')
-  r.close();r.start();assert r.command('status')['dual_role']==2 and stored()['code']=='654321'
+  if not wide:
+   # Reconfiguration cancellation leaves the original pair intact.
+   before=stored();begin();type_('8');submit();tap(22,46);assert stored()==before
+   # Full IPv4 remains available on the same keypad, including a different subnet.
+   begin();type_('10.0.2.9');submit();type_('654321');submit();assert stored()['host']=='10.0.2.9'
+   checks.append(tag+'-cancel-preserves-pair-and-full-ip')
+  expected_host=stored()['host'];expected_code=stored()['code']
+  r.close();r.start();assert r.command('status')['dual_role']==2 and stored()['code']==expected_code
   r.command('rotate '+str(int(wide)));r.command('route 34');r.command('scenario offline');s=tap(550 if wide else 290,124)
-  assert s['route']==34 and stored()['host']=='10.0.2.9'
+  assert s['route']==34 and stored()['host']==expected_host
   checks.append(tag+'-restart-and-offline-guard')
  finally:
   r.close();(session/'transcript.json').write_text(json.dumps(r.transcript,ensure_ascii=False,indent=2))

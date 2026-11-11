@@ -11,7 +11,9 @@
 
 extern const app_desc_t app_pico_system;
 extern const app_desc_t app_font_pick;
+#ifndef PICO_DUAL_READER
 extern const app_desc_t app_selftest;
+#endif
 extern const app_desc_t app_book;
 extern const app_desc_t app_transfer;
 
@@ -46,5 +48,11 @@ const app_desc_t* app_home_page(void) {
 }
 
 const app_desc_t* app_selftest_page(void) {
+#ifdef PICO_DUAL_READER
+    // 双机发布版把固定APP槽留给设备端应用下载；自检仍由工厂工具维护。
+    // The dual-reader release reserves the fixed APP slot for on-device app downloads; factory tools retain self-test.
+    return &app_pico_system;
+#else
     return &app_selftest;
+#endif
 }

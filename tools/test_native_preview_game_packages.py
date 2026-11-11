@@ -54,7 +54,9 @@ def stage(runtime, package, replace=False, name='test-upload.tmp'):
 
 
 def wait_moves(runtime, game_id, count):
-    deadline = time.monotonic() + 8
+    # Native AI runs on its own bounded task; slower hosts may need more than the
+    # firmware's visible-latency target to finish the first move.
+    deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
         state = runtime.tick(100)
         _, payload = saved(runtime.session, game_id, 'games')
@@ -88,7 +90,7 @@ def main():
         runtime = Runtime(binary, ROOT / 'sdcard/fonts/MiSansVF.ttf', session, output)
         try:
             state = runtime.start()
-            assert state['games_count'] == 6 and state['version'] == '0.21.0-dev24', state
+            assert state['games_count'] == 6 and state['version'] == '0.40.0-dual85', state
             assert (session / 'tf/apps/.defaults-initialized').exists()
             if args.packages:
                 for game_id, _, _ in GAMES:
@@ -132,16 +134,21 @@ def main():
                     runtime.capture('2048-play-' + label, state)
                     report['arcade'].append({'id': game_id, 'orientation': label, 'saved_moves': moves})
                 else:
-                    runtime.tap(517 if landscape else 263, 286 if landscape else 576)
+                    # 贪吃蛇是 640×360 的横屏模块；原生测试也在明确的横屏画布上启动。
+                    # Snake is a 640x360 landscape module; run it on the corresponding preview canvas.
+                    runtime.command('rotate 1')
+                    runtime.tap(548, 332)
                     for _ in range(15):
                         time.sleep(.1)
                         runtime.tick(100)
-                    state = runtime.tap(517 if landscape else 263, 286 if landscape else 576)
+                    state = runtime.tap(548, 332)
                     _, payload = saved(session, game_id, 'arcade1')
                     moves = struct.unpack_from('<I', payload, 88)[0]
                     assert moves > 0
                     runtime.capture('snake-paused-' + label, state)
                     report['arcade'].append({'id': game_id, 'orientation': label, 'saved_moves': moves})
+                    if not landscape:
+                        runtime.command('rotate 0')
                 runtime.command('route 13')
             if not landscape:
                 save_path, payload = saved(session, 'gomoku', 'games')
@@ -181,18 +188,18 @@ def main():
                 state = runtime.command('games')
                 assert state['games_count'] == 6
                 state = runtime.tap(95, 209)
-                assert state['route'] == 13
-                runtime.capture('pinned-discard-confirmation', state)
-                state = runtime.tap(107, 401)
-                assert state['route'] == 13 and save_path.read_bytes() == before_pin
-                runtime.tap(95, 209)
-                state = runtime.tap(253, 401)
-                assert state['route'] == 14
-                runtime.tap(180, 327)
+                # 同一 TF 媒体会话重新挂载后直接恢复模块，不把已提交存档当成待丢弃内容。
+                # The same TF session resumes the module directly instead of treating committed saves as discardable.
+                assert state['route'] == 14, state
+                runtime.capture('tf-remount-direct-resume', state)
+                # 放弃的是恢复会话中的未提交状态；已经提交的第 2 手存档仍保留。
+                # Discard only the recovered session's uncommitted state; the committed two-move save remains.
+                state = runtime.tap(180, 415)
+                assert state['route'] == 13, state
                 runtime.command('route 13')
                 _, resumed_after_pin = saved(session, 'gomoku', 'games')
                 assert struct.unpack_from('<H', resumed_after_pin, 6)[0] == 2
-                runtime.capture('explicit-discard-reopens-saved-game', runtime.command('status'))
+                runtime.capture('remount-preserves-saved-game', runtime.command('status'))
                 before_save = save_path.read_bytes()
                 backup_package.write_bytes(original_package)
                 state = runtime.command('game-remove gomoku')

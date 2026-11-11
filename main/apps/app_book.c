@@ -70,6 +70,7 @@
 #include "../system/pico_dual.h"
 #include "e0470_page_turn.h"
 #include "../system/pico_system.h"
+#include "../system/pico_sound.h"
 #include "../system/pico_annotations.h"
 #include "app_registry.h"
 #include "book_layout.h"
@@ -95,6 +96,8 @@
 #include "ui_gesture.h"
 #include "ui_menu.h"
 
+void ps_sound_key(void);
+
 #define BOOK_ROWS 7
 #define BOOK_TOC_ROWS 10
 #define BOOK_PX_MIN 36
@@ -103,6 +106,7 @@
 #define BOOK_SHAKE_THS_MG 192
 #define BOOK_SHAKE_DUR 2
 #define BOOK_SIZE_SETTLE_MS 400
+#define DUAL_RIGHT_LAYOUT_LEAD_MS 120
 #define BOOK_TOOL_COUNT 9
 #define BOOK_TOOL_ROWS 3
 #define BOOK_PAGE_CONTROL 960
@@ -124,14 +128,21 @@ typedef struct {
 static const char* TAG = "book";
 static book_view_t s_view;
 static uint32_t s_dual_present_pending;
+static uint32_t s_dual_painted_page;
 static enum EpdRotation s_book_rotation;
 static uint32_t s_dual_target,s_dual_displayed;
 static bool s_dual_solo,s_dual_rejoin;
+static int64_t s_dual_relay_ms;
+static int64_t s_dual_lead_until;
+static bool s_dual_lead_paint;
+static int8_t s_dual_pending_turn;
 static unsigned s_dual_cleanup_turns;
 static bool s_dual_cleanup_pending;
 static int64_t s_dual_peer_away_since;
 static bool s_remote_annotation;
-static bool s_dual_blank,s_dual_applying,s_dual_remote_open;
+static bool s_dual_blank,s_dual_applying;
+static bool s_user_opening;
+static bool s_open_applying;
 static char s_dual_font[BOOK_STORE_PATH_MAX];
 static uint8_t s_dual_px = 48, s_dual_old_px = 48;
 static int s_layout_px;
@@ -139,7 +150,12 @@ static uint32_t s_dual_reflow;
 static bool s_dual_annotation, s_dual_wait;
 static app_redraw_t dual_read_failed(void);
 static void dual_read_cancel(void);
-static struct { bool pending, source; size_t chapter, offset; uint32_t revision; } s_dual_anchor;
+static struct {
+    bool pending, source, open, pct_mode;
+    size_t chapter, offset;
+    uint8_t pct;
+    uint32_t revision;
+} s_dual_anchor;
 static void dual_anchor_start(size_t chapter, size_t offset, bool source, uint32_t revision);
 static shelf_entry_t* s_shelf;
 static size_t s_shelf_capacity;
@@ -170,6 +186,7 @@ static bool s_pending_invalidated;
 static int64_t s_save_retry_ms;
 static unsigned s_store_revision;
 static bool s_scan_pending, s_resume_pending, s_toolbar, s_clear_confirm;
+static bool s_single_reading;
 static bool s_product_session;
 static char s_last_product_path[BOOK_STORE_PATH_MAX];
 static char s_requested_path[BOOK_STORE_PATH_MAX];
@@ -253,6 +270,7 @@ static bool select_character(size_t at);
 static bool selection_anchor(ps_book_anchor_t* out);
 static app_redraw_t annotation_action(app_ctx_t* ctx, int action);
 static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode);
+static e0470_turn_dir_t dual_turn_waveform_dir(int direction);
 static bool load_chapter(app_ctx_t* ctx, size_t chapter, size_t offset, bool last_page);
 static bool load_chapter_position(app_ctx_t* ctx, size_t chapter, size_t offset, bool last_page, bool source_units);
 static app_redraw_t progress_commit(app_ctx_t* ctx, bool back);
@@ -658,6 +676,13 @@ static delete_retry_t* delete_retry_find(const char* path) {
 }
 static bool pending_flush(pending_progress_t* p) {
     if (!p->dirty) return true;
+    // 中文：从机阅读页只显示主设备进度，不把远端页码写成第二份本地真相。
+    // English: Secondary reading displays primary progress and never writes a second local source of truth.
+    if (ps_dual_enabled() && ps_dual_role() == 2 && !s_single_reading) {
+        p->progress_saved = true;
+        p->dirty = false;
+        return true;
+    }
     if (!p->progress_saved) {
         if (book_progress_save(p->path, &p->value) != ESP_OK) return false;
         p->progress_saved = true;
@@ -874,7 +899,8 @@ static void draw_compact_header(uint8_t* fb, size_t page) {
         fit_text(title, 28, available - ttf_text_width_px(28, "…"));
         strcat(title, "…");
     }
-    if(ps_dual_enabled() && s_dual_displayed && !s_dual_solo) snprintf(label,sizeof(label),"%s · 第 %u 页",ps_dual_role()==1?"主机":"从机",(unsigned)s_dual_displayed);
+    if(!s_single_reading && ps_dual_enabled() && s_dual_solo) snprintf(label,sizeof(label),"单机续读 · 等待另一台");
+    else if(!s_single_reading && ps_dual_enabled() && s_dual_displayed) snprintf(label,sizeof(label),"%s · 第 %u 页",ps_dual_role()==1?"主机":"从机",(unsigned)s_dual_displayed);
     snprintf(percent_label, sizeof(percent_label), "%u%%", pct);
     int page_px = 26;
     int page_width = available - ttf_text_width_px(26, percent_label) - 18;
@@ -941,7 +967,7 @@ static void draw_selection_handle(uint8_t* fb, EpdRect glyph, bool end) {
 }
 static void draw_reader(uint8_t* fb, size_t page) {
     ui_clear_page(fb);
-    if(s_dual_blank&&ps_dual_enabled()){
+    if(s_dual_blank&&ps_dual_enabled()&&!s_single_reading){
         ui_text(fb,UI_MARGIN,120,UI_PX_BODY,"本书已结束",EPD_DRAW_ALIGN_LEFT,false);
         ui_text(fb,UI_MARGIN,190,UI_PX_CAPTION,"最后一页在主机上",EPD_DRAW_ALIGN_LEFT,false);return;
     }
@@ -1297,6 +1323,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         }
     }
     bool animate = s_turn_anim_pending && cached && !s_image_open && !s_image_confirm_open && !s_page_jump_open;
+    if (animate) s_dual_painted_page = (uint32_t)s_page + 1;
     if (animate && ctx->hl && ctx->hl->back_fb && s_next_fb && ps_dual_anim_enabled()) {
         // 使用 E0470 错相揭页引擎：旧帧放 back，新帧放 front，由引擎一次完成
         // 8 条带 x 37 相 GL16；不再额外整屏 GC16。
@@ -1312,7 +1339,7 @@ static app_redraw_t paint_reading(app_ctx_t* ctx, enum EpdDrawMode mode) {
         e0470_page_turn_set_tick_us(E0470_TURN_FAST_TICK_US);
         enum EpdDrawError terr = e0470_page_turn(
             ctx->hl, full_screen_area(),
-            s_turn_anim_dir > 0 ? E0470_TURN_RTL : E0470_TURN_LTR);
+            dual_turn_waveform_dir(s_turn_anim_dir));
         if (terr == EPD_DRAW_SUCCESS) {
             unlock_draw();
             return APP_REDRAW_NONE;
@@ -1573,7 +1600,7 @@ static app_redraw_t progress_commit(app_ctx_t* ctx, bool back) {
     size_t chapter = back ? s_jump_chapter : source_chapter(s_scrub_target);
     size_t offset = back ? s_jump_offset : s_scrub_target - book_chapter_byte_offset(chapter);
     s_scrubbing = false;
-    if (ps_dual_enabled()) {
+    if (ps_dual_enabled() && !s_single_reading) {
         dual_anchor_start(chapter, offset, !back, 0);
         if (back) s_jump_back_valid = false;
         else { s_jump_chapter = old_chapter; s_jump_offset = old_offset; s_jump_back_valid = true; }
@@ -1725,7 +1752,8 @@ static void page_jump_draw(uint8_t* fb) {
     ui_text_vc(fb, input.x + 18, input.y + input.height / 2, UI_PX_BODY,
                s_page_jump_input[0] ? s_page_jump_input : "输入页码", EPD_DRAW_ALIGN_LEFT, false);
     copy_text(line, sizeof(line), s_page_jump_message[0] ? s_page_jump_message :
-              s_page_jump_waiting ? "正在定位，点取消可返回阅读" : ps_dual_enabled() ? "两台一起打开该页所在的双页" : "按当前字体、字号与屏幕方向计算");
+              s_page_jump_waiting ? "正在定位，点取消可返回阅读" :
+              ps_dual_enabled() && !s_single_reading ? "两台一起打开该页所在的双页" : "按当前字体、字号与屏幕方向计算");
     fit_text(line, UI_PX_CAPTION, text_width);
     ui_text(fb, left, panel.y + (landscape ? 238 : 202), UI_PX_CAPTION, line, EPD_DRAW_ALIGN_LEFT, false);
     if (landscape) {
@@ -1774,7 +1802,7 @@ static app_redraw_t book_open_toc(app_ctx_t* ctx) {
     return APP_REDRAW_PAGE;
 }
 static app_redraw_t page_jump_commit(app_ctx_t* ctx, size_t chapter, size_t offset) {
-    if (ps_dual_enabled()) {
+    if (ps_dual_enabled() && !s_single_reading) {
         if (!ps_dual_seek(s_page_jump_target)) {
             s_page_jump_waiting = false;
             copy_text(s_page_jump_message, sizeof(s_page_jump_message), "另一台尚未就绪，请重试");
@@ -1892,7 +1920,6 @@ static app_redraw_t progress_contact_release(app_ctx_t* ctx, const ui_gesture_ev
     return APP_REDRAW_NONE;
 }
 static bool open_book(app_ctx_t* ctx, const char* path) {
-    bool remote_open = s_dual_remote_open || s_dual_applying;
     // 书架上残留的游戏模块可能仍占用应用/存储状态；开书前强制收尾。
     // A leftover game module can still own app/storage state; close it before opening a book.
     if (!ps_games_prepare_storage()) {
@@ -1922,9 +1949,10 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
     // 页码或批注锚点拦住；远端主动切换由 s_dual_applying 保护。
     // Clear the previous book's remote target/anchor on a user-initiated open;
     // remote switches are protected by s_dual_applying.
-    if (!remote_open) {
+    if (!s_dual_applying) {
         s_dual_target = s_dual_present_pending = s_dual_displayed = 0;
         s_dual_anchor.pending = false;
+        s_dual_anchor.open = s_dual_anchor.pct_mode = false;
         s_dual_wait = s_dual_blank = s_dual_annotation = false;
         s_dual_reflow = 0;
         s_turn_anim_pending = false;
@@ -1968,9 +1996,15 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
     bool resume = pending_restore(path, s_file_size, &p) || book_progress_load(path, s_file_size, &p);
     s_px = resume ? p.px : app_settings_book_px();
     if (s_px < BOOK_PX_MIN || s_px > BOOK_PX_MAX) s_px = 48;
-    bool dual_linked = ps_dual_enabled() && ps_dual_peer_reading();
-    if(dual_linked&&!resume)s_px=s_dual_px;
-    if(dual_linked)s_dual_blank=false;
+    bool peer_resume = false;
+    uint8_t peer_pct = 0;
+    if (!resume && !s_single_reading && ps_dual_enabled() && ps_dual_role() == 2 && ps_dual_peer_reading()) {
+        bool started = false;
+        peer_resume = ps_dual_book_progress(path, s_file_size, &started, &peer_pct, NULL) && started;
+    }
+    bool dual_linked = !s_single_reading && ps_dual_enabled() &&
+        (s_dual_target || (ps_dual_peer_reading() && !s_user_opening));
+    if(dual_linked){s_px=s_dual_reflow?s_dual_old_px:s_dual_px;resume=false;s_dual_blank=false;if(!s_dual_target&&!s_dual_annotation)s_dual_target=ps_dual_role()==1?1:2;}
     size_t chapter = resume && p.chapter < book_chapter_count() ? p.chapter : 0;
     if (annotated && s_annotation_target.chapter >= book_chapter_count()) {
         free_book(); copy_text(s_message, sizeof(s_message), "批注所在章节不存在"); return false;
@@ -1982,13 +2016,13 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
         return false;
     }
     if (annotated && !restore_annotation()) { free_book(); return false; }
-    if (annotated && ps_dual_enabled()) {
+    if (annotated && ps_dual_enabled() && !s_single_reading) {
         s_selection = s_selection_menu = false;
         dual_anchor_start(s_annotation_target.chapter, s_annotation_target.start, false, 0);
     }
     // 已有进度直接续读；spine本来以图片开篇时不再重复插入独立封面。
     // Resume immediately; an image already leading the spine does not need a duplicate opening cover.
-    if (!ps_dual_enabled() && !resume && !annotated && !(s_block_count && s_blocks[0].image_src)) (void)open_cover();
+    if ((!ps_dual_enabled() || s_single_reading) && !resume && !annotated && !(s_block_count && s_blocks[0].image_src)) (void)open_cover();
     s_view = READING;
     s_toolbar = s_clear_confirm = s_batch_confirm = false;
     s_turns = s_unsaved = 0;
@@ -1997,12 +2031,22 @@ static bool open_book(app_ctx_t* ctx, const char* path) {
     if (s_product_session) copy_text(s_last_product_path, sizeof(s_last_product_path), s_path);
     // 本地已经成功打开后再通知对端，避免远端切换和本地打开互相打断。
     // Notify the peer only after the local open succeeds, so remote switching cannot
-    // interrupt the local open.
-    if (ps_dual_enabled() && !remote_open && !s_dual_target && !s_dual_annotation)
-        (void)ps_dual_open_resume(s_path,(uint32_t)s_page+1);
-    // 双机时只在本机页组真正落定后保存；开书占位页不能覆盖已有进度。
-    // In paired mode commit only after the local spread settles; an opening placeholder must not overwrite progress.
-    if (!ps_dual_enabled()) save_progress();
+    // interrupt the local open. A resumed book first resolves its global page through
+    // the existing chapter index so the peer adopts the same previous position.
+    if (s_user_opening && !s_single_reading && ps_dual_enabled() && !s_dual_applying && !s_dual_target) {
+        if (resume) {
+            dual_anchor_start(s_chapter, book_layout_page_start_offset(s_page), false, 0);
+            s_dual_anchor.open = true;
+        } else if (peer_resume) {
+            dual_anchor_start(0, 0, false, 0);
+            s_dual_anchor.open = true;
+            s_dual_anchor.pct_mode = true;
+            s_dual_anchor.pct = peer_pct;
+        } else {
+            (void)ps_dual_open(s_path);
+        }
+    }
+    save_progress();
     ESP_LOGI(TAG, "opened kind=%d chapters=%u pages=%u px=%d source=%lld chapter=%lld ms", book_kind(), (unsigned)book_chapter_count(), (unsigned)book_layout_page_count(), s_px,
              (long long)source_ms, (long long)((esp_timer_get_time() - open_started) / 1000 - source_ms));
     return true;
@@ -2012,7 +2056,11 @@ static app_redraw_t resume_choice(app_ctx_t* ctx, bool confirmed) {
     char path[BOOK_STORE_PATH_MAX];
     copy_text(path, sizeof(path), s_resume_path);
     s_resume_path[0] = 0;
-    if (confirmed) open_book(ctx, path);
+    if (confirmed) {
+        s_user_opening = true;
+        open_book(ctx, path);
+        s_user_opening = false;
+    }
     return APP_REDRAW_PAGE;
 }
 /* ---- 书架数据 / Shelf data ---- */
@@ -2111,6 +2159,18 @@ static void scan_shelf(app_ctx_t* ctx) {
             item->has_progress = book_progress_load(item->path, item->size, &p);
             item->pct = item->has_progress ? p.pct : 0;
             item->recent = item->has_progress ? p.last_open_s : 0;
+            // 从机书架展示主设备已发布的进度；只读内存表，不写本地 NVS。
+            // The secondary shelf shows primary-published progress without writing local NVS.
+            if (ps_dual_secondary_shelf()) {
+                bool started = false;
+                uint8_t pct = 0;
+                uint32_t recent = 0;
+                if (ps_dual_book_progress(item->path, item->size, &started, &pct, &recent)) {
+                    item->has_progress = started;
+                    item->pct = started ? pct : 0;
+                    item->recent = started ? recent : 0;
+                }
+            }
             s_shelf[s_count++] = candidate;
         }
         closedir(dir);
@@ -2226,8 +2286,31 @@ static void sensor_set(app_ctx_t* ctx, bool on) {
         s_sensor_on = false;
     }
 }
+static bool dual_spread_contains(uint32_t spread, uint32_t page) {
+    return spread <= UINT32_MAX - 2 && page >= spread + 1 && page <= spread + 2;
+}
+static e0470_turn_dir_t dual_turn_waveform_dir(int direction) {
+    // 上一页左到右，下一页右到左。
+    // Previous is left-to-right; next is right-to-left.
+    return direction > 0 ? E0470_TURN_RTL : E0470_TURN_LTR;
+}
+static bool dual_relay_solo_page(void) {
+    if (!ps_dual_enabled() || !s_dual_solo || !s_text || s_view != READING ||
+        s_open_path[0] || s_page > UINT32_MAX - 1) return false;
+    uint32_t page = (uint32_t)s_page + 1;
+    dl_status_t current; ps_dual_status(&current);
+    if (dual_spread_contains(current.reading.spread, page))
+        return page == current.reading.spread + 1;
+    if (ps_now() - s_dual_relay_ms < 400) return false;
+    s_dual_relay_ms = ps_now();
+    return ps_dual_seek(page);
+}
 static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
-    if(ps_dual_enabled() && !s_dual_solo){if(!s_dual_anchor.pending&&!s_dual_target&&!s_selection&&!s_toolbar&&!s_page_jump_open&&!s_image_confirm_open)ps_dual_turn(dir);return APP_REDRAW_NONE;}
+    if (s_dual_lead_paint) {
+        if (!s_dual_pending_turn) s_dual_pending_turn = dir > 0 ? 1 : -1;
+        return APP_REDRAW_NONE;
+    }
+    if(!s_single_reading && ps_dual_enabled() && !s_dual_solo){if(!s_dual_anchor.pending&&!s_dual_target&&!s_selection&&!s_toolbar&&!s_page_jump_open&&!s_image_confirm_open)ps_dual_turn(dir);return APP_REDRAW_NONE;}
     if (s_cover_open) return dir > 0 ? close_image() : APP_REDRAW_NONE;
     if (!s_text || s_clear_confirm || s_selection || s_scrubbing || s_progress_pending || s_page_jump_open) return APP_REDRAW_NONE;
     if (dir > 0 && s_page + 1 >= book_layout_page_count() && !book_layout_complete()) {
@@ -2249,6 +2332,13 @@ static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
     else if (dir < 0 && !s_chapter && !s_page) return open_cover() ? APP_REDRAW_PAGE : APP_REDRAW_NONE;
     else return APP_REDRAW_NONE;
     if (!changed) { s_view = s_text ? TOC : SHELF; ctx->leaf = s_text ? s_chapter / toc_rows() : 0; return APP_REDRAW_PAGE; }
+    // 任一端单读都持续提交当前页；主机直接更新权威状态，从机只发一个小控制包。
+    // Either solo reader continuously submits its page; the primary updates directly and the secondary sends one small control packet.
+    if (!s_single_reading && ps_dual_enabled() && s_dual_solo) {
+        bool authoritative = dual_relay_solo_page();
+        if (authoritative && ps_dual_role() == 1)
+            s_dual_present_pending = (uint32_t)s_page + 1;
+    }
     s_toolbar = false;
     s_last_turn_ms = ctx->now_ms;
     s_turn_anim_dir = dir;
@@ -2264,7 +2354,7 @@ static app_redraw_t turn_page(app_ctx_t* ctx, int dir) {
     return paint_reading(ctx, MODE_GL16);
 }
 static app_redraw_t resize_text(app_ctx_t* ctx, int dir) {
-    if (ps_dual_enabled()) {
+    if (ps_dual_enabled() && !s_single_reading) {
         dl_status_t current; ps_dual_status(&current);
         int px = current.reading.font_px + dir * BOOK_PX_STEP;
         if (px < BOOK_PX_MIN || px > BOOK_PX_MAX) return APP_REDRAW_NONE;
@@ -2300,7 +2390,7 @@ static app_redraw_t resize_text(app_ctx_t* ctx, int dir) {
     return paint_reading(ctx, MODE_DU);
 }
 static void goto_font(app_ctx_t* ctx) {
-    if(ps_dual_enabled()){ps_toast("双机阅读使用主机共享字体");return;}
+    if(ps_dual_enabled()&&!s_single_reading){ps_toast("双机阅读使用主机共享字体");return;}
     page_jump_close(); page_index_reset();
     s_selection = false;
     // 通过注册表查找，不引用另一个页面符号。/ Find via registry without referencing another page symbol.
@@ -2343,6 +2433,8 @@ bool app_book_global_has_selection(void) { return app_book_global_is_open() && s
 bool app_book_resume_last(void) {
     if (ps_dual_enabled() && ps_dual_resume()) {
         dl_status_t current; ps_dual_status(&current);
+        if (!current.peer_reading && ps_dual_path())
+            (void)ps_dual_activate(ps_dual_path());
         if (app_book_dual_apply(ps_dual_path(), ps_dual_font(),
             current.reading.spread + (ps_dual_role()==2?2:1), current.reading.font_px,
             current.reading.reflow_pending, current.reading.revision)) return true;
@@ -2353,9 +2445,17 @@ bool app_book_resume_last(void) {
     // current book locally first, then rejoin through the normal dual state.
     if (ps_dual_enabled()) {
         const char* peer_path = ps_dual_path();
-        if (peer_path && *peer_path && app_book_open_path(peer_path)) return true;
+        if (peer_path && *peer_path) {
+            s_dual_applying = true;
+            bool ok = app_book_open_path(peer_path);
+            s_dual_applying = false;
+            if (ok) return true;
+        }
     }
-    return s_last_product_path[0] && app_book_open_path(s_last_product_path);
+    s_dual_applying = true;
+    bool ok = s_last_product_path[0] && app_book_open_path(s_last_product_path);
+    s_dual_applying = false;
+    return ok;
 }
 app_redraw_t app_book_global_action(app_ctx_t* ctx, app_book_global_action_t action) {
     // 全局按下已调用prepare；它只取消接触，Back仍须消费尚在的最内层弹窗。
@@ -2573,10 +2673,14 @@ static app_redraw_t action_at(app_ctx_t* ctx, uint16_t x, uint16_t y) {
             if (s_shelf[i].removed) {
                 s_managed = s_shelf[i]; s_view = MANAGE; s_file_removed = s_delete_confirm = true; s_clear_confirm = false;
                 copy_text(s_manage_message, sizeof(s_manage_message), "文件已删除，进度清理失败，请重试");
-            } else open_book(ctx, s_shelf[i].path);
+            } else {
+                s_user_opening = true;
+                open_book(ctx, s_shelf[i].path);
+                s_user_opening = false;
+            }
         }
         else if (s_view == TOC && i < book_chapter_count()) {
-            if (ps_dual_enabled()) { dual_anchor_start(i, 0, false, 0); return APP_REDRAW_PAGE; }
+            if (ps_dual_enabled() && !s_single_reading) { dual_anchor_start(i, 0, false, 0); return APP_REDRAW_PAGE; }
             save_progress();
             if (load_chapter(ctx, i, 0, false)) { s_view = READING; s_toolbar = false; save_progress(); }
         }
@@ -2606,11 +2710,27 @@ static bool request_path_valid(const char* path) {
     }
     return false;
 }
-bool app_book_open_path(const char* path) {
+static bool request_open_path(const char* path,bool single) {
     if (!request_path_valid(path)) return false;
+    s_single_reading=single;
+    s_open_applying = s_dual_applying;
+    s_user_opening = !s_dual_applying;
     copy_text(s_requested_path, sizeof(s_requested_path), path);
     s_annotation_pending = false;
     return true;
+}
+bool app_book_open_path(const char* path) {
+    return request_open_path(path,false);
+}
+bool app_book_open_path_single(const char* path) {
+    return request_open_path(path,true);
+}
+bool app_book_local_only_path(char* out,size_t capacity) {
+    if(!out||!capacity)return false;
+    out[0]=0;
+    if(!s_single_reading||!s_path[0])return false;
+    copy_text(out,capacity,s_path);
+    return out[0]!=0;
 }
 bool app_book_open_annotation(const char* path, uint64_t file_bytes, uint32_t chapter, uint32_t start, uint32_t end) {
     if (end < start || !file_bytes || file_bytes > UINT32_MAX || !request_path_valid(path)) return false;
@@ -2620,9 +2740,7 @@ bool app_book_open_annotation(const char* path, uint64_t file_bytes, uint32_t ch
         s_dual_px = current.reading.font_px; s_dual_reflow = s_dual_target = 0;
         s_dual_annotation = s_dual_wait = true;
         copy_text(s_dual_font, sizeof(s_dual_font), ps_dual_font());
-        s_dual_applying = true; s_dual_remote_open = true;
-        bool ok = app_book_open_path(path);
-        s_dual_applying = false;
+        s_dual_applying = true; bool ok = app_book_open_path(path); s_dual_applying = false;
         if (!ok) { s_dual_annotation = s_dual_wait = false; return false; }
     } else if (!app_book_open_path(path)) return false;
     memset(&s_annotation_target, 0, sizeof(s_annotation_target));
@@ -3034,7 +3152,11 @@ app_redraw_t app_book_external_turn(app_ctx_t* ctx, int direction) {
         s_toolbar || s_selection || s_image_confirm_open || (s_image_open && !s_cover_open) || s_scrubbing || s_progress_pending ||
         s_page_jump_open || s_clear_confirm || s_batch_confirm || s_scan_pending ||
         s_open_path[0] || s_resume_path[0] || (direction != -1 && direction != 1)) return APP_REDRAW_NONE;
-    if (ps_dual_enabled() && !s_dual_solo) {
+    if (s_dual_lead_paint) {
+        if (!s_dual_pending_turn) s_dual_pending_turn = direction;
+        return APP_REDRAW_NONE;
+    }
+    if (!s_single_reading && ps_dual_enabled() && !s_dual_solo) {
         if (s_dual_anchor.pending || s_dual_target || !ps_dual_turn(direction)) return APP_REDRAW_NONE;
         // 已接收异步翻页，推屏由双机服务完成。/ Accepted asynchronous turn; the paired service owns presentation.
         return APP_REDRAW_DONE;
@@ -3118,32 +3240,42 @@ static app_redraw_t open_pending_book(app_ctx_t* ctx) {
         ctx->request_return || ctx->request_developer_menu) return APP_REDRAW_NONE;
     // 恢复系统首选但不写设置；缺卡或失败时保留字体引擎的临时回退。
     // Restore the saved preference without writing settings; missing media/failure keeps the temporary font fallback.
-    const char* preferred = ps_dual_enabled()&&s_dual_font[0]?s_dual_font:app_settings_font_path();
+    const char* preferred = !s_single_reading&&ps_dual_enabled()&&s_dual_font[0]?s_dual_font:app_settings_font_path();
     if (!preferred || !preferred[0]) preferred = TTF_FONT_BUILTIN;
     if (!ttf_font_ready() || strcmp(ttf_font_path(), preferred)) {
         if (!ttf_font_path_is_builtin(preferred)) loading_detail(ctx, "正在加载字体…", "首次加载需要一些时间，请稍候");
         ttf_font_open(preferred);
     }
-    if(ps_dual_enabled())ttf_set_weight(400);
+    if(!s_single_reading&&ps_dual_enabled())ttf_set_weight(400);
+    bool previous_applying = s_dual_applying;
+    s_dual_applying = s_open_applying;
     bool opened = open_book(ctx, s_open_path);
-    s_dual_remote_open = false;
+    s_dual_applying = previous_applying;
+    s_open_applying = false;
+    s_user_opening = false;
     s_annotation_pending = false;
     s_open_path[0] = 0;
     s_open_presented = false;
-    if(!opened && ps_dual_enabled()) return dual_read_failed();
+    if(!opened && !s_single_reading && ps_dual_enabled()) return dual_read_failed();
     return APP_REDRAW_PAGE;
 }
 bool app_book_dual_apply(const char *path,const char *font,uint32_t target,uint8_t px,bool reflow,uint32_t revision) {
     if(!ps_dual_enabled()||!target||!path||!font||strlen(font)>=sizeof(s_dual_font))return false;
+    s_single_reading=false;
     if(s_dual_anchor.pending||s_dual_annotation||s_selection||s_toolbar||(s_view==TOC&&s_text)||s_image_open||s_image_confirm_open||s_page_jump_open||s_scrubbing)return false;
     s_dual_present_pending=0;
     dl_status_t current; ps_dual_status(&current);
     s_dual_px=px; s_dual_old_px=current.reading.reflow_from_px;
     s_dual_reflow=reflow?revision:0;
     s_dual_target=target;s_dual_blank=false;copy_text(s_dual_font,sizeof(s_dual_font),font);
+    s_dual_solo=s_dual_rejoin=false;s_dual_relay_ms=0;
+    s_dual_lead_paint=false;s_dual_lead_until=0;
+    s_dual_pending_turn=0;
     if((s_text&&!strcmp(s_path,path))||!strcmp(s_open_path,path)||!strcmp(s_requested_path,path))return true;
-    s_dual_applying=true;s_dual_remote_open=true;
-    bool ok=app_book_open_path(path);s_dual_applying=false;return ok;
+    // A different paired book must not flash the previous page while its target is resolved.
+    // 双机切换到另一本文本时，在目标页完成定位前不显示上一本旧页。
+    s_dual_wait=true;
+    s_dual_applying=true;bool ok=app_book_open_path(path);s_dual_applying=false;return ok;
 }
 bool app_book_dual_annotation(uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text) {
     if (!s_product_session || !s_text || !s_path[0] || !text) return false;
@@ -3160,7 +3292,7 @@ bool app_book_dual_annotation(uint8_t type, uint32_t chapter, uint32_t start, ui
     return ok;
 }
 bool app_book_dual_engaged(void) {
-    return s_product_session && s_text && !s_open_path[0] &&
+    return !s_single_reading && s_product_session && s_text && !s_open_path[0] &&
            (s_view == READING || s_view == TOC);
 }
 void app_book_dual_pause(void) {
@@ -3172,22 +3304,45 @@ void app_book_dual_pause(void) {
     // 返回时由仍在阅读的一台决定合流页。
     s_dual_solo = false;
     s_dual_rejoin = false;
+    s_dual_relay_ms = 0;
+    s_dual_lead_paint = false;
+    s_dual_lead_until = 0;
+    s_dual_pending_turn = 0;
     s_dual_peer_away_since = 0;
 }
 void app_book_dual_status(app_book_dual_status_t* out) {
-    *out = (app_book_dual_status_t){.open=s_text && s_view==READING, .blank=s_dual_blank,
-        .target=s_dual_target, .page=s_dual_displayed, .chapter=s_chapter, .font_px=s_px,
+    *out = (app_book_dual_status_t){.open=s_text && s_view==READING, .blank=s_dual_blank, .solo=s_dual_solo,
+        .animation_lead=s_dual_lead_paint, .target=s_dual_target, .page=s_dual_displayed,
+        .painted_page=s_dual_painted_page, .turn_dir=(int8_t)s_turn_anim_dir,
+        .chapter=s_chapter, .font_px=s_px,
         .start=s_text ? book_layout_page_start_offset(s_page) : 0,
         .end=s_text ? book_layout_page_start_offset(s_page+1) : 0};
 }
 static void dual_anchor_start(size_t chapter, size_t offset, bool source, uint32_t revision) {
     page_jump_close(); cancel_interaction();
     s_dual_anchor.pending=true; s_dual_anchor.source=source;
+    s_dual_anchor.open = s_dual_anchor.pct_mode = false;
+    s_dual_anchor.pct = 0;
     s_dual_anchor.chapter=chapter; s_dual_anchor.offset=offset; s_dual_anchor.revision=revision;
     s_toolbar=s_selection=s_selection_menu=false; s_view=READING;
 }
 static app_redraw_t dual_anchor_tick(app_ctx_t* ctx) {
     if (!s_text || !page_index_prepare() || s_dual_anchor.chapter>=book_chapter_count()) goto fail;
+    if (s_dual_anchor.open && s_dual_anchor.pct_mode) {
+        bool changed = false;
+        if (s_page_index.done < s_page_index.chapters) {
+            if (!page_index_step(s_page_index.done, &changed)) goto fail;
+            return APP_REDRAW_NONE;
+        }
+        if (!s_page_index.total) goto fail;
+        uint64_t page = ((uint64_t)s_dual_anchor.pct * s_page_index.total + 99) / 100;
+        if (!page) page = 1;
+        if (page > s_page_index.total) page = s_page_index.total;
+        if (page > UINT32_MAX || !ps_dual_open_at(s_path, (uint32_t)page)) goto fail;
+        s_dual_anchor.pending = false;
+        page_index_pause();
+        return APP_REDRAW_NONE;
+    }
     size_t chapter=s_page_index.done<s_dual_anchor.chapter?s_page_index.done:s_dual_anchor.chapter;
     bool changed=false;
     if (!page_index_step(chapter,&changed)) goto fail;
@@ -3209,9 +3364,11 @@ static app_redraw_t dual_anchor_tick(app_ctx_t* ctx) {
     for(size_t i=0;i<chapter;++i) page+=s_page_index.counts[i];
     if(page>UINT32_MAX) goto fail;
     bool ok=s_dual_anchor.revision ? ps_dual_reflow_resolved(s_dual_anchor.revision,((uint32_t)page-1)&~1u) :
-        s_dual_annotation ? ps_dual_open_at(s_path,(uint32_t)page) : ps_dual_seek((uint32_t)page);
+        (s_dual_annotation || s_dual_anchor.open) ? ps_dual_open_at(s_path,(uint32_t)page) : ps_dual_seek((uint32_t)page);
     if(!ok) goto fail;
-    s_dual_anchor.pending=s_dual_annotation=false; s_dual_reflow=0;
+    s_dual_anchor.pending=s_dual_annotation=false;
+    s_dual_anchor.open=s_dual_anchor.pct_mode=false;
+    s_dual_reflow=0;
     page_index_pause(); return APP_REDRAW_NONE;
 fail:
     return dual_read_failed();
@@ -3220,7 +3377,8 @@ static void dual_read_cancel(void) {
     bool annotation=s_dual_annotation;
     if(s_dual_reflow) (void)ps_dual_reflow_failed(s_dual_reflow);
     s_dual_reflow=s_dual_target=s_dual_present_pending=0;
-    s_dual_anchor.pending=s_dual_annotation=s_dual_wait=false;
+    s_dual_anchor.pending=s_dual_anchor.open=s_dual_anchor.pct_mode=false;
+    s_dual_annotation=s_dual_wait=false;
     if(s_text) s_px=s_layout_px;
     page_index_pause();
     if(annotation) { free_book(); s_view=SHELF; }
@@ -3247,10 +3405,22 @@ static app_redraw_t dual_page_ready(app_ctx_t* ctx) {
     s_turn_anim_dir = s_dual_displayed > previous_page ? 1 : -1;
     if (s_turn_anim_pending && ++s_dual_cleanup_turns % 6 == 0) s_dual_cleanup_pending = true;
     s_dual_target=0; s_dual_blank=s_dual_wait=false; s_view=READING;
-    prepare_page_images(); save_progress(); return paint_reading(ctx,MODE_GL16);
+    save_progress();
+    if (s_turn_anim_pending && ps_dual_role() == 1 && s_turn_anim_dir > 0) {
+        // 下一页从右侧开始：主机先放行 revision，再让两轮 UI tick 给从机起手。
+        // A next turn starts on the right: release the revision, then yield two UI ticks for the secondary.
+        if (s_dual_present_pending) {
+            ps_dual_presented(s_dual_present_pending);
+            s_dual_present_pending = 0;
+        }
+        s_dual_lead_paint = true;
+        s_dual_lead_until = ctx->now_ms + DUAL_RIGHT_LAYOUT_LEAD_MS;
+        return APP_REDRAW_NONE;
+    }
+    prepare_page_images(); return paint_reading(ctx,MODE_GL16);
 }
 static app_redraw_t dual_page_tick(app_ctx_t *ctx) {
-    if(!s_dual_target||!s_text||!ps_dual_enabled())return APP_REDRAW_NONE;
+    if(!s_dual_target||!s_text||!ps_dual_enabled()||s_single_reading)return APP_REDRAW_NONE;
     if(strcmp(ttf_font_path(),s_dual_font)||s_px!=(s_dual_reflow?s_dual_old_px:s_dual_px)||s_layout_px!=s_px){
         page_index_reset(); lock_draw(); invalidate_prep();
         bool ok=!strcmp(ttf_font_path(),s_dual_font)||ttf_font_open(s_dual_font)==ESP_OK;
@@ -3300,7 +3470,20 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
     }
     if (s_open_path[0]) return open_pending_book(ctx);
     if (s_remote_annotation) { s_remote_annotation = false; invalidate_prep(); return APP_REDRAW_PAGE; }
-    if (ps_dual_enabled() && s_text) {
+    if (s_dual_lead_paint) {
+        if (ps_now() < s_dual_lead_until) return APP_REDRAW_NONE;
+        s_dual_lead_paint = false;
+        prepare_page_images();
+        return paint_reading(ctx, MODE_GL16);
+    }
+    if (s_dual_pending_turn) {
+        int direction = s_dual_pending_turn;
+        s_dual_pending_turn = 0;
+        app_redraw_t result = app_book_external_turn(ctx, direction);
+        if (result == APP_REDRAW_DONE) ps_sound_key();
+        return result;
+    }
+    if (!s_single_reading && ps_dual_enabled() && s_text) {
         bool peer = ps_dual_peer_reading();
         if (!peer) {
             if (!s_dual_peer_away_since) s_dual_peer_away_since = ps_now();
@@ -3310,14 +3493,27 @@ static app_redraw_t on_tick(app_ctx_t* ctx) {
             if (s_dual_solo && !s_dual_rejoin) s_dual_rejoin = true;
         }
         if (peer && s_dual_rejoin) {
-            if (ps_dual_seek((uint32_t)s_page + 1)) {
+            dl_status_t current; ps_dual_status(&current);
+            uint32_t page = (uint32_t)s_page + 1;
+            if (!dual_spread_contains(current.reading.spread, page)) {
+                // 仅断线单读导致本地页落后于主机状态时才补发；正常接力不做二次跳页。
+                // Only repair a diverged offline page; ordinary handoff needs no second jump.
+                dual_relay_solo_page();
+            } else {
                 s_dual_rejoin = false;
                 s_dual_solo = false;
+                if (ps_dual_role() == 2) {
+                    uint32_t target = current.reading.spread + 2;
+                    if (page != target)
+                        (void)app_book_dual_apply(ps_dual_path(), ps_dual_font(), target,
+                            current.reading.font_px, current.reading.reflow_pending,
+                            current.reading.revision);
+                }
             }
         }
     }
-    if(s_dual_anchor.pending&&ps_dual_enabled())return dual_anchor_tick(ctx);
-    if(s_dual_target&&ps_dual_enabled())return dual_page_tick(ctx);
+    if(!s_single_reading&&s_dual_anchor.pending&&ps_dual_enabled())return dual_anchor_tick(ctx);
+    if(!s_single_reading&&s_dual_target&&ps_dual_enabled())return dual_page_tick(ctx);
     if(s_dual_present_pending && s_view == READING && !s_page_jump_open && !s_toolbar && !s_selection &&
         !s_image_open && !s_image_confirm_open && !s_scrubbing && !s_progress_pending &&
         !(ctx->touch && ctx->touch->touched)) return APP_REDRAW_FULL;

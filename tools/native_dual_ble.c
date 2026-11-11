@@ -22,13 +22,16 @@ static pico_dual_ble_peer_info_t peer;
 static void lost(void){if(fd>=0)close(fd);fd=-1;connecting=ready=false;tx_at=tx_n=rx_n=hello_at=hello_n=0;status.connected=false;++status.generation;}
 void pico_dual_ble_stop(void){lost();if(listener>=0)close(listener);listener=-1;role=0;status.active=false;}
 void pico_dual_ble_test_enabled(bool enabled){radio=enabled;lost();if(listener>=0)close(listener);listener=-1;}
-void pico_dual_ble_set_pairing_info(const char* ip,const char* c){
- peer.found=ip&&*ip&&c&&strlen(c)==6;
- if(peer.found){snprintf(peer.ip,sizeof(peer.ip),"%s",ip);snprintf(peer.code,sizeof(peer.code),"%s",c);}
-}
-esp_err_t pico_dual_ble_scan_start(void){return ESP_OK;}
+void pico_dual_ble_set_pairing_info(const char* ip,const char* ap_ssid){(void)ip;(void)ap_ssid;}
+esp_err_t pico_dual_ble_scan_start(void){memset(&peer,0,sizeof(peer));return ESP_OK;}
 void pico_dual_ble_scan_stop(void){}
 void pico_dual_ble_peer_info(pico_dual_ble_peer_info_t* out){if(out)*out=peer;}
+void pico_dual_ble_test_peer(const char* ip,const char* ap_ssid){
+ memset(&peer,0,sizeof(peer));
+ if(ip)snprintf(peer.ip,sizeof(peer.ip),"%s",ip);
+ if(ap_ssid)snprintf(peer.ap_ssid,sizeof(peer.ap_ssid),"%s",ap_ssid);
+ peer.direct=ap_ssid&&ap_ssid[0];peer.found=ip&&ip[0];
+}
 static void pump(void){
  if(!role||!radio)return;
  if(fd<0){
@@ -63,6 +66,7 @@ esp_err_t pico_dual_ble_configure(int r,const char* c){
  if(role!=r||strcmp(c,code)){pico_dual_ble_stop();role=r;memcpy(code,c,7);status.active=true;}
  pump();return ESP_OK;
 }
+void pico_dual_ble_request_restart(void){}
 void pico_dual_ble_status(pico_dual_ble_status_t* out){pump();*out=status;}
 bool pico_dual_ble_can_send(void){pump();return ready&&!tx_n;}
 bool pico_dual_ble_send(const uint8_t* p,size_t n){if(!p||!n||n>96||!pico_dual_ble_can_send())return false;tx[0]=(uint8_t)n;memcpy(tx+1,p,n);tx_n=(unsigned)n+1;tx_at=0;pump();return true;}

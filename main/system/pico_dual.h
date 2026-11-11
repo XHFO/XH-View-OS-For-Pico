@@ -6,6 +6,17 @@
 #include "pico_system.h"
 bool ps_dual_enabled(void);
 int ps_dual_role(void);
+bool ps_dual_connected(void);
+bool ps_dual_synced(void);
+/// 从机连接后保留正常书架样式并隐藏本机最近阅读入口。
+/// A connected secondary keeps its normal shelf style while omitting the local recent-reading entry.
+bool ps_dual_secondary_shelf(void);
+/// 两端存在可恢复的双机图书时显示统一返回入口。/ Show the shared return entry on either role when a paired book is resumable.
+bool ps_dual_has_reading(void);
+/// 读取主设备发布的书籍进度；不修改从设备本地 NVS。
+/// Read primary-published book progress without changing secondary-local NVS.
+bool ps_dual_book_progress(const char* path, uint32_t bytes, bool* started, uint8_t* pct, uint32_t* recent);
+uint32_t ps_dual_progress_revision(void);
 /// 主机自动方向加各角色独立翻转，不覆盖系统设置。/ Primary auto orientation plus role offsets, without overwriting system settings.
 int ps_dual_base_rotation(void);
 int ps_dual_rotation(void);
@@ -43,14 +54,10 @@ uint8_t ps_dual_game_role(void);
 bool ps_dual_game_send(uint8_t input);
 int ps_dual_game_recv(void);
 bool ps_dual_game_open(uint8_t kind);
-bool ps_dual_game_open_pending(void);
-bool ps_dual_game_open_take(uint8_t* kind, uint32_t* session, uint32_t* request);
-void ps_dual_game_open_finish(uint32_t request, uint32_t session, bool accepted);
-bool ps_dual_game_open_result_take(uint32_t* request, bool* accepted);
+bool ps_dual_game_open_take(uint8_t* kind);
 bool ps_dual_game_packet_send(const void* data,size_t bytes);
 bool ps_dual_game_close(void);
-bool ps_dual_game_close_take(uint32_t* session, uint32_t* request);
-void ps_dual_game_close_finish(uint32_t request, bool accepted);
+bool ps_dual_game_close_take(void);
 size_t ps_dual_game_packet_recv(void* data,size_t capacity);
 void ps_dual_set_local_away(bool away);
 /// 取一次“手动翻转待应用”标记，避免从机锁定阻止手动翻转。
@@ -65,9 +72,8 @@ bool ps_dual_event(const ps_event_t* event);
 bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw);
 bool ps_dual_open(const char* path);
 bool ps_dual_open_at(const char* path, uint32_t page);
-/// 从书架续读：使用本机页作为新书提示，同书仍服从共享位置。
-/// Shelf resume: use the local page as a hint for a new book; the shared position wins for the current book.
-bool ps_dual_open_resume(const char* path, uint32_t page);
+/// 从书架返回显式唤醒暂离的对端进入当前共享书。/ Wake an away peer into the current shared book from a shelf return.
+bool ps_dual_activate(const char* path);
 /// 仅返回本次请求是否被接收；失败不代表已翻页。/ Report admission of this request, never success for a rejected turn.
 bool ps_dual_turn(int direction);
 bool ps_dual_seek(uint32_t page);

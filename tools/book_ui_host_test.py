@@ -24,20 +24,12 @@ def function(name):
     found = re.search(r"^(?:[A-Za-z_][A-Za-z0-9_]*[ \t*]+)+" + name + r"\([^\n]*\) \{", text, re.M)
     assert found, name
     start, at, depth, quote, escape = found.start(), found.end(), 1, None, False
-    line_comment = block_comment = False
     while depth:
         c = text[at]
-        nxt = text[at + 1] if at + 1 < len(text) else ""
-        if line_comment:
-            if c == "\n": line_comment = False
-        elif block_comment:
-            if c == "*" and nxt == "/": block_comment = False; at += 1
-        elif quote:
+        if quote:
             if escape: escape = False
             elif c == "\\": escape = True
             elif c == quote: quote = None
-        elif c == "/" and nxt == "/": line_comment = True; at += 1
-        elif c == "/" and nxt == "*": block_comment = True; at += 1
         elif c in "\"'": quote = c
         elif c == "{": depth += 1
         elif c == "}": depth -= 1
@@ -408,7 +400,6 @@ static bool ps_dual_enabled(void){return false;}
 static bool ps_dual_turn(int direction){(void)direction;assert(false);return false;}
 static bool ps_dual_seek(uint32_t page){(void)page;assert(false);return false;}
 static bool ps_dual_open(const char* path){(void)path;assert(false);return false;}
-static bool ps_dual_open_resume(const char* path,uint32_t page){(void)path;(void)page;assert(false);return false;}
 static bool ps_dual_resume(void){assert(false);return false;}
 static bool ps_dual_reflow_failed(uint32_t revision){(void)revision;assert(false);return false;}
 static void ps_dual_presented(uint32_t revision){(void)revision;assert(false);}
