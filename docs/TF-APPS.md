@@ -88,6 +88,10 @@ payload 紧接 512 字节头，按目录顺序连续排列，无间隙、重叠�
 
 ABI v1 采用可选尾部扩展。旧六游戏的导出表仍按 `PICO_APP_EXPORTS_V1_BYTES` 最小前缀读取；宿主检查 `bytes` 后才可访问 `ink`，因此无需强制重装旧游戏包。画板编辑时置 `PGA_STATUS_INK`；列表或确认弹窗不置此位。整帧绘制建立快照，撤销、清空、旋转、菜单覆盖恢复和丢失显示参考时重建；移动手指只提交新增笔迹，连续DU由固件统一管理。
 
+宿主 `home_spread` 是 ABI v1 的可选尾部：应用须先检查 `host->bytes` 与函数指针，旧宿主继续独立分页。输入家庭页数、当前页与筛选，action 为 -1 离开、0 查询、1 下一组、2 上一组、3 修改筛选；返回实际零起页码，筛选输出最高位表示当前双页联动，保存筛选前必须清除此位。左上返回沿用宿主导航，不绘制重复入口。
+
+The optional ABI v1 host tail `home_spread` requires a `host->bytes` and pointer check; older hosts retain independent pagination. Actions are -1 leave, 0 query, 1 next spread, 2 previous spread and 3 filter change. The result is a zero-based page; the output filter’s high bit indicates pairing and must be masked before persistence. Reuse host Back navigation.
+
 宿主仅提供：360×640/640×360 逻辑绘图、固定宽度事件、重绘和提示、导航请求、命名空间存档、单调时钟、随机数、受管理工作任务及少量 C 字符串/格式化接口。不提供任意文件读写、网络、板级、显示时序、电源校准和固件内部结构访问。
 
 应用是原生机器码，**不是安全沙箱**；发布端应只分发审核及测试过的可信包。CRC/摘要不能把任意原生程序变成受限程序。

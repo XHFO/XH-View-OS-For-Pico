@@ -95,6 +95,7 @@ static bool data_finished;
 static int64_t auto_shelf_at;
 static dual_peer_cache_t peer_cache;
 static bool peer_cache_loaded, same_peer;
+#include "pico_dual_root.inc"
 static uint8_t orientation_bits(void) {
     return orientation.inverted | (orientation.primary_flip << 1) | (orientation.secondary_flip << 2);
 }
@@ -764,6 +765,7 @@ static void control_send(void) {
     if (!dual_session || !pico_dual_ble_can_send()) return;
     uint8_t packet[DL_CONTROL_MAX];
     size_t n = dl_control_take(dual_session, packet, sizeof(packet));
+    if (!n) n = root_take(packet,sizeof(packet));
     if (!n) n = ps_home_pga_share_take(packet, sizeof(packet));
     if (n) (void)pico_dual_ble_send(packet, n);
 }
@@ -938,10 +940,11 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     for (unsigned i = 0; i < 8; ++i) {
         size_t n = pico_dual_ble_receive(packet, sizeof(packet));
         if (!n) break;
-        if(!ps_home_pga_share_receive(packet,n))(void)dl_control_receive(dual_session, packet, n);
+        if(!root_receive(packet,n)&&!ps_home_pga_share_receive(packet,n))(void)dl_control_receive(dual_session, packet, n);
     }
     uint8_t home_owner[8]={0};if(settings.role==1)device_id_get(home_owner);else memcpy(home_owner,status.peer_device_id,8);
     ps_home_pga_share_tick(settings.role,ble.connected&&status.peer_id_valid,home_owner,ctx->now_ms,app==&app_book);
+    root_tick(app);
     control_send();
     dl_status(dual_session, &status);
     if(!before.connected&&status.connected){progress_rejoin=true;rejoin_revision=status.reading.revision;dl_prepare_open_reset(dual_session);}

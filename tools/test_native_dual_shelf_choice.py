@@ -222,6 +222,11 @@ try:
                 pump(3)
         until(lambda: all(d.state.get("active_app") != "book" for d in devices), "both shelves")
         actor = devices[index % 2]
+        if actor is secondary:
+            # With a one-page library the paired right shelf is intentionally empty.
+            # Leave the peer shelf before testing independent secondary book selection.
+            primary.cmd("route 5")
+            until(lambda: not secondary.state["root_paired"], "secondary independent shelf")
         actor.tap(160, 401 if index % 2 == 0 else 329)
         pump(2)
         assert actor.state["shelf_open_choice"], actor.state
@@ -258,6 +263,8 @@ try:
         if d.state.get("active_app") == "book":
             d.cmd("key 1 short")
     pump(20)
+    primary.cmd("route 5")
+    until(lambda: not secondary.state["root_paired"], "post-restart independent secondary shelf")
     secondary.tap(160, 401)
     pump(2)
     assert secondary.state["shelf_open_choice"], secondary.state

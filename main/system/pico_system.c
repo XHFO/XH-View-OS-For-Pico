@@ -118,6 +118,7 @@ static app_ctx_t* s_ctx;
 static ps_route_t s_route = PS_SHELF, s_history[10], s_workspace[2] = { PS_SHELF, PS_HA };
 static int s_depth, s_section, s_panel, s_group, s_focus, s_quick_scroll, s_device_page, s_quick_mode;
 static bool s_status_percent;
+static uint8_t s_corner_indicators=1;
 static uint8_t s_wifi_level;
 static int64_t s_wifi_sample_ms;
 static uint8_t s_status_style;
@@ -160,8 +161,6 @@ static int64_t s_ink_gray_due;
 static int s_x0, s_y0, s_lastx, s_lasty, s_fan_side, s_fan_selected = -1;
 static int64_t s_down_ms, s_move_ms, s_last_input, s_pmu_ms, s_acc_ms, s_toast_until;
 static char s_toast[128], s_store_root[160];
-static int64_t s_notice_until;
-static char s_notice[96];
 static bool s_store_is_sd, s_store_lost, s_transfer_prepared, s_network_resume_pending;
 static bool s_store_media_known;
 static uint32_t s_store_media_generation;
@@ -868,14 +867,18 @@ void ps_toast(const char* text) {
     s_toast_until = ps_now() + 3000;
     s_dirty = true;
 }
-void ps_notice(const char* text) {
-    snprintf(s_notice, sizeof(s_notice), "%s", text ? text : "");
-    s_notice_until = ps_now() + 3000;
-    ps_dirty();
-}
+void ps_notice(const char* text) { ps_toast(text); }
 void ps_notice_draw(uint8_t* fb, int y) {
-    if (!fb || !s_notice[0] || ps_now() >= s_notice_until) return;
-    ps_center(fb, ps_view().w / 2, y, 10, s_notice, 5);
+    if (!fb || !s_toast[0] || ps_now() >= s_toast_until) return;
+    ps_view_t v=ps_view();
+    ps_fill(fb,0,0,v.w,y,PS_THEME_SURFACE);
+    ps_wrap(fb,16,(y-16)/2,v.w-32,11,1,s_toast,PS_THEME_INK);
+}
+bool ps_corner_indicators(void){return s_corner_indicators!=0;}
+static bool corner_indicators_set(bool enabled){
+    uint8_t value=enabled;
+    if(!ps_store("cornermarks1",&value,sizeof(value)))return false;
+    s_corner_indicators=value;s_dirty=true;return true;
 }
 static bool reader_route(ps_route_t r) {
     return r == PS_SHELF || r == PS_READ || r == PS_RECORDS || r == PS_READING_SETTINGS ||
@@ -903,6 +906,7 @@ static void enter(ps_route_t r) {
     else if(!s_quick_edit.active)quick_edit_begin();
     s_update_confirm=0;
     s_route = r;
+    if(r!=PS_SHELF&&r!=PS_APPLICATION)ps_dual_root_leave();
     s_panel = 0;
     s_focus = 0;
     if (r == PS_STORAGE) ps_storage_enter();
@@ -1032,7 +1036,7 @@ void ps_back(void) {
     }
     if(s_route==PS_QUICK_SETTINGS&&s_quick_edit.active) {
         quick_edit_contact_cancel();
-        if(s_quick_mode){s_quick_mode=0;s_dirty=true;return;}
+        if(s_quick_mode==1){s_quick_mode=0;s_dirty=true;return;}
         s_quick_edit.active=false;
     }
     if(s_route==PS_NAV_SETTINGS&&ps_navigation_back()){s_dirty=true;return;}
@@ -1757,10 +1761,10 @@ static EpdRect device_row_rect(int index,bool root){
 }
 static PICO_STORE_COLD void device_row_render(uint8_t *fb,EpdRect r,const char *label,const char *detail,ps_icon_t icon,int toggle){
     ps_surface(fb,r.x,r.y,r.width,r.height-4,false);
-    ps_icon(fb,r.x+12,r.y+(r.height-26)/2,22,icon,2);
-    ps_text(fb,r.x+46,r.y+8,14,label,1);
-    ps_text(fb,r.x+46,r.y+30,10,detail,5);
     int cy=r.y+(r.height-4)/2;
+    ps_icon(fb,r.x+12,cy-11,22,icon,2);
+    ps_text(fb,r.x+46,cy-19,14,label,1);
+    ps_text(fb,r.x+46,cy+3,10,detail,5);
     if(toggle)ps_switch_draw(fb,r.x+r.width-60,cy-13,48,26,app_settings_test_awake(),true);
     else{ps_line(fb,r.x+r.width-21,cy-4,r.x+r.width-17,cy,6);ps_line(fb,r.x+r.width-17,cy,r.x+r.width-21,cy+4,6);}
 }
@@ -1784,13 +1788,13 @@ static void status_wifi_draw(uint8_t *fb,int x,int y,bool book){
     }
     (void)book;
 }
-static void status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int role){
+void ps_status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int role){
     if(!linked)return;
     if(book){
         const int size=12,gap=8;
         int left=x,right=left+size+gap;
-        ps_icon(fb,left,y,size,PI_BOOK,role==1?1:7);
-        ps_icon(fb,right,y,size,PI_BOOK,role==2?1:7);
+        ps_icon(fb,left,y,size,PI_BOOK,role!=2?1:7);
+        ps_icon(fb,right,y,size,PI_BOOK,role!=1?1:7);
         if(linked){
             ps_fill(fb,left+size+1,y+size/2,2,1,6);
             ps_fill(fb,right-3,y+size/2,2,1,6);
@@ -1800,8 +1804,8 @@ static void status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int r
     }else{
         const int width=8,height=12,gap=8;
         int left=x,right=left+width+gap;
-        ps_box(fb,left,y,width,height,2,role==1?1:7,false);
-        ps_box(fb,right,y,width,height,2,role==2?1:7,false);
+        ps_box(fb,left,y,width,height,2,role!=2?1:7,false);
+        ps_box(fb,right,y,width,height,2,role!=1?1:7,false);
         if(linked){
             ps_fill(fb,left+width+1,y+height/2,2,1,6);
             ps_fill(fb,right-3,y+height/2,2,1,6);
@@ -1843,7 +1847,7 @@ static void status_battery_draw(uint8_t *fb,int x,int y,bool book){
 static void status_strip_draw(uint8_t *fb,int left,int right,int top,uint8_t style,bool linked,int role){
     bool book=style==PS_STATUS_STYLE_BOOK;
     status_wifi_draw(fb,left,top+3,book);
-    status_pair_draw(fb,left+22,top+4,book,linked,role);
+    ps_status_pair_draw(fb,left+22,top+4,book,linked,role);
     bool percent=ps_status_percent();
     if(percent){
         char level[12];
@@ -1855,7 +1859,7 @@ static void status_strip_draw(uint8_t *fb,int left,int right,int top,uint8_t sty
     }else status_battery_draw(fb,right-22,top+6,book);
 }
 static void status_icons_draw(uint8_t *fb,ps_view_t v,bool book,bool linked){
-    (void)book;status_strip_draw(fb,12,v.w-12,0,ps_status_style(),linked,ps_dual_role());
+    (void)book;status_strip_draw(fb,PS_THEME_MARGIN,v.w-PS_THEME_MARGIN,0,ps_status_style(),linked,ps_dual_role());
 }
 typedef struct {EpdRect panel,option[PS_STATUS_STYLE_COUNT],percent,cancel;} status_style_picker_t;
 static status_style_picker_t status_style_picker_layout(void){
@@ -2071,7 +2075,7 @@ static PICO_STORE_COLD void device_about_render(uint8_t *fb){
     device_confirm_render(fb);
 }
 static PICO_STORE_COLD void device_render(uint8_t* fb) {
-    ps_view_t v=ps_view();ps_fill(fb,0,76,v.w,v.h-76,14);
+    ps_view_t v=ps_view();ps_fill(fb,0,76,v.w,v.h-76,PS_THEME_CANVAS);
     if(s_device_page==DEVICE_ABOUT){device_about_render(fb);return;}
     if(!s_device_page){
         ps_heading(fb,"系统设置",NULL);
@@ -2109,7 +2113,13 @@ static EpdRect quick_catalog_rect(int row) {
 }
 static PICO_STORE_COLD void quick_settings_render(uint8_t *fb) {
     if(!s_quick_mode){render_fan(fb);return;}
-    ps_view_t v=ps_view();ps_heading(fb,"选择快捷功能","已在其他位置的功能会与此处交换");
+    ps_view_t v=ps_view();
+    if(s_quick_mode==2){
+        ps_heading(fb,"快捷菜单","从屏幕底角向内滑动打开");
+        ps_toggle(fb,16,126,v.w-32,56,"显示指示标识",ps_corner_indicators(),true);
+        ps_button(fb,16,202,v.w-32,48,"编排功能与排序",false);return;
+    }
+    ps_heading(fb,"选择快捷功能","已在其他位置的功能会与此处交换");
     int catalog[QUICK_COUNT],catalog_n=quick_catalog(catalog);char text[100];
     int unplaced=0;for(int i=0;i<s_shortcuts.count;i++)if(quick_slot_of(s_quick_edit.slots,s_shortcuts.ids[i])<0)unplaced++;
     snprintf(text,sizeof(text),"位置 %d · 已放置 %d / 14 · 未放置 %d",s_quick_edit.selected+1,quick_placed(s_quick_edit.slots),unplaced);
@@ -2235,7 +2245,7 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     // 从设置打开的应用/游戏保留上级返回，不冒充首页导航。/ Apps/games opened from Settings keep parent Back instead of Home navigation.
     bool app_modal=s_route==PS_APPS&&ps_launcher_modal_active();
     if(!frozen&&!s_panel&&!s_fan&&!app_modal&&s_depth&&s_history[s_depth-1]==PS_DEVICE&&(s_route==PS_APPS||s_route==PS_GAMES)){
-        ps_fill(fb,0,24,v.w,46,14);ps_heading(fb,"应用与服务",NULL);
+        ps_fill(fb,0,24,v.w,46,PS_THEME_CANVAS);ps_heading(fb,"应用与服务",NULL);
     }
     if(frozen&&!s_panel&&!s_fan)ps_heading(fb,"TF 卡正由电脑管理","可继续使用设置和蓝牙，图书与应用暂停");
     if(!frozen&&!s_panel&&!s_fan&&!app_modal&&ps_home_launcher_visible())ps_tabs(fb,s_section);
@@ -2246,7 +2256,7 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     if (!standby && !fullscreen_app && !fan_editor_active() && !game_fullscreen) {
         ps_fill(fb, 0, 0, v.w, 24, 15);
         status_icons_draw(fb,v,ps_status_style()==PS_STATUS_STYLE_BOOK,ps_dual_connected());
-        ps_notice_draw(fb, 7);
+
     }
     if (s_panel) render_panel(fb);
     if (s_fan) render_fan(fb);
@@ -2256,17 +2266,13 @@ static void render(app_ctx_t* ctx, uint8_t* fb) {
     if (dual_resume_visible() && !s_panel && !s_fan && !s_fan_candidate)
         ps_button(fb, dual_resume_rect().x, dual_resume_rect().y, dual_resume_rect().width,
                   dual_resume_rect().height, "回到双机阅读", true);
-    if (!blocking_modal && !fan_frame_active() && s_toast[0] && ps_now() < s_toast_until) {
-        int tw = v.w - 48;
-        ps_box(fb, 24, v.h - 78, tw, 34, 5, 2, true);
-        ps_center(fb, v.w / 2, v.h - 67, 11, s_toast, 15);
-    }
+    if(!standby&&!fan_frame_active())ps_notice_draw(fb,24);
 }
 static bool panel_event(const ps_event_t *e) {
     ps_view_t v=ps_view();int ids[QUICK_COUNT],n=group_items(ids),cols=v.landscape?3:2,rows=(v.h-220)/76,per=cols*rows;
     if(e->type==PS_SWIPE_L||e->type==PS_SWIPE_R){if(s_panel==1&&per){int pages=(n+per-1)/per;if(pages)s_group=(s_group+(e->type==PS_SWIPE_L?1:pages-1))%pages;}return true;}
     if(e->type!=PS_TAP)return true;
-    if(e->y<76){s_panel=0;s_dirty=true;return true;}
+    if(ps_heading_back_hit(e->x,e->y)){s_panel=0;s_dirty=true;return true;}
     if(s_panel==3){for(int i=0;i<ps_navigation_count();i++){EpdRect r=panel_group_rect(i);if(ps_hit(e->x,e->y,r.x,r.y+38,r.width,r.height)){launcher_switch(i);return true;}}s_panel=0;s_dirty=true;return true;}
     for(int k=0;k<per&&s_group*per+k<n;k++){EpdRect r=panel_reading_rect(k);if(ps_hit(e->x,e->y,r.x,r.y+38,r.width,r.height)){quick_action(ids[s_group*per+k]);return true;}}
     if(e->y>=v.h-80){if(abs(e->x-v.w/2)<35){s_panel=0;ps_navigate(PS_QUICK_SETTINGS);}else{int pages=(n+per-1)/per;if(pages)s_group=(s_group+(e->x<v.w/2?pages-1:1))%pages;}s_dirty=true;}return true;
@@ -2400,7 +2406,7 @@ static PICO_STORE_COLD bool device_event(const ps_event_t* e) {
         }else if(item->action==DEVICE_ACTION_TEST_AWAKE){
             app_settings_set_test_awake(!app_settings_test_awake());s_last_input=ps_now();
             ps_toast(app_settings_test_awake()?"保持唤醒已开启":"已恢复自动休眠");
-        }else ps_navigate(item->route);
+        }else {ps_navigate(item->route);if(item->route==PS_QUICK_SETTINGS)s_quick_mode=2;}
         return true;
     }
     return false;
@@ -2409,6 +2415,16 @@ static PICO_STORE_COLD bool quick_settings_event(const ps_event_t *e) {
     ps_view_t v=ps_view();
     if(e->type==PS_CANCEL){quick_edit_contact_cancel();return true;}
     if(!s_quick_edit.active)return false;
+    if(s_quick_mode==2){
+        bool next=ps_corner_indicators();
+        if(ps_switch_swipe(e,v.w-82,126,66,56,&next)||
+           (e->type==PS_TAP&&ps_hit(e->x,e->y,16,126,v.w-32,56)&&(next=!next,true))){
+            if(!corner_indicators_set(next))ps_toast("保存失败，请重试");
+            return true;
+        }
+        if(e->type==PS_TAP&&ps_hit(e->x,e->y,16,202,v.w-32,48)){s_quick_mode=0;return true;}
+        return false;
+    }
     if(s_quick_mode) {
         int catalog[QUICK_COUNT],total=quick_catalog(catalog),rows=quick_catalog_rows();
         int direction=e->type==PS_SWIPE_L||e->type==PS_SWIPE_U?1:e->type==PS_SWIPE_R||e->type==PS_SWIPE_D?-1:0;
@@ -2527,13 +2543,11 @@ static bool dispatch(const ps_event_t *e) {
         return true;
     }
     if(!standby&&e->type==PS_TAP) {
-        if(s_route!=PS_QUICK_SETTINGS&&(e->x<48||e->x>=v.w-48)&&e->y>=v.h-48){open_panel(1);return true;}
-        if(root&&e->y>=28&&e->y<70){if(e->x>=v.w-46)ps_global_open_settings(s_ctx);else{int count=ps_navigation_count(),w=(v.w-72-(count-1)*4)/count,col=(e->x-12)/(w+4);if(e->x>=12&&col<count)launcher_switch(col);}return true;}
+        if(root&&e->y>=28&&e->y<70){if(e->x>=v.w-PS_THEME_MARGIN-44&&e->x<v.w-PS_THEME_MARGIN)ps_global_open_settings(s_ctx);else{int count=ps_navigation_count(),w=(v.w-2*PS_THEME_MARGIN-44-(count-1)*4)/count,col=(e->x-PS_THEME_MARGIN)/(w+4);if(e->x>=PS_THEME_MARGIN&&e->x<v.w-PS_THEME_MARGIN-44&&col<count)launcher_switch(col);}return true;}
         bool heading=frozen||setting_route(s_route)||s_route==PS_RECORDS||s_route==PS_EDITOR||s_route==PS_IMPORT||
             s_route==PS_PLAYGAME||s_route==PS_ARCADEGAME||s_route==PS_APPLICATION||(s_route==PS_CLOUDFLARE&&!ps_desktop_app_available(true))||((s_route==PS_APPS||s_route==PS_GAMES)&&!root)||(home_route(s_route)&&!root);
-        if(heading&&e->x>=0&&e->x<44&&e->y>=24&&e->y<76){ps_back();return true;}
+        if(heading&&ps_heading_back_hit(e->x,e->y)){ps_back();return true;}
     }
-    if(root&&(e->type==PS_SWIPE_L||e->type==PS_SWIPE_R)) {int at=ps_navigation_index(s_route),next=at+(e->type==PS_SWIPE_L?1:-1);if(at>=0&&next>=0&&next<ps_navigation_count())launcher_switch(next);return true;}
     if(local_hold()){
         if(ps_usb_background()&&(s_route==PS_CANVAS||!ps_usb_local_route(s_route))&&ps_usb_event(e))return true;
         if(!ps_usb_local_route(s_route))return true;
@@ -2605,7 +2619,7 @@ static void touch_tick(app_ctx_t* ctx) {
                           (x < 48 || x >= v.w - 48) && y >= v.h - 48;
         if(!s_fan)s_fan_side = x >= v.w / 2;
         if (s_fan) {s_fan_candidate=false;fan_move(x,y);}
-        else if (!s_fan_candidate) {
+        else {
             ps_event_t e = { PS_PRESS, x, y, x, y, 0 };
             if (dispatch(&e)) s_dirty = true;
         }
@@ -2613,19 +2627,18 @@ static void touch_tick(app_ctx_t* ctx) {
     if (!s_tracking) return;
     int dx = x - s_x0, dy = y - s_y0;
     int64_t held = (ctx->touch_sample_ms?ctx->touch_sample_ms:ctx->now_ms) - s_down_ms;
+    bool opened=false;
+    int inward=s_fan_side?-dx:dx;
+    if(s_fan_candidate&&!s_fan&&!s_long&&inward>=28&&dy<=-12&&inward-dy>=48){
+        ps_event_t cancel={.type=PS_CANCEL};dispatch(&cancel);
+        if(s_global_app==&app_book)app_book_global_prepare();
+        ps_games_action(5);s_fan=true;s_fan_candidate=false;
+        s_fan_selected=-1;s_panel=0;s_dirty=s_fast=true;opened=true;
+    }
     if (t->touched) {
-        if (s_fan_candidate && !s_fan && abs(dx) + abs(dy) > 12 && dy < 8 &&
-            (s_fan_side ? dx < 8 : dx > -8)) {
-            ps_games_action(5);
-            s_fan = true;
-            s_fan_selected = -1;
-            s_panel = 0;
-            s_dirty = true;
-            s_fast = true;
-        }
         if (s_fan) {
             fan_move(x, y);
-        } else if (!s_fan_candidate) {
+        } else {
             bool ink=ps_reader_editor_ink_mode()||ps_apps_ink_mode();
             bool moved=ink?(x!=s_lastx||y!=s_lasty):
                 abs(x-s_lastx)+abs(y-s_lasty)>3&&ctx->now_ms-s_move_ms>=70;
@@ -2647,16 +2660,14 @@ static void touch_tick(app_ctx_t* ctx) {
         s_tracking = false;
         s_last_input = ctx->now_ms;
         if (s_fan) {
+            if(opened)return;
             if(ps_hit(x,y,fan_prompt_x(),32,76,34)) {
                 int side=s_fan_side;fan_present_reset();quick_action(10);s_quick_edit.side=side;s_dirty=true;
             } else if(ps_hit(x,y,v.w-48,24,48,48)){s_fan=s_fan_candidate=false;s_fan_selected=-1;s_dirty=true;}
             else fan_release(x,y);
             return;
         }
-        if (s_fan_candidate) {
-            s_fan_candidate=false;s_fan=true;s_fan_selected=-1;s_panel=0;
-            ps_games_action(5);s_dirty=true;return;
-        }
+        s_fan_candidate=false;
         ps_event_t e = { PS_RELEASE, s_x0, s_y0, x, y, held };
         ps_route_t previous_route = s_route;
         int previous_panel = s_panel;
@@ -2764,6 +2775,8 @@ bool ps_global_input(app_ctx_t *ctx,const app_desc_t *app,app_redraw_t *redraw) 
     if(ps_dual_service(ctx,app,redraw))return true;
     if(!app->product_shell&&ps_background_io_allowed()&&!ps_ink_pending())ps_maintenance_tick();
     if(content_tick())s_dirty=true;
+    if(s_toast[0]&&ctx->now_ms>=s_toast_until){s_toast[0]=0;s_dirty=true;}
+    if(!app->product_shell&&s_dirty&&!s_panel&&!s_fan&&!s_tracking&&!ctx->pressed&&!ctx->released&&!(ctx->touch&&ctx->touch->touched)){s_dirty=false;*redraw=APP_REDRAW_PAGE;return true;}
     if(!local_hold()&&!app->product_shell&&ps_desktop_tick()){*redraw=APP_REDRAW_NONE;return true;}
     if(local_hold()){
         if(ps_usb_tick()||ps_bluetooth_tick())s_dirty=true;
@@ -2786,17 +2799,19 @@ bool ps_global_input(app_ctx_t *ctx,const app_desc_t *app,app_redraw_t *redraw) 
     if(t->y>=1216&&!s_global_claimed)return false;
     int x,y;map_touch(t->x,t->y,&x,&y);ps_view_t v=ps_view();
     bool corner=y>=v.h-48&&(x<48||x>=v.w-48);
-    if(!s_global_claimed&&!s_panel&&!s_fan&&!(ctx->pressed&&corner))return false;
-    if(!s_global_claimed&&app==&app_book)app_book_global_prepare();
-    s_global_claimed=true;s_global_redraw=APP_REDRAW_NONE;s_dirty=false;touch_tick(ctx);
+    if(!s_global_claimed&&!s_panel&&!s_fan&&!s_fan_candidate&&!(ctx->pressed&&corner))return false;
+    bool claimed=s_global_claimed||s_panel||s_fan;
+    s_global_redraw=APP_REDRAW_NONE;touch_tick(ctx);
+    if(!claimed&&!s_fan&&!s_panel)return false;
+    s_global_claimed=true;
     *redraw=s_global_redraw!=APP_REDRAW_NONE?s_global_redraw:s_dirty?APP_REDRAW_PAGE:APP_REDRAW_NONE;
     if(ctx->released||t->count>1||(!t->touched&&!s_tracking))s_global_claimed=false;
     return true;
 }
 void ps_global_draw_controls(const app_desc_t *app,uint8_t *fb) {
     if(!s_global_enabled||app!=s_global_app)return;
-    ps_view_t v=ps_view();ps_corner_controls(fb);
-    if(s_toast[0]&&ps_now()<s_toast_until){ps_box(fb,24,v.h-78,v.w-48,34,5,2,true);ps_center(fb,v.w/2,v.h-67,11,s_toast,15);}
+    ps_corner_controls(fb);
+    ps_notice_draw(fb,app==&app_book?44:24);
 }
 bool ps_global_present(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t redraw) {
     if(local_hold()&&!s_panel&&!s_fan){
@@ -2883,6 +2898,7 @@ static void on_enter(app_ctx_t* ctx) {
         s_status_style = status_style == PS_STATUS_STYLE_BOOK ? PS_STATUS_STYLE_BOOK : PS_STATUS_STYLE_LINE;
         uint8_t percent = status_style == 2;
         (void)ps_load("statuspct1", &percent, sizeof(percent));
+        (void)ps_load("cornermarks1",&s_corner_indicators,sizeof(s_corner_indicators));
         s_status_percent = percent != 0;
         uint8_t shelf_card_style = PS_SHELF_CARD_DEFAULT;
         if (ps_load("shelfcards1", &shelf_card_style, sizeof(shelf_card_style)) &&

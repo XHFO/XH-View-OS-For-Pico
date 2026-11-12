@@ -98,5 +98,13 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity);
 
 #ifdef PICO_NATIVE_PREVIEW
 void ps_dual_native_wifi(bool online);
+void ps_dual_root_native(unsigned *kind,unsigned *page,unsigned *pages);
 void pico_dual_ble_test_enabled(bool enabled);
 #endif
+
+/// 已认证BLE上的书架/家庭双页；action为0轮询、1下一组、2上一组、3提交外观/筛选。
+/// Shelf/home spreads over authenticated BLE; action 0 polls, 1 next, 2 previous, 3 layout/filter proposal.
+int ps_dual_root_page(unsigned kind,int page,int count,uint32_t *layout,int action);
+/// 退出根页只停止根页联动，不修改阅读会话。/ Leave root paging without changing the reading session.
+void ps_dual_root_leave(void);
+bool ps_dual_root_active(void);

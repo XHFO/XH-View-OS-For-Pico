@@ -909,7 +909,6 @@ static void draw_compact_header(uint8_t* fb, size_t page) {
     ui_text_vc(fb, progress.x + 4, 20, 28, title, EPD_DRAW_ALIGN_LEFT, false);
     ui_text_vc(fb, progress.x + 4, 51, page_px, label, EPD_DRAW_ALIGN_LEFT, false);
     ui_text_vc(fb, progress.x + progress.width - 6, 51, 26, percent_label, EPD_DRAW_ALIGN_RIGHT, false);
-    ps_notice_draw(fb, 64);
     EpdRect track = {progress.x + 4, 74, progress.width - 10, 4};
     epd_fill_rect(track, UI_GRAY_LIGHT, fb);
     int thumb = track.x + (int)((uint64_t)(track.width - 1) * pct / 100);

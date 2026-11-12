@@ -10,7 +10,7 @@
 #include "pico_app_switch.h"
 #include "../../main/system/pico_scroll.h"
 
-enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10111 };
+enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10112 };
 enum { PAGE_MONITOR, PAGE_SETUP, PAGE_DEVICES, PAGE_ROOMS };
 
 static const pico_app_host_t *host;
@@ -18,6 +18,8 @@ static unsigned page, entity_page, setup_field, last_revision;
 _Static_assert(PGA_PRESS == 0 && PGA_MOVE == 1 && PGA_RELEASE == 2 && PGA_TAP == 3 && PGA_LONG == 4 &&
                    PGA_SWIPE_L == 5 && PGA_SWIPE_R == 6 && PGA_SWIPE_U == 7 && PGA_SWIPE_D == 8 && PGA_CANCEL == 9,
                "pico_scroll.h event numbers");
+static bool has_spread(void),spread_update(int action);
+static bool spread_paired;
 static ps_scroll_track_t entity_scroll;
 static bool waiting_input, need_sync, setup_advanced;
 static pico_app_home_status_t status;
@@ -274,7 +276,7 @@ static int cards_per_page(pico_app_view_t v) { return card_columns(v) * card_row
 static int card_top(pico_app_view_t v) { return v.landscape ? 150 : 160; }
 
 static void card_rect(pico_app_view_t v, int index, int *x, int *y, int *w, int *h) {
-    int cols = card_columns(v), rows = card_rows(v), margin = 14, gap = 10, bottom = 64;
+    int cols = card_columns(v), rows = card_rows(v), margin = 16, gap = 10, bottom = 64;
     int width = (v.w - 2 * margin - gap * (cols - 1)) / cols;
     int height = (v.h - card_top(v) - bottom - gap * (rows - 1)) / rows;
     *x = margin + (index % cols) * (width + gap);
@@ -284,8 +286,8 @@ static void card_rect(pico_app_view_t v, int index, int *x, int *y, int *w, int 
 }
 
 static void chip_rect(pico_app_view_t v, int index, int *x, int *y, int *w, int *h) {
-    int gap = 6, width = (v.w - 28 - gap * (CARD_CHIP_COUNT - 1)) / CARD_CHIP_COUNT;
-    *x = 14 + index * (width + gap);
+    int gap = 6, width = (v.w - 32 - gap * (CARD_CHIP_COUNT - 1)) / CARD_CHIP_COUNT;
+    *x = 16 + index * (width + gap);
     *y = v.landscape ? 108 : 120;
     *w = width;
     *h = 30;
@@ -303,11 +305,11 @@ static void draw_header(uint8_t *fb, int visible, int pages) {
     const char *sub = status.busy ? "同步中…" :
                       status.at_home ? "本地" : status.external ? "外部" : "";
     host->heading(fb, hl("settings.home_link.monitor", "家庭连接"), NULL);
-    host->button(fb, v.w - 88, 24, 72, 36, "返回", false);
     host->format(line,sizeof(line),"%s%u 个设备 · %d/%d 页 · %s",sub[0]?(status.busy?"同步中 · ":status.at_home?"本地 · ":"外部 · "):"",(unsigned)visible,entity_page+1,pages,
                  status.error[0]?status.error:((status.flags&PGA_HOME_WIFI)?"Wi-Fi 已连接":"Wi-Fi 未连接"));
+    if(entity_page>=(unsigned)pages)host->format(line,sizeof(line),"双屏家庭 · 已到最后一页");
     if(status.entity_total>HLC_MAX)host->format(line,sizeof(line),"显示 %u / %u 项 · 请减少同步房间",(unsigned)cache_count,(unsigned)status.entity_total);
-    host->wrap(fb,14,v.landscape?84:92,v.w-28,11,1,line,5);
+    host->wrap(fb,16,v.landscape?84:92,v.w-32,11,1,line,5);
     for (int i = 0; i < CARD_CHIP_COUNT; i++) {
         int x, y, w, h;
         chip_rect(v, i, &x, &y, &w, &h);
@@ -600,10 +602,8 @@ static void render_monitor(uint8_t *fb) {
     host->fill(fb, 0, 0, v.w, v.h, 15);
     if (!has_home()) {
         host->heading(fb, hl("settings.home_link.monitor", "家庭连接"), NULL);
-        host->button(fb, v.w - 88, 24, 72, 36, "返回", false);
-        host->wrap(fb, 24, 120, v.w - 48, 14, 6,
+            host->wrap(fb, 24, 120, v.w - 48, 14, 6,
                    "当前固件宿主过旧，缺少 home_link 服务。请刷含 PGA 桥的固件后再打开本工具包。", 5);
-        host->button(fb, 16, v.h - 56, v.w - 32, 40, "返回", false);
         return;
     }
 
@@ -611,7 +611,7 @@ static void render_monitor(uint8_t *fb) {
     build_display(disp, &n, false);
     int per = cards_per_page(v);
     int pages = n ? (n + per - 1) / per : 1;
-    if (entity_page >= (unsigned)pages) entity_page = (unsigned)(pages - 1);
+    if (!spread_paired&&entity_page >= (unsigned)pages) entity_page = (unsigned)(pages - 1);
     draw_header(fb, n, pages);
 
     int start = (int)(entity_page * (unsigned)per);
@@ -629,7 +629,7 @@ static void render_monitor(uint8_t *fb) {
         else if (cards.type_filter)
             host->wrap(fb, 24, 210, v.w - 48, 14, 3, "当前筛选没有设备。点上方「全部」恢复显示。", 5);
         else
-            host->wrap(fb, 24, 210, v.w - 48, 14, 3, "尚未同步到可显示的设备。请检查 HA 连接后点「同步」。", 5);
+            host->wrap(fb, 24, 210, v.w - 48, 14, 3, start>=n&&n?"本侧已到家庭卡片末尾":"尚未同步到可显示的设备。请检查 HA 连接后点「同步」。", 5);
     }
 
     int bw = (v.w - 48) / 3;
@@ -686,9 +686,9 @@ static void render_setup(uint8_t *fb) {
         host->text(fb,sx+6,y+(sh-16)/2,10,flags[i],1);
         pico_switch_draw(fb,sx+bw-40,y+(sh-20)/2,34,20,on,true,host->box);
     }
+    bw=(v.w-40)/2;
     host->button(fb, 16, v.h - 56, bw, 40, hl("settings.home_link.phone_fill", "手机填写"), false);
-    host->button(fb, 24 + bw, v.h - 56, bw, 40, hl("settings.home_link.save", "保存"), false);
-    host->button(fb, 32 + 2 * bw, v.h - 56, bw, 40, hl("common.back", "返回"), false);
+    host->button(fb, 24 + bw, v.h - 56, bw, 40, hl("settings.home_link.save", "保存"), true);
 }
 
 static unsigned manage_per(pico_app_view_t v){return v.landscape?6:8;}
@@ -796,17 +796,7 @@ static bool event_monitor(const pico_app_event_t *e) {
         drag_suppress_tap = false;
         return true;
     }
-    if (e->type == PGA_TAP && e->x >= v.w - 88 && e->x < v.w - 16 && e->y >= 24 && e->y < 60) {
-        host->navigate(PGA_PAGE_LAUNCHER);
-        return true;
-    }
-    if (!has_home()) {
-        if (e->type == PGA_TAP && e->y >= v.h - 56 && e->y < v.h - 16) {
-            host->navigate(PGA_PAGE_LAUNCHER);
-            return true;
-        }
-        return false;
-    }
+    if (!has_home()) return false;
     if (e->type != PGA_TAP) return false;
 
     for (int i = 0; i < CARD_CHIP_COUNT; i++) {
@@ -816,6 +806,7 @@ static bool event_monitor(const pico_app_event_t *e) {
             uint8_t mask = card_chips[i].mask;
             cards.type_filter = !mask || chip_selected(i) ? 0 : mask;
             entity_page = 0;
+            if(has_spread())spread_update(3);
             cards_save();
             host->dirty();
             return true;
@@ -880,22 +871,24 @@ static bool event_monitor(const pico_app_event_t *e) {
 }
 
 static bool event_setup(const pico_app_event_t *e) {
-    if (e->type == PGA_TAP && hit_bottom3(e, 0)) {
+    pico_app_view_t v = host->view();
+    int bw=(v.w-40)/2;
+    bool bottom=e->y>=v.h-56&&e->y<v.h-16;
+    if (e->type == PGA_TAP && bottom && e->x>=16 && e->x<16+bw) {
         status.bytes = sizeof(status);
         if (!host->home_link(PGA_HOME_OPEN_SETUP, &status)) host->toast(status.error[0] ? status.error : "手机配置暂时不可用");
         return true;
     }
-    if (e->type == PGA_TAP && hit_bottom3(e, 1)) {
+    if (e->type == PGA_TAP && bottom && e->x>=24+bw && e->x<v.w-16) {
         save_config();
         return true;
     }
-    if ((e->type == PGA_TAP && hit_bottom3(e, 2)) || e->type == PGA_SWIPE_R) {
+    if (e->type == PGA_SWIPE_R) {
         page = PAGE_MONITOR;
         host->dirty();
         return true;
     }
     if (e->type != PGA_TAP) return false;
-    pico_app_view_t v = host->view();
     int ax=v.landscape?v.w-188:16,ay=v.landscape?88:164,aw=v.landscape?172:v.w-32;
     if(e->x>=ax&&e->x<ax+aw&&e->y>=ay&&e->y<ay+40){setup_advanced=!setup_advanced;host->dirty();return true;}
     for (unsigned slot=0;slot<setup_count();slot++) {
@@ -912,7 +905,7 @@ static bool event_setup(const pico_app_event_t *e) {
         }
     }
     int y = setup_flags_y(v);
-    int bw=(v.w-48)/3;
+    bw=(v.w-48)/3;
     for(unsigned i=0;i<3;i++)if(e->x>=16+(int)i*(bw+8)&&e->x<16+(int)i*(bw+8)+bw&&e->y>=y&&e->y<y+(v.landscape?26:40)){
         if(i==0)config.enabled=!config.enabled;
         else if(i==1)config.external_enabled=!config.external_enabled;
@@ -920,6 +913,19 @@ static bool event_setup(const pico_app_event_t *e) {
         host->dirty();return true;
     }
     return false;
+}
+
+static bool has_spread(void){return host->bytes>=offsetof(pico_app_host_t,home_spread)+sizeof(host->home_spread)&&host->home_spread;}
+static bool spread_update(int action){
+    if(!has_spread())return false;
+    uint32_t filter=cards.type_filter;int disp[HLC_MAX],n=0;build_display(disp,&n,false);
+    int per=cards_per_page(host->view()),pages=n?(n+per-1)/per:1;
+    unsigned before=entity_page;
+    int next=host->home_spread(entity_page,pages,&filter,page==PAGE_MONITOR&&mode_slot<0?action:-1);
+    spread_paired=(filter&0x80000000u)!=0;filter&=0x7fffffffu;
+    if(filter!=cards.type_filter){cards.type_filter=(uint8_t)filter;cards_save();build_display(disp,&n,false);pages=n?(n+per-1)/per:1;next=host->home_spread(entity_page,pages,&filter,0);}
+    if(next>=0)entity_page=(unsigned)next;
+    return before!=entity_page;
 }
 
 static bool monitor_scroll(const pico_app_event_t *e) {
@@ -933,19 +939,14 @@ static bool monitor_scroll(const pico_app_event_t *e) {
     build_display(disp, &n, false);
     int per = cards_per_page(host->view());
     unsigned pages = n ? (unsigned)((n + per - 1) / per) : 1;
-    if (d > 0) {
-        if (entity_page + 1 < pages) {
-            entity_page++;
-            host->dirty();
-        }
-        return true;
+    if(has_spread()){
+        unsigned before=entity_page;
+        spread_update(d>0?1:2);
+        if(before!=entity_page||spread_paired){host->dirty();return true;}
     }
-    if (entity_page) {
-        entity_page--;
-        host->dirty();
-    } else
-        host->navigate(PGA_PAGE_LAUNCHER);
-    return true;
+    if(d>0&&entity_page+1<pages)entity_page++;
+    else if(d<0&&entity_page)entity_page--;
+    host->dirty();return true;
 }
 
 static bool catalog_event(const pico_app_event_t *e){
@@ -988,7 +989,7 @@ static void render_mode(uint8_t *fb){
     if(mode_slot<0||(unsigned)mode_slot>=cache_count)return;
     pico_app_view_t v=host->view();hlc_ent_t *ent=&cache[mode_slot];
     int x=(v.w-280)/2,y=v.landscape?24:130,h=v.landscape?312:390;
-    host->fill(fb,0,0,v.w,v.h,13);host->box(fb,x,y,280,h,12,15,true);host->box(fb,x,y,280,h,12,3,false);
+    host->fill(fb,0,0,v.w,v.h,15);host->box(fb,x,y,280,h,12,15,true);host->box(fb,x,y,280,h,12,1,false);
     host->text(fb,x+16,y+16,17,"空调模式",1);
     int row=0;for(unsigned i=0;i<7;i++)if(ent->hvac_modes&(1u<<i)){
         int rh=v.landscape?25:38;host->button(fb,x+16,y+48+row*(rh+3),248,rh,mode_labels[i],hl_same(ent->state,mode_names[i]));row++;
@@ -1160,6 +1161,7 @@ static bool tick(void) {
     if (waiting_input) take_input();
     take_entry();
     refresh_status();
+    bool spread_changed=spread_update(0);
     int64_t clock=host->time_us?host->time_us():0;
     if(page==PAGE_DEVICES&&has_selection()&&catalog.busy&&clock-catalog_poll_us>=250000){
         catalog_poll_us=clock;catalog.bytes=sizeof(catalog);(void)host->home_catalog(PGA_CATALOG_GET,&catalog);host->dirty();
@@ -1177,7 +1179,7 @@ static bool tick(void) {
         if(now<=0||now-room_poll_us>=250000){room_poll_us=now;rooms_refresh();}
     }
     if (need_sync && page==PAGE_MONITOR && has_home() && (status.flags & PGA_HOME_WIFI) && !status.busy) request_sync();
-    return status.busy||rooms.busy;
+    return spread_changed||status.busy||rooms.busy;
 }
 
 static void action(int a) { (void)a; }

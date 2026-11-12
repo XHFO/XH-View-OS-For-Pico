@@ -1,3 +1,19 @@
+## 0.40.0-dual108 · 测试频道 / Test channel · 2026-11-13
+
+- 普通页面统一纯白底，增强灰阶边界与文字层次；封面增加深色抗锯齿描边，百分比、收藏与进度条分开排布。/ Use white page backgrounds with stronger grayscale hierarchy and antialiased cover outlines; reserve separate progress, favorite and bar space.
+- 双机换书询问沿用系统白底选项、勾选和圆角面板，使用纯白背景、深描边和等边距取消按钮，并显示单侧/双侧高亮的设备图示；保留单侧/双机打开行为与逐书进度。/ Isolate the paired shelf open-choice dialog with a white background, paired-device illustrations, system-style outlined option rows with checkmarks and equal cancel margins while preserving local/paired opening and per-book history.
+
+- 书架页数说明下移至距底部6逻辑像素，标题、百分比、收藏与进度条紧凑分组；应用集TF游戏复用小游戏目录的专属图案。/ Lower shelf pagination to a 6-unit bottom margin, group each book’s metadata, and share game artwork between both launchers.
+
+- 顶部导航移除文字，图标在原点击区域居中；封面按原图比例贴边描边，封面与书名共用列中心线，进度条统一列宽，收藏桃心对齐右缘，空心/实心区分状态；导航和书架使用相同左右留白。/ Center icon-only top navigation within its existing hit areas; outline original-aspect covers, center titles in their columns, and align bars and hollow/filled hearts with equal page margins.
+
+- 修复从机打开书架排序时提示与排序控件重复绘制；主机正常排序，从机明确跟随主机，横竖屏分开预留文字与按钮区域。/ Prevent secondary shelf-sort hints and controls from overpainting; keep primary sorting and a clear secondary follow-primary state with separate text and button regions.
+
+- 临时提示统一显示在顶部状态栏；快捷菜单仅由底角向内滑动触发，可在设置隐藏指示标识。/ Show transient notices in the top status bar; require inward corner swipes for quick menus and allow hiding their indicators.
+- 书架、家庭、应用集与游戏目录统一左右分页；顶部图标切换栏目。书架排序合入“书架样式”，笔记与样式入口等宽同色。/ Use horizontal content pagination and top icons for destinations; place sorting inside Shelf Style with matching Notes and Style buttons.
+- 两端同时停留书架或家庭控制页时，主机显示当前页、副机显示下一页；任一端翻动一组，尾页副屏明确留空，离页后独立操作，重新合流保留主机当前页。/ Pair shelf and Home monitor pages as current/next with group turns, an explicit empty trailing page, independent operation after departure and no primary-page rewind on rejoin.
+- 返回按钮统一圆角矩形，与状态栏、分隔线及内容左右边界对齐；设置图标与两行文字按共同中心排布。家庭连接应用移除重复返回入口，需配套更新TF应用包。/ Align rounded Back controls with status and content margins, center settings icons with text blocks, and remove duplicate Home Link Back actions via the accompanying TF package.
+
 ## 0.40.0-dual107 · 本地候选 / Local candidate
 
 - 双屏后启动端在前屏扫描预计剩余约500毫秒时开始接力，下一页右→左、上一页左→右，两端发起一致。保持原扫描相位、波形及电源稳定等待；允许动画部分重叠，实际提前量取决于扫描估计、绘制和通信耗时。/ Start the trailing screen with about 500 ms of estimated lead scanning left, right→left for next and left→right for previous from either initiator. Retain scan phases, waveform and rail settling; actual overlap depends on scan estimates, rendering and transport.

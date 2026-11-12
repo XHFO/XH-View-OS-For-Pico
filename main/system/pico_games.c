@@ -396,6 +396,13 @@ static bool host_home_rooms(uint32_t command,pico_app_home_rooms_t *rooms){
 }
 static bool host_home_catalog(uint32_t command,pico_app_home_catalog_t *out){return home_link_active()&&ps_home_pga_catalog(command,out);}
 static bool host_home_selection(uint32_t command,pico_app_home_selection_t *out){return home_link_active()&&ps_home_pga_selection(command,out);}
+static int32_t host_home_spread(int32_t page,int32_t pages,uint32_t *filter,int32_t action){
+    if(!home_link_active())return page;
+    if(action<0){ps_dual_root_leave();return page;}
+    int32_t result=ps_dual_root_page(2,page,pages,filter,action);
+    if(ps_dual_root_active())*filter|=0x80000000u;
+    return result;
+}
 static bool host_printer_candidate(uint32_t index,pico_app_printer_config_t *out){
     return s_app&&s_app->kind==PGA_PRINTER_LINK&&ps_home_pga_printer_candidate(index,out);
 }
@@ -450,7 +457,7 @@ static const pico_app_host_t s_host={
     .printer_link=host_home_link,.printer_item=host_home_link_printer,
     .printer_config=host_printer_config,.printer_input=host_home_link_input,
     .home_rooms=host_home_rooms,.printer_candidate=host_printer_candidate,
-    .home_catalog=host_home_catalog,.home_selection=host_home_selection,
+    .home_catalog=host_home_catalog,.home_selection=host_home_selection,.home_spread=host_home_spread,
     .tr=ps_tr,
     .duo_role=host_duo_role,.duo_input_send=host_duo_send,.duo_input_recv=host_duo_recv,
     .duo_packet_send=host_duo_packet_send,.duo_packet_recv=host_duo_packet_recv
@@ -674,14 +681,18 @@ static void game_mark(uint8_t *fb,int x,int y,int kind) {
     if(kind==PGA_GO)ps_box(fb,x+24,y+24,9,9,5,15,true);
     if(kind==PGA_XIANGQI||kind==PGA_CHESS){ps_box(fb,x+11,y+11,16,16,8,15,true);ps_center(fb,x+19,y+12,12,kind==PGA_XIANGQI?"象":"棋",2);}
 }
+// 两个入口复用缓存目录中的游戏图案，不在绘制时读卡。/ Share cached game artwork across both launchers without storage I/O.
+void ps_games_cover(uint8_t *fb,unsigned index,int x,int y) {
+    if(index<s_count)game_mark(fb,x,y,s_items[index].info.kind);
+}
 static void draw_launcher(uint8_t *fb) {
-    ps_view_t v=ps_view();char text[128];ps_fill(fb,0,76,v.w,v.h-76,14);ps_tabs(fb,2);ps_text(fb,16,87,25,"小游戏",1);
+    ps_view_t v=ps_view();char text[128];ps_fill(fb,0,76,v.w,v.h-76,PS_THEME_CANVAS);ps_tabs(fb,2);ps_text(fb,16,87,25,"小游戏",1);
     ps_button(fb,v.w-178,87,80,30,ps_games_sort_label(),false);ps_button(fb,v.w-90,87,74,30,"刷新",false);
     snprintf(text,sizeof(text),"TF 应用 %u · %s · 设置中管理",s_count,ps_games_sort_label());ps_text(fb,16,121,11,text,5);
     if(!s_count){ps_wrap(fb,24,190,v.w-48,18,3,"将游戏包放入 TF 卡的 apps/games 目录后点击刷新",2);if(s_error[0])ps_wrap(fb,24,310,v.w-48,13,3,s_error,4);}
     for(unsigned i=s_page*6;i<s_count&&i<(s_page+1)*6;i++){
         int x,y,w,h;card_rect(i%6,&x,&y,&w,&h);pico_app_package_t *p=&s_items[i].info;
-        ps_surface(fb,x,y,w,h,false);game_mark(fb,x+12,y+(v.landscape?21:14),p->kind);
+        ps_surface(fb,x,y,w,h,false);ps_games_cover(fb,i,x+12,y+(v.landscape?21:14));
         ps_text(fb,x+58,y+(v.landscape?15:19),18,p->title,1);
         if(v.landscape)ps_wrap(fb,x+58,y+44,w-70,10,1,p->description,5);
         else {
@@ -825,11 +836,10 @@ bool ps_games_event(const ps_event_t *event) {
     if(ps_route()==PS_GAMES){
         if(event->type==PS_TAP&&ps_hit(event->x,event->y,v.w-90,87,74,30)){ps_games_rescan();return true;}
         if(event->type==PS_TAP&&ps_hit(event->x,event->y,v.w-178,87,80,30)){ps_games_sort_cycle();return true;}
-        // 上下滑动越过阈值即翻页；底栏点击保持原范围。左右滑动不在此消费。
-        // Vertical drags turn the page once they clear the threshold; the bottom bar keeps its hit area. Horizontal swipes are not consumed here.
+        // 左右滑动翻页，首页栏目只通过顶部图标切换。/ Swipe horizontally to page; top icons alone switch root sections.
         {
             bool consume=false;
-            int d=ps_scroll_step(&games_scroll,event->type,event->x0,event->y0,event->x,event->y,PS_SCROLL_AXIS_Y,&consume);
+            int d=ps_scroll_step(&games_scroll,event->type,event->x0,event->y0,event->x,event->y,PS_SCROLL_AXIS_X,&consume);
             bool bar=!consume&&event->type==PS_TAP&&event->y>=v.h-44;
             if(bar) d=event->x>v.w/2?1:-1;
             if(d||consume||bar){

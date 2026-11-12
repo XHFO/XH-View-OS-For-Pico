@@ -4,9 +4,9 @@
 
 Choose a destination in Settings → Home Navigation, then move it up/down, replace or hide it. Add Destination restores a hidden function. Restore Defaults returns to Books, Home and Games. Printers can be a separate home destination.
 
-首页最多显示五个入口，至少保留一个可用入口；设置按钮独立保留。顶部按钮、左右滑动和中键双击打开的页面切换器使用同一份顺序。长按中键仍直接回书架，快捷菜单中的书架、家庭和小游戏入口仍直接到对应功能。
+首页最多显示五个入口，至少保留一个可用入口；设置按钮独立保留。顶部按钮和中键双击打开的页面切换器使用同一份顺序；左右滑动在书架、家庭、应用集和游戏目录中翻动内容页，不切换栏目。长按中键仍直接回书架，快捷菜单中的书架、家庭和小游戏入口仍直接到对应功能。
 
-Keep one to five available destinations. Settings remains separately accessible. Top buttons, horizontal swipes and the double-press page switcher share the saved order. Holding the middle key returns directly to Books; named corner shortcuts retain their fixed destinations.
+Keep one to five available destinations. Settings remains separately accessible. Top buttons and the double-press page switcher share the saved order. Horizontal swipes paginate shelf, Home, Apps and game content instead of switching destinations. Holding the middle key returns directly to Books; named corner shortcuts retain their fixed destinations.
 
 点击“完成”才保存并生效；“取消”或返回会丢弃本次调整。保存失败保留草稿，可以重试。选择浮层可点击外部空白或返回关闭，关闭动作不会点中下面的页面。较长的应用名称在自己的导航格内截短，不缩小字号。
 
@@ -28,6 +28,16 @@ The shared `navigation1` record uses checksummed transactional persistence. Stor
 
 ## 验证 / Validation
 
-`python3 tools/test_pico_navigation.py` 检查稳定 ID、重启恢复、排序替换、隐藏边界、保存失败、草稿隔离、动态注册及双方向绘制范围。`python3 tools/test_pico_system.py` 检查顶部与滑动顺序一致、打印机根页、返回来源和固定快捷动作。`tools/render_pico_navigation.py` 与 `tools/render_pico_system.py` 输出同源字体截图；不替代实体屏幕和触摸验收。
+`python3 tools/test_pico_navigation.py` 检查稳定 ID、重启恢复、排序替换、隐藏边界、保存失败、草稿隔离、动态注册及双方向绘制范围。`python3 tools/test_pico_system.py` 检查顶部栏目顺序、打印机根页、返回来源和固定快捷动作。`tools/render_pico_navigation.py` 与 `tools/render_pico_system.py` 输出同源字体截图；不替代实体屏幕和触摸验收。
 
-The navigation host test covers stable IDs, restart, ordering/replacement, hide limits, save failure, draft isolation, registration and two-orientation bounds. The shell host test checks matching top/swipe order, printer roots, return origin and fixed shortcut destinations. The navigation/system renderers produce same-source font screenshots; physical display and touch acceptance remains separate.
+The navigation host test covers stable IDs, restart, ordering/replacement, hide limits, save failure, draft isolation, registration and two-orientation bounds. The shell host test checks top destination order, printer roots, return origin and fixed shortcut destinations. The navigation/system renderers produce same-source font screenshots; physical display and touch acceptance remains separate.
+
+## 快捷菜单与共用导航 / Quick menus and shared navigation
+
+“系统设置 → 外观与操作 → 快捷菜单”提供“显示指示标识”开关及功能编排。隐藏标识不关闭滑动功能。底角点击、长按和小幅抖动不打开菜单；从底角向内并向上滑动才接管触摸。临时提示统一覆盖顶部状态栏，结束后恢复原状态，不遮盖正文和页脚。
+
+Settings → Appearance and Interaction → Quick Menu provides indicator visibility and shortcut editing. Hidden indicators retain the gesture. Corner taps, holds and jitter do not open the menu; a deliberate inward/upward swipe claims it. Transient notices replace the top bar and restore it on expiry without covering book body or footer.
+
+返回按钮采用圆角矩形，外框与页面内容共用16逻辑单位边距，图标与标题垂直居中。家庭连接保留左上角唯一返回入口。书架“书架样式”浮层同时显示样式及排序，两项选择分别保存。
+
+Rounded Back controls share the content’s 16-unit margin and center icons with headings. Home Link keeps one upper-left Back control. Shelf Style shows both layout and sort choices with independent persistence.

@@ -8,6 +8,16 @@ This feature belongs only to `experiment/dual-pico-reader`, based on the local d
 
 This private branch contains the complete firmware tree; the repository’s existing slice-based main branch is maintained separately.
 
+## dual108 根页双页联动 / dual108 paired root pages
+
+两端同时显示书架或家庭控制页且页数一致时，主机当前页为左页、副机显示下一页，左右滑动按两页前后翻动。末组缺少右页时明确显示尾页提示，不重复上一页。一方进入设置、家庭配置或其他页面后解除根页联动；返回后以主机当前页合流，不向前取整。阅读会话、正文锚点和已验收的 dual107 翻页接力参数保持独立。
+
+When both readers show the same shelf or Home monitor with matching page counts, the primary displays its current page and the secondary the next. Horizontal swipes turn two pages. A missing trailing page shows an explicit end hint instead of repeating content. Leaving for settings, Home setup or another page detaches the roots; rejoining preserves the primary’s current page without rounding backwards. Reading sessions, source anchors and the accepted dual107 animation relay remain independent.
+
+根页使用已认证 BLE 的24字节独立UI消息（tag241，version1），主机持有版本，副机请求带基础版本和序号；重复及过期请求不重复翻页。活跃根页约1.2秒心跳，不变内容不触发重绘；阅读消息优先，离页停止根页心跳。不借用游戏通道，不修改阅读协议v11。TF家庭应用需更新到支持可选 `home_spread` SDK 的版本。
+
+Root pages use separate authenticated 24-byte BLE UI messages (tag241, version1), with primary-owned revisions and deduplicated secondary requests. Active roots heartbeat about every1.2s without repainting unchanged content. Reading traffic remains higher priority and root heartbeats stop after departure. This does not use game transport or alter reading protocol v11. Home requires the TF app supporting the optional `home_spread` SDK tail.
+
 ## 本版界面与输入修订 / UI and input revision
 
 - **屏幕贴合防误触**：首次使用先在桌面把两台展开平放，点击「校准开合姿态」；主机会发出校准触发，两台各自采样并保存自己的重力基准。校准前防误触不启用。之后每次读取当前重力与基准的夹角：同向为展开，翻转约 180° 为另一面；两端朝向明确且相反时判为贴合并锁存：触摸离开、两台一起运动或姿态暂时不明都不会解除；只有展开并稳定同向 800ms 才恢复。贴合锁存期间底部三键仍可导航，但不会清除屏蔽；中央长按恢复已取消，避免折叠时误解除。展开状态下完全不启用鬼触判断，正常滑动不会被误判。开关通过蓝牙控制通道两端同步。

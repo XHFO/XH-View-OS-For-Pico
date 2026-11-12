@@ -199,7 +199,7 @@ void ps_launcher_enter(void) {
 }
 void ps_launcher_render(uint8_t *fb) {
     ps_view_t v=ps_view();unsigned n=destinations(),shown=effective_page();char text[56];
-    ps_fill(fb,0,76,v.w,v.h-76,14);
+    ps_fill(fb,0,76,v.w,v.h-76,PS_THEME_CANVAS);
     if(ps_navigation_index(PS_APPS)>=0) {
         ps_tabs(fb,0);ps_text(fb,16,85,25,ps_tr("launcher.title"),1);
     } else ps_heading(fb,ps_tr("launcher.title"),NULL);
@@ -228,12 +228,16 @@ void ps_launcher_render(uint8_t *fb) {
         }
         ps_surface(fb,r.x,r.y,r.width,r.height,false);
         if(v.landscape) {
-            ps_icon(fb,r.x+12,r.y+15,29,icon,2);
+            if(!item&&index<n+ps_games_count())ps_games_cover(fb,index-n,r.x+9,r.y+11);
+            else ps_icon(fb,r.x+12,r.y+15,29,icon,2);
             ps_wrap(fb,r.x+53,r.y+13,r.width-65,14,2,title,1);
             ps_text(fb,r.x+53,r.y+r.height-20,10,source,5);
         } else {
-            ps_box(fb,r.x+r.width/2-25,r.y+10,50,50,12,13,true);
-            ps_icon(fb,r.x+r.width/2-17,r.y+18,34,icon,2);
+            if(!item&&index<n+ps_games_count())ps_games_cover(fb,index-n,r.x+r.width/2-19,r.y+16);
+            else {
+                ps_box(fb,r.x+r.width/2-25,r.y+10,50,50,12,13,true);
+                ps_icon(fb,r.x+r.width/2-17,r.y+18,34,icon,2);
+            }
             ps_wrap(fb,r.x+12,r.y+68,r.width-24,14,2,title,1);
             ps_text(fb,r.x+12,r.y+r.height-19,10,source,5);
         }
@@ -357,9 +361,9 @@ bool ps_launcher_event(const ps_event_t *e) {
         }
         return true;
     }
-    // 上下翻页跟手提交；左右滑动仍留给首页导航。/ Vertical paging commits with the finger; horizontal swipes stay with Home navigation.
+    // 内容左右翻页，栏目只通过顶部图标切换。/ Swipe content horizontally; top icons alone switch sections.
     bool consume=false;
-    int d=ps_scroll_step(&launcher_scroll,e->type,e->x0,e->y0,e->x,e->y,PS_SCROLL_AXIS_Y,&consume);
+    int d=ps_scroll_step(&launcher_scroll,e->type,e->x0,e->y0,e->x,e->y,PS_SCROLL_AXIS_X,&consume);
     if(d){
         if(turn(d))return true;
         ps_scroll_disarm(&launcher_scroll);

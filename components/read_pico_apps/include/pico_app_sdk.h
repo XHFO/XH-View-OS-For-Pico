@@ -193,6 +193,10 @@ typedef struct {
     /// 编辑目录与持久选中ID，能力追加不改变ABI1前缀。/ Optional editing catalog and selected IDs preserve the ABI1 prefix.
     bool (*home_catalog)(uint32_t command,pico_app_home_catalog_t *out);
     bool (*home_selection)(uint32_t command,pico_app_home_selection_t *out);
+    /// 可选家庭双页联动；页码从0开始，filter返回最高位为已联动；action -1离开、0轮询、1/2下一/上一组、3筛选。先检查bytes。
+    /// Optional Home spread: zero-based page, output filter high bit signals pairing; action -1 leaves, 0 polls, 1/2 next/previous, 3 filters. Check bytes first.
+    int32_t (*home_spread)(int32_t page,int32_t pages,uint32_t *filter,int32_t action);
+
 } pico_app_host_t;
 
 /// 旧八款应用所需的原始宿主前缀；追加能力不得改变ABI1。/ Original host prefix for the eight existing apps; optional additions preserve ABI1.

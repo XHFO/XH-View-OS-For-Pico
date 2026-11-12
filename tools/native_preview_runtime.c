@@ -449,6 +449,9 @@ static void state(bool ok,const char *error){bool changed=save_state();ps_view_t
     printf(",\"games_sort\":");runtime_json_string(ps_games_sort_label());printf(",\"games_order\":[");
     for(unsigned i=0;i<ps_games_count();i++){const char *game_id=NULL,*game_title=NULL;if(ps_games_item(i,&game_id,&game_title)){if(i)putchar(',');runtime_json_string(game_id);}}
     putchar(']');
+    unsigned root_kind,root_page,root_pages;ps_dual_root_native(&root_kind,&root_page,&root_pages);
+    printf(",\"root_kind\":%u,\"root_page\":%u,\"root_pages\":%u,\"root_paired\":%s",root_kind,root_page,root_pages,ps_dual_root_active()?"true":"false");
+    printf(",\"corner_indicators\":%s,\"toast_active\":%s,\"quick_mode\":%d,\"settings_group\":%d",ps_corner_indicators()?"true":"false",s_toast[0]&&ps_now()<s_toast_until?"true":"false",s_quick_mode,s_device_page);
     printf(",\"status_percent\":%s,\"wifi_level\":%u",ps_status_percent()?"true":"false",s_wifi_level);
     printf(",\"dual_wifi_connected\":%s,\"dual_ble_simulated\":true,\"status_style\":%u,\"shelf_card_style\":%u",dual_status.data_connected?"true":"false",ps_status_style(),ps_shelf_card_style());
     printf(",\"firmware_ready\":%s,\"update_channel\":%u",
@@ -540,6 +543,8 @@ int main(int argc,char **argv){
         else if(!strcmp(command,"book-select")){line[strcspn(line,"\r\n")]=0;ps_dual_set_local_away(true);app_book_dual_pause();ok=app_book_open_path(line+12);if(ok)ps_legacy(&app_book);step();}
         else if(!strcmp(command,"dual-wifi")){int enabled=0;ok=sscanf(line,"%*s %d",&enabled)==1;ps_dual_native_wifi(enabled!=0);step();}
         else if(!strcmp(command,"update-channel")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>1)ok=false;else ok=ps_updates_channel_set((uint8_t)x);step();}
+        else if(!strcmp(command,"toast")){line[strcspn(line,"\r\n")]=0;ps_toast(line+6);step();}
+        else if(!strcmp(command,"corner-indicators")){ok=sscanf(line,"%*s %d",&x)==1&&corner_indicators_set(x!=0);step();}
         else if(!strcmp(command,"status-percent")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>1)ok=false;else ok=ps_status_percent_set(x!=0);step();}
         else if(!strcmp(command,"status-style")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>=PS_STATUS_STYLE_COUNT)ok=false;else ok=ps_status_style_set((uint8_t)x);step();}
         else if(!strcmp(command,"shelf-card-style")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>=PS_SHELF_CARD_STYLE_COUNT)ok=false;else ok=ps_shelf_card_style_set((uint8_t)x);step();}

@@ -198,6 +198,8 @@ int ps_reader_cover_sources(char paths[][288],int capacity);
 int ps_battery_percent(void);
 /// 当前顶部状态栏图标外观；默认墨线极简。 / Current top status icon style, defaulting to line-minimal.
 uint8_t ps_status_style(void);
+/// 状态栏与阅读选项共用双设备图形；role=0使两侧高亮。/ Shared pair glyph; role=0 highlights both devices.
+void ps_status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int role);
 bool ps_status_percent(void);
 bool ps_status_percent_set(bool enabled);
 /// 持久切换状态栏图标外观；写入失败时保留原值。 / Persist the status icon style, retaining the old value on failure.
@@ -239,8 +241,13 @@ void ps_icon(uint8_t *fb,int x,int y,int size,ps_icon_t icon,int gray);
 void ps_wifi_signal(uint8_t *fb,int x,int y,int size,unsigned level,int gray);
 void ps_button(uint8_t *fb,int x,int y,int w,int h,const char *label,bool selected);
 void ps_heading(uint8_t *fb,const char *title,const char *subtitle);
+/// 与绘制共用页头返回触区。/ Shared heading Back touch geometry.
+bool ps_heading_back_hit(int x,int y);
 void ps_tabs(uint8_t *fb,int selected);
+void ps_heart(uint8_t *fb,int x,int y,int size,bool filled);
 void ps_corner_controls(uint8_t *fb);
+/// 显示底角滑动指示，不影响手势。/ Show corner swipe guides without changing gestures.
+bool ps_corner_indicators(void);
 
 void ps_reader_media_lost(void);
 void ps_reader_init(void);
@@ -298,6 +305,7 @@ void ps_games_rescan(void);
 unsigned ps_games_count(void);
 /// 只读已扫描TF游戏目录；名称指针仅在下一次扫描前有效。/ Read the scanned TF-game catalog; labels remain valid until the next scan.
 bool ps_games_item(unsigned index,const char **id,const char **title);
+void ps_games_cover(uint8_t *fb,unsigned index,int x,int y);
 /// 当前应用排序名称；循环顺序为默认、名称、最近、安装、版本。/ Current app sort label; cycles default, name, recent, installed, version.
 const char *ps_games_sort_label(void);
 /// 循环并持久化应用排序，同时重排当前目录。/ Cycle and persist the app sort, then reorder the current catalog.

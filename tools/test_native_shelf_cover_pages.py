@@ -58,16 +58,16 @@ def px(value):
 
 
 def geometry(page, landscape, index):
-    """Acceptance geometry: page one stays unchanged; later pages have three columns/rows."""
+    """Acceptance geometry: six covers on page one; later pages have three columns/rows."""
     width = 640 if landscape else 360
     if page == 1:
-        columns, top, row, cover_height = (6, 180, 128, 62) if landscape else (3, 294, 144, 80)
+        columns, top, row, cover_height = (6, 180, 152, 92) if landscape else (3, 294, 160, 100)
     else:
-        columns, top, row, cover_height = (3, 128, 60, 50) if landscape else (3, 186, 134, 62)
+        columns, top, row, cover_height = (3, 128, 68, 58) if landscape else (3, 186, 142, 82)
     cell_width = (width - 32 - (columns - 1) * 8) // columns
     x, y = 16 + index % columns * (cell_width + 8), top + index // columns * row
     if page > 1 and landscape:
-        return (x, y + 3, 36, 50), (x + 18, y + 25)
+        return (x, y + 3, 36, cover_height), (x + 18, y + 25)
     return (x, y, cell_width, cover_height), (x + cell_width // 2, y + cover_height // 2)
 
 
@@ -81,7 +81,13 @@ def image_target(box):
     else:
         ph = fitted
     bx, by = x + (w - pw - 2) // 2, y + (h - ph - 2) // 2
-    return px(bx + 1), px(by + 1), px(pw - 2), px(ph - 2)
+    iw, ih = pw - 4, ph - 4
+    fitted = 192 * iw // 128
+    if fitted > ih:
+        iw = 128 * ih // 192
+    else:
+        ih = fitted
+    return px(bx + 2 + (pw - 4 - iw) // 2), px(by + 2 + (ph - 4 - ih) // 2), px(iw), px(ih)
 
 
 def star_position(page, landscape, index):
@@ -91,9 +97,9 @@ def star_position(page, landscape, index):
     box, _ = geometry(page, landscape, index)
     x = 16 + index % columns * (cell_width + 8)
     if page > 1:
-        y = (128 + index // 3 * 60 + 8) if landscape else (186 + index // 3 * 134 + 134 - 44)
+        y = (128 + index // 3 * 68 + 11) if landscape else (186 + index // 3 * 142 + 82 + 10)
     else:
-        y = box[1] + box[3] + 20
+        y = box[1] + box[3] + 10
     return x + cell_width - 22, y + 22
 
 
@@ -173,11 +179,11 @@ def main():
                 runtime.command('route 0')
                 runtime.settle(45)
                 runtime.style(0, landscape)
-                # Use the actual manager to fix alphabetical ordering before book opens change recency.
-                runtime.tap(565 if landscape else 280, 100 if landscape else 105)
-                runtime.tap(240 if landscape else 90, 135 if landscape else 205)
+                # Use the actual unified shelf-style menu for alphabetical ordering.
+                runtime.tap(530 if landscape else 230, 146 if landscape else 263)
+                runtime.tap(430 if landscape else 260, 273 if landscape else 432)
                 assert stored_sort(session) == 1, 'Could not select alphabetical shelf ordering'
-                runtime.tap(400 if landscape else 260, 135 if landscape else 205)
+                runtime.tap(2, 74)
                 runtime.settle(30)
 
                 def check(page, numbers, name, blanks=True):
@@ -225,9 +231,12 @@ def main():
                     runtime.capture(label + '-opened-' + str(number), opened)
                     runtime.command('key 1 long')
                     runtime.settle(30)
-                    last = session / 'tf/.pico-system/nvs/rp_books_last'
+                    last = session / 'tf/books/.pico-system/progress-last.dat'
                     assert last.exists(), ('Actual reader did not persist the selected book identity', number)
-                    identity = last.read_bytes().rstrip(b'\0').decode()
+                    saved = last.read_bytes()
+                    magic, size, checksum = struct.unpack_from('<III', saved)
+                    assert magic == 0x31535058 and size == len(saved) - 12 and zlib.crc32(saved[12:]) == checksum
+                    identity = saved[12:].rstrip(b'\0').decode()
                     assert Path(identity).name == fixture_name(number), (label, number, identity)
                     report['opened'].append({'orientation': label, 'cell': number - 7, 'book': number, 'persisted_path': identity})
                 report['checks'].append(label + ': all nine page-two cells open the matching actual EPUB')
