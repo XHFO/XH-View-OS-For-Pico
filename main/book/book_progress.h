@@ -2,8 +2,8 @@
  * SPDX-FileCopyrightText: 2026 mindreset
  * SPDX-License-Identifier: Apache-2.0
  *
- * 按书籍路径保存 NVS 进度，不依赖 UI 或 SD。
- * Per-path NVS reading progress, independent of UI and SD.
+ * 按书籍路径保存TF进度，保留单机/双机及最远正文锚点。
+ * Per-path TF progress retaining solo/paired and furthest text anchors.
  *
  * 冻结：文件大小不同不恢复；失败返回调用方并告警，不擦除其他记录。
  * 为无 RTC 的最近阅读排序，v2 使用持久序号；v1 保留续读但排序置零。
@@ -29,7 +29,7 @@ bool book_progress_watch_invalidated(const book_progress_watch_t* watch);
 /// 移除并释放监视；不可与遗忘并发。/ Remove and free a watch; never run concurrently with forget.
 void book_progress_watch_destroy(book_progress_watch_t* watch);
 
-typedef struct {
+typedef struct book_progress {
     /// 文件原始字节数。/ Original file size in bytes.
     uint32_t file_size;
     /// 章节索引。/ Chapter index.
@@ -46,8 +46,8 @@ typedef struct {
 
 /// 校验版本、完整路径与文件大小后恢复；失败不改 out。/ Restore after version, full-path and size validation; leave out unchanged on failure.
 bool book_progress_load(const char* path, uint32_t size, book_progress_t* out);
-/// 保存 v2 进度，忽略输入 last_open_s 并预留持久单调序号；路径最长 287 字节，碰撞拒绝覆盖。
-/// Save v2 progress, replacing input last_open_s with a reserved persistent sequence; paths up to 287 bytes, reject collision overwrites.
+/// 保存TF单机进度并维护最远位置；忽略输入顺序并预留持久序号，碰撞拒绝覆盖。
+/// Save TF solo progress and furthest position, reserving persistent ordering and refusing collisions.
 esp_err_t book_progress_save(const char* path, const book_progress_t* progress);
 /// 清除此路径的进度，不删除碰撞记录。/ Clear this path without deleting colliding records.
 esp_err_t book_progress_clear(const char* path);
@@ -60,3 +60,8 @@ esp_err_t book_progress_forget(const char* path);
 bool book_progress_last_path(char* out, size_t cap);
 /// 保存最后路径；空串清除自动恢复入口。/ Save last path; empty string clears automatic restore.
 esp_err_t book_progress_set_last_path(const char* path);
+
+/// 比较同书正文位置，独立于字体页数。/ Compare same-book text positions independently of pagination.
+bool book_progress_ahead(const book_progress_t* a,const book_progress_t* b);
+/// 分别保存单机/双机记录并合并较远位置；TF失败不回退NVS。/ Save solo/paired and merge furthest; never fall back from failed TF writes to NVS.
+esp_err_t book_progress_save_mode(const char* path,const book_progress_t* progress,bool paired);

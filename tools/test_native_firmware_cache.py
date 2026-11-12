@@ -41,6 +41,10 @@ def case(version, expect_ready, expect_files):
 
 
 checks = [
+    case("0.40.0-dual99", False, False),
+    case("0.40.0-dual100", False, False),
+    case("0.40.0-dual101", False, False),
+    case("0.40.0-dual102", True, True),
     case("0.40.0-dual97", False, False),
     case("0.40.0-dual96", False, False),
     case("0.40.0-dual95", False, False),

@@ -84,7 +84,7 @@ static void random_bytes(void* p, size_t n) {
 #define CHUNK 16384u
 #define WIRE_MAX (CHUNK + 64u)
 #define PROTOCOL 3
-#define CONTROL_VERSION 6
+#define CONTROL_VERSION 11
 #define ANNOTATION_OUT_MAX 4
 #define ACK_OUT_MAX 8
 enum {
@@ -118,8 +118,7 @@ typedef struct {
     uint8_t id[32];
     uint32_t bytes;
     char path[DL_PATH];
-    uint32_t progress_recent;
-    uint8_t progress_pct;
+    dl_book_progress_t progress;
     bool seen, progress_started, progress_loaded;
 } local_t;
 typedef struct {
@@ -129,9 +128,8 @@ typedef struct {
 } remote_t;
 typedef struct {
     uint8_t id[32];
-    uint32_t recent;
-    uint8_t pct;
-    bool started, valid;
+    dl_book_progress_t value;
+    bool valid;
 } remote_progress_t;
 typedef struct {
     uint8_t type;
@@ -165,6 +163,10 @@ struct dual_link {
     uint8_t scan_chunk[CHUNK], produce_chunk[CHUNK];
     size_t tx_len, tx_at, rx_len;
     bool send_begin, send_end, state_dirty, request_pending, left_ready;
+    uint32_t state_sent_revision, state_sent_sequence;
+    uint8_t state_sent_ready, display_flags; // bit1左屏完成、bit2右屏完成；当前revision内单调。/ Left/right completion bits, monotonic within a revision.
+    bool display_pending;
+    int64_t display_sent_at;
     int request_direction;
     uint8_t request_book[32], request_px;
     uint32_t request_revision, request_page, pending_open_page;
@@ -204,12 +206,19 @@ struct dual_link {
     bool game_close_pending, game_close_ready;
     bool control_seen, control_connected, catalog_valid, catalog_dirty, peer_catalog_valid;
     bool remote_open_pending;
+    uint32_t open_revision, peer_open_revision;
+    int64_t progress_sync_at, anchor_query_at;
+    uint8_t anchor_query[32], anchor_reply[32];
+    bool anchor_ready;
     bool endpoint_dirty;
     uint8_t catalog[32], peer_catalog[32];
     uint8_t peer_device_id[8];
     unsigned catalog_count;
     unsigned progress_at;
-    bool progress_dirty, current_progress_dirty;
+    bool progress_dirty, current_progress_dirty, progress_inflight;
+    uint32_t progress_sequence;
+    uint8_t progress_packet[50];
+    int64_t progress_sent_at;
     uint32_t progress_revision;
     uint32_t request_sequence, peer_sequence;
     int64_t control_sent, request_started;
@@ -374,6 +383,10 @@ static bool ack_consume(dual_link_t* d, const uint8_t* p, size_t n) {
         d->game_payload_inflight = d->game_payload_pending = false;
         return true;
     }
+    if (p[1] == PROGRESS) {
+        if (d->progress_inflight && seq == d->progress_sequence) d->progress_inflight = false;
+        return true;
+    }
     if (p[1] == 21 || p[1] == 23) return true;
     return false;
 }
@@ -426,8 +439,7 @@ static void local_progress_load(dual_link_t* d, local_t* item) {
     if (d->cfg.progress_get)
         (void)d->cfg.progress_get(item->path, item->bytes, &progress, d->cfg.progress_context);
     item->progress_started = progress.started;
-    item->progress_pct = progress.pct;
-    item->progress_recent = progress.recent;
+    item->progress = progress;
     item->progress_loaded = true;
 }
 static dl_book_progress_t current_progress(const dual_link_t* d) {
@@ -435,21 +447,13 @@ static dl_book_progress_t current_progress(const dual_link_t* d) {
     int at = find_id(d, d->reading.book);
     if (at >= 0 && d->cfg.progress_get)
         (void)d->cfg.progress_get(d->local[at].path, d->local[at].bytes, &saved, d->cfg.progress_context);
-    // 新开书时全书页数尚未统计，不能把已有进度短暂发布成 0%。
-    // The total is briefly unknown after opening; never publish an existing book as 0% during that window.
-    if (!d->reading.total) {
-        if (saved.started) return saved;
-        return (dl_book_progress_t){.started = true};
-    }
-    dl_book_progress_t result = {
-        .started = true,
-        .pct = (uint8_t)(((uint64_t)(d->reading.spread + 1) * 100u + d->reading.total - 1u) /
-                         d->reading.total),
-        .recent = saved.recent,
-    };
-    if (result.pct > 100) result.pct = 100;
-    return result;
+    return saved;
 }
+static bool progress_ahead(const dl_book_progress_t* a,const dl_book_progress_t* b) {
+    return a->started&&(!b->started||a->chapter>b->chapter||
+        (a->chapter==b->chapter&&a->byte_off>b->byte_off));
+}
+
 static bool scan_start(dual_link_t* d, const struct stat* st) {
     for (unsigned i = 0; i < d->count; i++) {
         local_t* b = &d->local[i];
@@ -598,9 +602,8 @@ static void publish(dual_link_t* d, const uint8_t* id, int direction) {
         if (!d->reading.total || next < d->reading.total) d->reading.spread = next;
     }
     if (++d->reading.revision == 0) d->reading.revision = 1;
-    d->left_ready = false;
+    d->left_ready = false; d->display_flags = 0; d->display_pending = false;
     d->state_dirty = true;
-    d->current_progress_dirty = true;
 }
 static bool valid_px(uint8_t px) {
     return px >= DL_FONT_MIN && px <= DL_FONT_MAX && (px - DL_FONT_MIN) % DL_FONT_STEP == 0;
@@ -1165,6 +1168,7 @@ void dl_tick(dual_link_t* d, int64_t now, bool available) {
 void dl_control_connected(dual_link_t* d, bool connected) {
     if (!d || d->control_connected == connected) return;
     d->control_connected = connected; d->peer_catalog_valid = false; d->control_seen = false;
+    d->state_sent_revision=0;
     d->peer_id_valid = false;
     memset(d->peer_device_id, 0, sizeof(d->peer_device_id));
     d->network_used = false;
@@ -1180,16 +1184,19 @@ void dl_control_connected(dual_link_t* d, bool connected) {
     d->game_payload_ready = false;
     d->game_close_pending = d->game_close_ready = false;
     d->remote_open_pending = false;
+    d->open_revision = d->peer_open_revision = 0;
+    memset(d->anchor_query,0,32);memset(d->anchor_reply,0,32);d->anchor_ready=false;
     d->annotation_inflight = false;
     d->ack_head = d->ack_count = 0;
-    d->left_ready = false;
+    d->left_ready = false; d->display_flags = 0; d->display_pending = false;
     d->request_sequence = d->peer_sequence = 0;
     d->progress_at = 0;
     d->progress_dirty = connected;
     d->current_progress_dirty = connected;
+    d->progress_inflight = false;
     d->endpoint_dirty = connected && d->cfg.role == 1 && d->cfg.host[0];
     d->face_sent = false;
-    d->reading_dirty = !d->reading_active;
+    d->reading_dirty = true;
     d->catalog_dirty = d->state_dirty = true; d->control_sent = 0;
 }
 size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
@@ -1200,6 +1207,36 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         (d->cfg.role == 1 || d->orientation_request);
     // 先排空待发状态再发周期心跳，慢速tick不能被心跳反复插队。
     // Drain queued updates before periodic heartbeats so slow ticks cannot starve them.
+    // 翻页状态先于家庭/批注/全库进度，不等待后台队列。/ Reading controls precede background sharing.
+    if (control_ready(d) && d->cfg.role == 1 && d->state_dirty && nonzero(d->reading.book) &&
+        (!orientation_pending || d->orientation_last || d->state_sent_revision!=d->reading.revision ||
+         d->state_sent_sequence!=d->peer_sequence || d->state_sent_ready!=(d->display_flags | d->left_ready))) {
+        p[0] = 2; memcpy(p + 1, d->reading.book, 32);
+        put32(p + 33, d->reading.revision); put32(p + 37, d->reading.spread);
+        put32(p + 41, d->reading.total); memcpy(p + 45, d->reading.font, 32);
+        put32(p + 77, d->peer_sequence); p[81] = d->display_flags | d->left_ready;
+        p[82] = d->reading.font_px; p[83] = d->reading.reflow_pending; p[84] = d->reading.reflow_from_px;
+        put32(p + 85,d->open_revision);
+        d->state_sent_revision=d->reading.revision;d->state_sent_sequence=d->peer_sequence;d->state_sent_ready=d->display_flags | d->left_ready;
+        d->state_dirty = false; d->orientation_last = false; return 89;
+    }
+    if (control_ready(d) && d->cfg.role == 2 && d->request_pending &&
+        (!d->request_at || d->now - d->request_at >= 500) &&
+        (!d->request_at || !orientation_pending || d->orientation_last)) {
+        p[0] = nonzero(d->request_book) ? 3 : d->request_page ? 5 : d->request_px ? 6 : 4;
+        put32(p + 1, d->request_revision); put32(p + 5, d->request_sequence);
+        d->request_at = d->now; d->orientation_last = false;
+        if (p[0] == 3) { memcpy(p + 9, d->request_book, 32); put32(p + 41, d->request_page); return 45; }
+        if (p[0] == 5) { put32(p + 9, d->request_page); return 13; }
+        if (p[0] == 6) { p[9] = d->request_px; return 10; }
+        p[9] = d->request_direction > 0 ? 1 : 255; return 10;
+    }
+    // 右屏实际完成优先反馈，主机状态带回确认；重复帧不会推进版本。/ Prioritize right-screen completion; primary state acknowledges it without advancing revision.
+    if (control_ready(d) && d->cfg.role == 2 && d->display_pending &&
+        (!d->display_sent_at || d->now - d->display_sent_at >= 150)) {
+        p[0] = d->display_flags & 4 ? 35 : 36; put32(p + 1, d->reading.revision); d->display_sent_at = d->now;
+        return 5;
+    }
     ack_event_t ack;
     if (ack_take(d, &ack)) {
         p[0] = ACK; p[1] = ack.type; put32(p + 2, ack.seq);
@@ -1267,15 +1304,18 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         d->endpoint_dirty = false;
         return 2 + len;
     }
-    if (!control_ready(d)) return 0;
-    if (d->cfg.role == 1 && d->state_dirty && nonzero(d->reading.book)) {
-        p[0] = 2; memcpy(p + 1, d->reading.book, 32);
-        put32(p + 33, d->reading.revision); put32(p + 37, d->reading.spread);
-        put32(p + 41, d->reading.total); memcpy(p + 45, d->reading.font, 32);
-        put32(p + 77, d->peer_sequence); p[81] = d->left_ready;
-        p[82] = d->reading.font_px; p[83] = d->reading.reflow_pending; p[84] = d->reading.reflow_from_px;
-        d->state_dirty = false; d->orientation_last = false; return 85;
+    if(control_ready(d)&&nonzero(d->anchor_reply)){
+        int at=find_id(d,d->anchor_reply);dl_book_progress_t v={0};
+        if(at>=0&&d->cfg.progress_get)(void)d->cfg.progress_get(d->local[at].path,d->local[at].bytes,&v,d->cfg.progress_context);
+        p[0]=34;memcpy(p+1,d->anchor_reply,32);memset(d->anchor_reply,0,32);
+        p[33]=v.started;p[34]=v.pct;put32(p+35,v.recent);put16(p+39,v.chapter);put32(p+41,v.byte_off);p[45]=v.px;
+        return 46;
     }
+    if(control_ready(d)&&nonzero(d->anchor_query)&&!d->anchor_ready&&
+       (!d->anchor_query_at||d->now-d->anchor_query_at>=750)){
+        p[0]=33;memcpy(p+1,d->anchor_query,32);d->anchor_query_at=d->now;return 33;
+    }
+    if (!control_ready(d)) return 0;
     if (d->guard_dirty && d->control_compatible) {
         p[0] = d->cfg.role == 1 ? 9 : 10;
         p[1] = d->guard ? 1 : 0;
@@ -1305,18 +1345,16 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         d->reading_dirty = false;
         return 2;
     }
-    if (d->cfg.role == 2 && d->request_pending &&
-        (!d->request_at || d->now - d->request_at >= 500)) {
-        p[0] = nonzero(d->request_book) ? 3 : d->request_page ? 5 : d->request_px ? 6 : 4;
-        put32(p + 1, d->request_revision); put32(p + 5, d->request_sequence);
-        d->request_at = d->now; d->orientation_last = false;
-        if (p[0] == 3) { memcpy(p + 9, d->request_book, 32); put32(p + 41, d->request_page); return 45; }
-        if (p[0] == 5) { put32(p + 9, d->request_page); return 13; }
-        if (p[0] == 6) { p[9] = d->request_px; return 10; }
-        p[9] = d->request_direction > 0 ? 1 : 255; return 10;
+    if(control_ready(d)&&!d->progress_dirty&&d->now-d->progress_sync_at>=15000){
+        d->progress_dirty=true;d->progress_at=0;d->progress_sync_at=d->now;
     }
-    if (d->cfg.role == 1 && d->control_compatible && control_ready(d) &&
-        (d->current_progress_dirty || d->progress_dirty || d->progress_at < d->count)) {
+    if (d->progress_inflight && d->now - d->progress_sent_at >= 500) {
+        memcpy(p, d->progress_packet, sizeof(d->progress_packet));
+        d->progress_sent_at = d->now;
+        return sizeof(d->progress_packet);
+    }
+    if (!d->progress_inflight && d->control_compatible && control_ready(d) &&
+        (d->current_progress_dirty || (d->progress_dirty && !d->reading_active && !d->peer_reading))) {
         uint8_t id[32] = {0};
         dl_book_progress_t progress = {0};
         if (d->current_progress_dirty && nonzero(d->reading.book)) {
@@ -1326,22 +1364,27 @@ size_t dl_control_take(dual_link_t* d, uint8_t* p, size_t capacity) {
         } else {
             while (d->progress_at < d->count) {
                 local_t* item = &d->local[d->progress_at++];
-                local_progress_load(d, item);
+                item->progress_loaded=false;local_progress_load(d, item);
                 if (!item->progress_loaded || !item->progress_started) continue;
-                progress = (dl_book_progress_t){true, item->progress_pct, item->progress_recent};
+                progress = item->progress;
                 memcpy(id, item->id, 32);
                 break;
             }
             if (!nonzero(id)) {
                 d->progress_dirty = false;
-                if (d->progress_at >= d->count) d->progress_at = 0;
+
             }
         }
         if (nonzero(id)) {
             p[0] = PROGRESS; memcpy(p + 1, id, 32);
             p[33] = progress.started ? 1 : 0; p[34] = progress.pct; put32(p + 35, progress.recent);
             if (d->progress_at >= d->count) d->progress_dirty = false;
-            return 38;
+            put16(p+39,(int16_t)progress.chapter);put32(p+41,progress.byte_off);p[45]=progress.px;
+            if (++d->progress_sequence == 0) ++d->progress_sequence;
+            put32(p+46,d->progress_sequence);
+            memcpy(d->progress_packet,p,sizeof(d->progress_packet));
+            d->progress_inflight=true;d->progress_sent_at=d->now;
+            return sizeof(d->progress_packet);
         }
     }
     return 0;
@@ -1350,7 +1393,13 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
     if (!d || !p || !n || !d->control_connected || n > DL_CONTROL_MAX) return false;
     if (p[0] == ACK) return ack_consume(d, p, n);
     if (p[0] == 1) {
-        if (n != 43 || p[1] > 1 || p[34] != CONTROL_VERSION) return false;
+        if (n != 43 || p[1] > 1) return false;
+        if (p[34] != CONTROL_VERSION) {
+            d->control_compatible=d->peer_catalog_valid=false;
+            d->error="pairing code or protocol mismatch";
+            return false;
+        }
+        if(d->error && !strcmp(d->error,"pairing code or protocol mismatch")) d->error=NULL;
         d->control_compatible = true;
         d->peer_catalog_valid = p[1]; memcpy(d->peer_catalog, p + 2, 32);
         memcpy(d->peer_device_id, p + 35, 8); d->peer_id_valid = true;
@@ -1358,15 +1407,31 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
             same(d->catalog, d->peer_catalog, 32);
         return true;
     }
-    if (p[0] == PROGRESS) {
-        if (n != 38 || d->cfg.role != 2 || p[33] > 1 || p[34] > 100) return false;
-        remote_progress_t* progress = progress_find(d, p + 1, true);
-        if (!progress) return false;
-        progress->started = p[33] != 0;
-        progress->pct = p[34];
-        progress->recent = get32(p + 35);
-        ++d->progress_revision;
-        return true;
+    if(p[0]==33){
+        if(!control_ready(d)||n!=33||find_id(d,p+1)<0)return false;
+        memcpy(d->anchor_reply,p+1,32);return true;
+    }
+    if (p[0] == PROGRESS||p[0]==34) {
+        if(!control_ready(d)||n!=(p[0]==PROGRESS?50u:46u)||(p[0]==PROGRESS&&!get32(p+46))||p[33]>1||p[34]>100||(p[33]&&!valid_px(p[45])))return false;
+        int at=find_id(d,p+1);if(at<0)return false;
+        dl_book_progress_t incoming={.started=p[33]!=0,.pct=p[34],.recent=get32(p+35),
+            .chapter=(uint16_t)get16(p+39),.byte_off=get32(p+41),.px=p[45]},local={0};
+        local_t* item=&d->local[at];
+        if(d->cfg.progress_get)(void)d->cfg.progress_get(item->path,item->bytes,&local,d->cfg.progress_context);
+        // 本机查询可包含未落盘的阅读锚点；确认仍须经过幂等持久化。
+        // Local lookup may include an unsaved live anchor; ACK still requires idempotent persistence.
+        if(incoming.started&&d->cfg.progress_set){
+            if(!d->cfg.progress_set(item->path,item->bytes,&incoming,d->cfg.progress_context))return false;
+            if(d->cfg.progress_get)(void)d->cfg.progress_get(item->path,item->bytes,&local,d->cfg.progress_context);
+        }
+        remote_progress_t* progress=progress_find(d,p+1,true);if(!progress)return false;
+        dl_book_progress_t merged=progress_ahead(&local,&incoming)?local:incoming;
+        if(!progress->value.started||progress_ahead(&merged,&progress->value)||merged.recent!=progress->value.recent){
+            progress->value=merged;++d->progress_revision;
+        }
+        item->progress_loaded=false;
+        if(p[0]==34&&same(d->anchor_query,p+1,32))d->anchor_ready=true;
+        return p[0]!=PROGRESS || ack_queue(d,PROGRESS,get32(p+46));
     }
     if (p[0] == ENDPOINT) {
         if (d->cfg.role != 2 || n < 3 || n > 49 || p[1] != n - 2) return false;
@@ -1477,8 +1542,15 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         return true;
     }
     if (!control_ready(d)) return false;
+    if (p[0] == 35 || p[0] == 36) {
+        if (n != 5 || d->cfg.role != 1 || !get32(p + 1)) return false;
+        if (get32(p + 1) != d->reading.revision) return true;
+        if (!d->left_ready || d->reading.reflow_pending) return false;
+        d->display_flags |= p[0] == 35 ? 4 : 8; d->state_dirty = true;
+        return true;
+    }
     if (p[0] == 2 && d->cfg.role == 2) {
-        if (n != 85 || p[81] > 1 || !valid_px(p[82]) || p[83] > 1 || (p[81] && p[83]) ||
+        if (n != 89 || p[81] > 15 || ((p[81] & 14) && !(p[81] & 1)) || !valid_px(p[82]) || p[83] > 1 || (p[81] && p[83]) ||
             (p[83] && !valid_px(p[84])) ||
             !get32(p + 33) || get32(p + 37) % 2 ||
             find_id(d, p + 1) < 0 || (nonzero(p + 45) && find_id(d, p + 45) < 0)) return false;
@@ -1487,13 +1559,18 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
         // Reject stale state within a connection; reconnect accepts the primary's restored revision.
         if (d->control_seen && (int32_t)(revision - d->reading.revision) < 0) return true;
         // 同版本的迟到准备帧不能撤销已收到的推屏确认。/ A delayed prepare cannot revoke the same revision's display confirmation.
-        d->left_ready = p[81] || (d->control_seen && revision == d->reading.revision && d->left_ready);
+        bool same_revision = d->control_seen && revision == d->reading.revision;
+        d->left_ready = (p[81] & 1) || (same_revision && d->left_ready);
+        d->display_flags = (p[81] & 14) | (same_revision ? d->display_flags : 0);
+        if (!same_revision || (p[81] & (d->display_flags & 4 ? 4 : 8))) d->display_pending = false;
         d->control_seen = true;
         memcpy(d->reading.book, p + 1, 32); memcpy(d->reading.font, p + 45, 32);
         d->reading.revision = revision; d->reading.spread = get32(p + 37);
         d->reading.total = get32(p + 41);
         d->reading.font_px = p[82]; d->reading.reflow_pending = p[83]; d->reading.reflow_from_px = p[84];
-        if (d->request_pending) d->remote_open_pending = true;
+        uint32_t intent=get32(p+85);
+        if(intent&&intent!=d->peer_open_revision){d->peer_open_revision=intent;d->remote_open_pending=true;}
+        if (d->request_pending&&get32(p+77)>=d->request_sequence) d->remote_open_pending = true;
         if (get32(p + 77) >= d->request_sequence) d->request_pending = false;
         return true;
     }
@@ -1514,19 +1591,19 @@ bool dl_control_receive(dual_link_t* d, const uint8_t* p, size_t n) {
             if (!current || (!d->reading.reflow_pending && !d->sending && !d->receiving &&
                 (spread == d->reading.spread || d->left_ready))) {
                 publish(d, current ? NULL : p + 9, 0); d->reading.spread = spread;
-                d->remote_open_pending = true;
+                d->remote_open_pending = true;d->open_revision=d->reading.revision;
             }
         }
         else if (nonzero(d->reading.book) && (d->left_ready || !d->reading_active)) {
             if (p[0] == 5) { d->reading.spread = (get32(p + 9) - 1) & ~1u; publish(d, NULL, 0); }
             else if (p[0] == 6) { if (p[9] != d->reading.font_px) resize(d, p[9]); }
-            else publish(d, NULL, p[9] == 1 ? 1 : -1);
+            else if ((d->display_flags & 6) == 6 || !d->reading_active) publish(d, NULL, p[9] == 1 ? 1 : -1);
         }
     }
     // 主机离架后由仍在阅读的从机接力；权威进度直接接受为该版本已呈现。
     // When the primary is away, accept the reading secondary's relayed page as the authoritative presented revision.
     if (d->cfg.role == 1 && !d->reading_active && !d->receiving && !d->sending)
-        d->left_ready = true;
+        { d->left_ready = true; d->display_flags |= 2; }
     d->state_dirty = true;
     return true;
 }
@@ -1544,8 +1621,12 @@ void dl_status(const dual_link_t* d, dl_status_t* out) {
     out->scanning = d->scan;
     out->synced = control_ready(d);
     out->busy = d->scan || d->sending || d->receiving || d->request_pending ||
-                (nonzero(d->reading.book) && !d->left_ready);
+                (nonzero(d->reading.book) && (!d->left_ready ||
+                 (d->reading_active && d->peer_reading && (d->display_flags & 6) != 6)));
     out->left_ready = d->left_ready;
+    out->relay_ready = (d->display_flags & 8) != 0;
+    out->peer_presented = (d->display_flags & (d->cfg.role == 1 ? 4 : 2)) != 0;
+    out->turn_ready = d->left_ready && (d->display_flags & 6) == 6 && !d->display_pending;
     out->books = d->count;
     out->peer_books = d->remote_count;
     out->imported = d->imports;
@@ -1584,7 +1665,7 @@ static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool r
         return false;
     const char* current = dl_reading_path(d);
     if (current && !strcmp(current, path)) {
-        if (!reopen && !activate) return dl_seek(d, page);
+
         if (!control_ready(d)) return false;
     }
     if (!control_ready(d)) {
@@ -1606,13 +1687,14 @@ static bool open_request(dual_link_t* d, const char* path, uint32_t page, bool r
     }
     bool same_book = same(d->reading.book, d->local[at].id, 32);
     if (same_book) {
-        if (!reopen && !activate) return dl_seek(d, page);
+
         if (d->reading.reflow_pending || d->request_pending || d->sending || d->receiving) return false;
         if (reopen || activate) page = d->reading.spread + 1;
     }
     if (d->cfg.role == 1) {
         publish(d, same_book ? NULL : d->local[at].id, 0);
         d->reading.spread = (page - 1) & ~1u;
+        d->open_revision=d->reading.revision;
     } else {
         // 用户从书架换书必须覆盖尚未完成的旧请求；保留旧请求会让新书永远无法打开。
         // A user shelf switch supersedes an unfinished request; retaining it would make the new book impossible to open.
@@ -1686,7 +1768,7 @@ bool dl_turn(dual_link_t* d, int direction) {
     if (d && d->request_pending && d->request_started && d->now - d->request_started > 1500)
         d->request_pending = false;
     if (!d || (direction != -1 && direction != 1) || !control_ready(d) ||
-        !nonzero(d->reading.book) || d->request_pending || !d->left_ready || !d->peer_reading)
+        !nonzero(d->reading.book) || d->request_pending || d->display_pending || !d->left_ready || (d->display_flags & 6) != 6 || !d->peer_reading)
         return false;
     if (d->cfg.role == 1)
         publish(d, NULL, direction);
@@ -1749,10 +1831,31 @@ bool dl_reflow_failed(dual_link_t* d, uint32_t revision) {
     d->reading.font_px = d->reading.reflow_from_px;
     return true;
 }
-bool dl_presented(dual_link_t* d, uint32_t revision) {
+bool dl_release(dual_link_t* d, uint32_t revision) {
     if (!d || d->cfg.role != 1 || !nonzero(d->reading.book) || d->reading.reflow_pending || revision != d->reading.revision) return false;
     if (!d->left_ready) { d->left_ready = true; d->state_dirty = true; }
     return true;
+}
+// 提前接力和真正完成共用修订校验，但记录独立标志，早确认不能代替完成。
+// Share revision checks while keeping early relay distinct from actual completion.
+static bool display_mark(dual_link_t* d, uint32_t revision, uint8_t flag) {
+    if (!d || !nonzero(d->reading.book) || d->reading.reflow_pending || revision != d->reading.revision ||
+        (flag != 2 && !d->left_ready)) return false;
+    if (flag == 2) d->left_ready = true;
+    if (!(d->display_flags & flag)) {
+        d->display_flags |= flag;
+        if (d->cfg.role == 1) {
+            d->state_dirty = true;
+            if (flag == 2) d->current_progress_dirty = true;
+        } else { d->display_pending = true; d->display_sent_at = 0; }
+    }
+    return true;
+}
+bool dl_relay_ready(dual_link_t* d, uint32_t revision) {
+    return display_mark(d, revision, 8);
+}
+bool dl_presented(dual_link_t* d, uint32_t revision) {
+    return display_mark(d, revision, d && d->cfg.role == 1 ? 2 : 4);
 }
 void dl_total(dual_link_t* d, uint32_t total) {
     if (!d || d->cfg.role != 1 || !total || d->reading.reflow_pending || d->reading.total == total) return;
@@ -1777,21 +1880,19 @@ bool dl_book_progress(const dual_link_t* d, const char* path, uint32_t bytes, dl
     for (unsigned i = 0; i < DL_BOOKS; ++i)
         if (d->local[i].bytes == bytes && !strcmp(d->local[i].path, path)) { local = (int)i; break; }
     if (local < 0) return false;
-    // 主机当前共享书优先使用权威页组；其余条目继续读取主机本地进度。
-    // The primary's current shared book uses its authoritative spread; other rows keep primary-local progress.
-    if (d->cfg.role == 1 && same(d->local[local].id, d->reading.book, 32)) {
-        *out = current_progress(d);
-        return true;
+    dl_book_progress_t saved={0};
+    bool found=d->cfg.progress_get&&d->cfg.progress_get(path,bytes,&saved,d->cfg.progress_context);
+    for(unsigned i=0;i<DL_BOOKS;i++)if(d->progress[i].valid&&same(d->progress[i].id,d->local[local].id,32)){
+        if(progress_ahead(&d->progress[i].value,&saved)||!found)saved=d->progress[i].value;
+        found=true;break;
     }
-    if (d->cfg.role == 1 && d->cfg.progress_get)
-        return d->cfg.progress_get(path, bytes, out, d->cfg.progress_context);
-    for (unsigned i = 0; i < DL_BOOKS; ++i)
-        if (d->progress[i].valid && same(d->progress[i].id, d->local[local].id, 32)) {
-            *out = (dl_book_progress_t){d->progress[i].started, d->progress[i].pct, d->progress[i].recent};
-            return true;
-        }
-    return false;
+    if(found)*out=saved;
+    return found;
 }
+bool dl_book_anchor(const dual_link_t* d,const char* path,uint32_t bytes,dl_book_progress_t* out){
+    return dl_book_progress(d,path,bytes,out);
+}
+
 uint32_t dl_progress_revision(const dual_link_t* d) {
     return d ? d->progress_revision : 0;
 }
@@ -1840,7 +1941,7 @@ void dl_restore(dual_link_t* d, const dl_reading_t* s) {
         d->reading = *s;
         if (!valid_px(d->reading.font_px)) d->reading.font_px = DL_FONT_DEFAULT;
         d->reading.reflow_pending = false;
-        d->left_ready = false;
+        d->left_ready = false; d->display_flags = 0; d->display_pending = false;
         d->state_dirty = true;
     }
 }
@@ -1904,6 +2005,7 @@ bool dl_reading_active(dual_link_t* d, bool active) {
     if (d->reading_active != active) {
         d->reading_active = active;
         d->reading_dirty = true;
+        d->current_progress_dirty = true;
     }
     return true;
 }
@@ -1929,4 +2031,21 @@ bool dl_flip(dual_link_t* d, int role, bool enabled) {
         d->orientation_dirty = true;
     }
     return true;
+}
+
+bool dl_prepare_open(dual_link_t* d,const char* path){
+    if(!d||!control_ready(d))return true;
+    for(unsigned i=0;i<d->count;i++)if(!strcmp(d->local[i].path,path)){
+        if(!same(d->anchor_query,d->local[i].id,32)){
+            memcpy(d->anchor_query,d->local[i].id,32);d->anchor_ready=false;d->anchor_query_at=0;
+        }
+        return d->anchor_ready;
+    }
+    return false;
+}
+void dl_prepare_open_reset(dual_link_t* d){if(d){memset(d->anchor_query,0,32);d->anchor_ready=false;}}
+
+bool dl_reconcile_at(dual_link_t* d,uint32_t page){
+    if(!d||d->cfg.role!=1||!control_ready(d)||!nonzero(d->reading.book)||d->reading.reflow_pending||!page||page==UINT32_MAX)return false;
+    d->reading.spread=(page-1)&~1u;publish(d,NULL,0);return true;
 }

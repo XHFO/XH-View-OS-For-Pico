@@ -41,6 +41,8 @@ const char* e0470_turn_dir_name(e0470_turn_dir_t dir);
 /// 每拍目标间隔；默认12ms，实际扫描更慢时不截短；不改变驱动脉冲宽度。/ Target tick interval: 12ms; never truncate a slower scan or change pulse widths.
 void e0470_page_turn_set_tick_us(int us);
 int e0470_page_turn_tick_us(void);
+/// 下一次翻页预计剩余500ms时调用一次，不表示推屏成功；不改变扫描时序。/ One-shot callback near the last500ms of the next turn; never claims successful presentation or changes scan timing.
+void e0470_page_turn_set_relay(void (*callback)(void));
 /// 离开阅读时释放按需分配的相位表。/ Release the lazily allocated phase table when leaving the reader.
 void e0470_page_turn_release(void);
 

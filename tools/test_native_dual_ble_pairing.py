@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """BLE-first pair discovery through production UI handlers; simulated radio, no hardware."""
-import argparse, hashlib, json, struct, tempfile, zlib
+import argparse, hashlib, json, socket, struct, tempfile, zlib
 from pathlib import Path
 from test_native_preview_shelf_ble import Runtime, ROOT
 
@@ -18,13 +18,16 @@ def digit(r,c):
  col,row=(1,3) if c=='0' else ((int(c)-1)%3,(int(c)-1)//3)
  r.tap(x+col*(w//3)+(w//3-8)//2,y+row*ph+(ph-6)//2)
 def submit(r):return r.tap(360-46,47)
-for direct,host,ssid,tag in ((1,'192.168.4.1','PicoDual-ABCD','hotspot'),(0,'192.168.50.7','','lan')):
+for direct,host,ssid,tag in ((1,'192.168.4.1','PicoDual-ABCD','hotspot'),(0,'192.168.50.7','','lan'),(0,'192.168.50.7','','lan-udp')):
  session=Path(tempfile.mkdtemp(prefix=tag+'-',dir=out))
  r=Runtime(a.binary.resolve(),ROOT/'sdcard/fonts/MiSansVF.ttf',session,out)
  try:
   r.start();r.command('rotate 0');r.command('route 34')
   state=r.command('dual-scan');assert state['route']==34 and stored(session) is None,state
-  r.command(f'dual-peer {host} {direct} {ssid or "lan"}')
+  if tag=='lan-udp':
+   with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
+    sender.sendto(f'PICOPAIR2 {host} -'.encode(),('127.0.0.1',18772))
+  else:r.command(f'dual-peer {host} {direct} {ssid or "lan"}')
   state=r.tick(100)
   assert state['route']==19 and stored(session) is None,state
   r.capture(tag+'-ble-code-prompt',state)
@@ -33,7 +36,7 @@ for direct,host,ssid,tag in ((1,'192.168.4.1','PicoDual-ABCD','hotspot'),(0,'192
   saved=stored(session)
   assert state['route']==34 and state['dual_role']==2,saved
   assert saved and saved['role']==2 and saved['host']==host and saved['code']=='123456',saved
-  checks.append(tag+'-ble-discovery-opens-code-and-saves-endpoint')
+  checks.append(tag+'-discovery-opens-code-and-saves-endpoint')
  finally:
   r.close();(session/'transcript.json').write_text(json.dumps(r.transcript,ensure_ascii=False,indent=2))
 (out/'report.json').write_text(json.dumps({'passed':True,'hardware_access':False,'binary_sha256':hashlib.sha256(a.binary.read_bytes()).hexdigest(),'checks':checks},ensure_ascii=False,indent=2)+'\n')

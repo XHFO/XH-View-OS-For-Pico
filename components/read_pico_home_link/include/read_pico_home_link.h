@@ -21,9 +21,11 @@
 #define RP_HOME_CONFIG_PACK_LIMIT 16800u
 #define RP_HOME_CONFIG_SIZE_V2 16116u
 #define RP_HOME_AREA_MAX 32u
-#define RP_HOME_DEVICE_LIMIT 64u
+#define RP_HOME_DEVICE_LIMIT 96u
+#define RP_HOME_CATALOG_PAGE 24u
 /// 独立保存的房间范围，不改变已发布的凭据配置布局。/ Separately persisted room scope, preserving the shipped credential layout.
 typedef struct { uint32_t version,count; char ids[RP_HOME_AREA_MAX][64]; } rp_home_area_scope_t;
+typedef struct { uint32_t version,count; char ids[RP_HOME_DEVICE_LIMIT][96]; } rp_home_selection_t;
 typedef struct { char id[64],name[64]; uint16_t devices; } rp_home_area_t;
 typedef struct { uint32_t count,total; bool truncated; rp_home_area_t items[RP_HOME_AREA_MAX]; } rp_home_areas_t;
 /// v2 packed sizeof before Cloudflare Access token fields. / Prior packed size before CF Access fields.
@@ -60,6 +62,7 @@ typedef struct {
     char id[96],name[80],state[64],unit[16],room[40];
     uint8_t kind,available,on;
     float number;
+    uint8_t brightness, dimmable, hvac_modes;
 } rp_home_entity_t;
 typedef struct {
     char name[48],serial[96],state[40],task[128],material[64];
@@ -119,6 +122,9 @@ bool rp_home_config_upgrade(rp_home_config_t *config);
 /// 返回原存储版本供迁移写回使用；失败不输出版本。/ Return the original stored version for migration writeback.
 bool rp_home_config_unpack_version(const void *,size_t,rp_home_config_t *,uint32_t *stored_version);
 /// 有界零游程编码与CRC，压缩空字段；损坏数据不恢复为有效配置。/ Bounded zero-run coding with CRC; never accept corrupt configuration.
+/// 通用有界零游程记录；复用同一校验格式但不改变v3布局。/ Bounded zero-run records reuse integrity framing without changing v3 layout.
+size_t rp_home_blob_pack(const void *,size_t,void *,size_t);
+bool rp_home_blob_unpack(const void *,size_t,void *,size_t);
 size_t rp_home_config_pack(const rp_home_config_t *,void *,size_t);
 bool rp_home_config_unpack(const void *,size_t,rp_home_config_t *);
 /// 共享解析器；成功才整体替换目标，超额实体明确标记。/ Shared parser atomically replaces successful state and reports truncated entities.
@@ -134,6 +140,11 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *,rp_home_snapshot_t *,rp_
 rp_home_result_t rp_home_fetch_areas(const rp_home_config_t *,rp_home_areas_t *,const rp_home_transport_t *,bool at_home,int *http_status);
 rp_home_result_t rp_home_fetch_scoped(const rp_home_config_t *,rp_home_snapshot_t *,rp_home_token_t tokens[RP_HOME_PRINTERS],
     const rp_home_transport_t *,bool network_online,bool at_home,int64_t now_ms,const rp_home_area_scope_t *);
+/// 日常只投影选中实体；编辑目录有界分页。/ Project selected entities daily; browse the editing catalog in bounded pages.
+rp_home_result_t rp_home_fetch_selected(const rp_home_config_t *,rp_home_snapshot_t *,rp_home_token_t *,
+    const rp_home_transport_t *,bool,bool,int64_t,const rp_home_area_scope_t *,const rp_home_selection_t *);
+rp_home_result_t rp_home_fetch_catalog(const rp_home_config_t *,rp_home_snapshot_t *,rp_home_token_t *,
+    const rp_home_transport_t *,bool,bool,int64_t,const rp_home_area_scope_t *,uint32_t offset);
 /// 仅允许支持的HA实体与明确动作，打印机没有控制入口。/ Only allow supported HA entities and explicit actions; printers have no control API.
 rp_home_result_t rp_home_control(const rp_home_config_t *,const rp_home_entity_t *,const char *action,float value,
     const rp_home_transport_t *,bool at_home,int *http_status);

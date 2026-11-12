@@ -34,6 +34,14 @@ try:
  checks.append('lan-plus-ble-only-saved')
  s=tap(179,580)
  assert s['route']==34 and stored()==state,s
+ s=tap(180,260)
+ assert s['route']==34 and stored()==state,s
+ s=tap(180,290)
+ state=stored();assert s['route']==34 and s['dual_role']==1,s
+ assert state and state['net']==1 and state['keep']==1,state
+ checks.append('lan-plus-keep-data-saved')
+ s=tap(179,580)
+ assert s['route']==34 and stored()==state,s
  r.capture('primary-transport-change',s)
  s=tap(180,318)
  assert s['route']==34 and stored()==state,s

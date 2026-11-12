@@ -37,13 +37,14 @@ prelude=r'''
 #define BLE_HS_CONN_HANDLE_NONE 65535
 #define NONE BLE_HS_CONN_HANDLE_NONE
 #define MTU_MIN 99
+#define BLE_HS_ATT_ERR(x) (0x100+(x))
 #define portENTER_CRITICAL(x) ((void)(x))
 #define portEXIT_CRITICAL(x) ((void)(x))
 #define OS_MBUF_PKTLEN(p) ((p)->n)
 enum {pdTRUE=1,BLE_ATT_ERR_INSUFFICIENT_AUTHEN=5,BLE_GATT_ACCESS_OP_WRITE_CHR=1,
- BLE_GATT_ACCESS_OP_READ_CHR=2,BLE_ATT_ERR_INSUFFICIENT_RES=17,BLE_ATT_ERR_UNLIKELY=14,
- BLE_HS_EDONE=200,BLE_HS_ENOENT=201,BLE_HS_EMSGSIZE=202};
-typedef struct {bool active,connected,simulated;uint32_t generation;int error;} pico_dual_ble_status_t;
+ BLE_GATT_ACCESS_OP_READ_CHR=2,BLE_ATT_ERR_UNLIKELY=14,
+ BLE_ATT_ERR_INSUFFICIENT_RES=17,BLE_HS_ENOMEM=6,BLE_HS_EBUSY=15,BLE_HS_EDONE=200,BLE_HS_ENOENT=201,BLE_HS_EMSGSIZE=202};
+typedef struct {bool active,connected,simulated;uint32_t generation;int error;uint32_t rx_dropped,tx_retries;} pico_dual_ble_status_t;
 typedef struct {uint32_t generation;uint8_t size,bytes[96];} packet_t;
 typedef struct {int role;char code[7];} config_t;
 struct os_mbuf {uint8_t bytes[128];unsigned n;};
@@ -64,15 +65,18 @@ static int guard,copy_error,conn_error,rejected,write_rc,disc_rc;
 static uint16_t connection=NONE,remote_rx,remote_tx,service_start,service_end;
 static bool subscribed,connecting,discovering,writing;
 static uint32_t epoch;
-static int64_t retry_at;
-static unsigned mtu=128,checks,writes,disc_start,disc_end;
+static int64_t retry_at,tx_retry_at;
+static unsigned mtu=128,checks,writes,disc_start,disc_end,rejected_count,wakeups;
+static int ticker;
 static struct ble_gap_conn_desc security;
 #define CHECK(x) do{++checks;assert(x);}while(0)
 static int64_t esp_timer_get_time(void){return 1000000;}
+static void ble_npl_callout_reset(void* timer,int ticks){CHECK(timer==&ticker&&ticks==1);wakeups++;}
 static int ble_gap_conn_find(uint16_t c,struct ble_gap_conn_desc*d){CHECK(c==connection);*d=security;return conn_error;}
 static unsigned ble_att_mtu(uint16_t c){CHECK(c==connection);return mtu;}
 static void xQueueReset(void*q){if(q==incoming)iq.n=0;else oq.n=0;}
-static int xQueueSend(void*q,const void*p,int ticks){CHECK(q==incoming&&!ticks);if(iq.n==8)return 0;iq.p[iq.n++]=*(packet_t*)p;return pdTRUE;}
+static unsigned uxQueueSpacesAvailable(void*q){CHECK(q==outgoing);return 8-oq.n;}
+static int xQueueSend(void*q,const void*p,int ticks){CHECK((q==incoming||q==outgoing)&&!ticks);if(q==incoming){if(iq.n==8)return 0;iq.p[iq.n++]=*(packet_t*)p;}else{if(oq.n==8)return 0;oq.p[oq.n++]=*(packet_t*)p;}return pdTRUE;}
 static int xQueueReceive(void*q,void*p,int ticks){CHECK(!ticks);if(q==incoming){if(!iq.n)return 0;*(packet_t*)p=iq.p[0];memmove(iq.p,iq.p+1,--iq.n*sizeof(packet_t));}else{if(!oq.n)return 0;*(packet_t*)p=oq.p[0];memmove(oq.p,oq.p+1,--oq.n*sizeof(packet_t));}return pdTRUE;}
 static int os_mbuf_copydata(const struct os_mbuf*om,int off,unsigned n,void*dst){CHECK(!off&&n<=om->n);memcpy(dst,om->bytes,n);return copy_error;}
 static void reject(int error){rejected=error;}
@@ -88,7 +92,7 @@ static void reset(void){
  connection=7;epoch=4;security.sec_state.encrypted=security.sec_state.authenticated=true;security.sec_state.key_size=16;
  conn_error=copy_error=rejected=write_rc=disc_rc=0;mtu=128;subscribed=connecting=discovering=writing=false;
  snapshot=(pico_dual_ble_status_t){.active=true,.generation=epoch};iq.n=oq.n=0;writes=disc_start=disc_end=0;
- current.role=2;remote_rx=5;remote_tx=10;service_start=1;service_end=15;
+ wakeups=0;tx_retry_at=0;current.role=2;remote_rx=5;remote_tx=10;service_start=1;service_end=15;
 }
 static void gates(void){
  reset();CHECK(secure(7)&&!secure(8)&&!secure(NONE));
@@ -124,15 +128,43 @@ static void discovery(void){
  reset();mtu_cb(7,&ok,128,arg);CHECK(disc_start==1&&!rejected);
  reset();service_start=0;service_cb(7,&done,NULL,arg);CHECK(rejected==BLE_HS_EDONE);
  reset();oq.n=1;writing=true;write_cb(7,&ok,NULL,(void*)3);CHECK(writing&&oq.n==1);
- write_cb(7,&ok,NULL,arg);CHECK(!writing&&!oq.n);
+ write_cb(7,&ok,NULL,arg);CHECK(!writing&&!oq.n&&!wakeups);
  reset();iq.n=oq.n=1;subscribed=connecting=discovering=writing=true;clear_link(55);
  CHECK(connection==NONE&&snapshot.generation==5&&!snapshot.connected&&snapshot.error==55&&!iq.n&&!oq.n);
 }
-int main(void){gates();discovery();printf("Dual BLE callbacks: %u checks PASS; authentication, MTU, discovery handles, stale callbacks, bounded queues and generations (no physical radio)\n",checks);}
+static void pressure(void){
+ reset();struct ble_gatt_error full={BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_RES)};
+ oq.n=1;writing=true;write_cb(7,&full,NULL,(void*)(uintptr_t)epoch);
+ CHECK(!writing&&oq.n==1&&!rejected&&tx_retry_at>esp_timer_get_time()&&snapshot.tx_retries==1&&!wakeups);
+ struct ble_gatt_error busy={BLE_HS_ENOMEM};writing=true;write_cb(7,&busy,NULL,(void*)(uintptr_t)epoch);
+ CHECK(!writing&&oq.n==1&&!rejected&&snapshot.tx_retries==2&&!wakeups);
+ struct ble_gatt_error stale={42};write_cb(7,&stale,NULL,(void*)3);CHECK(!rejected&&oq.n==1);
+ reset();struct os_mbuf om={.n=89};for(int i=0;i<8;i++)CHECK(receive_packet(7,&om));
+ subscribed=true;ready_update();CHECK(snapshot.connected);
+ for(int i=0;i<40;i++)notification_received(7,remote_tx,&om);
+ CHECK(!rejected&&snapshot.connected&&snapshot.rx_dropped==40&&iq.n==8);
+ uint8_t data[96];for(int i=0;i<8;i++)CHECK(pico_dual_ble_receive(data,sizeof(data))==89);
+ notification_received(7,remote_tx,&om);CHECK(iq.n==1&&!rejected&&snapshot.connected);
+ reset();security.sec_state.encrypted=false;notification_received(7,remote_tx,&om);CHECK(!iq.n);
+}
+static void transmit(void){
+ reset();uint8_t data[96]={35};CHECK(!pico_dual_ble_send(data,5)&&!wakeups&&!oq.n);
+ snapshot.connected=true;CHECK(!pico_dual_ble_send(NULL,5)&&!pico_dual_ble_send(data,0)&&!pico_dual_ble_send(data,97)&&!wakeups);
+ for(unsigned i=0;i<8;i++){CHECK(pico_dual_ble_send(data,5));CHECK(wakeups==i+1&&oq.n==i+1&&oq.p[i].generation==epoch&&oq.p[i].bytes[0]==35);}
+ CHECK(!pico_dual_ble_send(data,5)&&wakeups==8&&oq.n==8);
+}
+int main(void){gates();discovery();pressure();transmit();printf("Dual BLE callbacks: %u checks PASS; authentication, MTU, discovery handles, stale callbacks, bounded queues and generations (no physical radio)\n",checks);}
 '''
-names=['error_set','secure','ready_update','clear_link','receive_packet','access_gatt','callback_current','subscribed_cb','descriptor_cb','characteristic_cb','service_cb','mtu_cb','write_cb','pico_dual_ble_status','pico_dual_ble_receive']
+names=['error_set','secure','ready_update','clear_link','receive_packet','access_gatt','callback_current','subscribed_cb','descriptor_cb','characteristic_cb','service_cb','mtu_cb','write_cb','pico_dual_ble_status','pico_dual_ble_receive','pico_dual_ble_can_send','pico_dual_ble_send']
 prototypes='\n'.join(function(n).split('{',1)[0]+';' for n in names)
-source=prelude+'\n'+prototypes+'\n'+'\n'.join(function(n) for n in names)+'\n'+tests
+if 'static void notification_received(' in SOURCE:
+    notification=function('notification_received')
+else:
+    branch=SOURCE.split('case BLE_GAP_EVENT_NOTIFY_RX:',1)[1].split('break;',1)[0]
+    branch=branch.replace('event->notify_rx.attr_handle','attr').replace('event->notify_rx.conn_handle','conn').replace('event->notify_rx.om','om')
+    notification='static void notification_received(uint16_t conn,uint16_t attr,const struct os_mbuf* om){'+branch+'}'
+prelude+='\nstatic void notification_received(uint16_t,uint16_t,const struct os_mbuf*);\n'
+source=prelude+'\n'+prototypes+'\n'+'\n'.join(function(n) for n in names)+'\n'+notification+'\n'+tests
 p=argparse.ArgumentParser();p.add_argument('--sanitize',action='store_true');a=p.parse_args()
 with tempfile.TemporaryDirectory(prefix='dual-ble-backend-') as temp:
     path=Path(temp);(path/'test.c').write_text(source)

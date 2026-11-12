@@ -394,6 +394,8 @@ static bool host_printer_config(uint32_t command,pico_app_printer_config_t *conf
 static bool host_home_rooms(uint32_t command,pico_app_home_rooms_t *rooms){
     return home_link_active()&&ps_home_pga_rooms(command,rooms);
 }
+static bool host_home_catalog(uint32_t command,pico_app_home_catalog_t *out){return home_link_active()&&ps_home_pga_catalog(command,out);}
+static bool host_home_selection(uint32_t command,pico_app_home_selection_t *out){return home_link_active()&&ps_home_pga_selection(command,out);}
 static bool host_printer_candidate(uint32_t index,pico_app_printer_config_t *out){
     return s_app&&s_app->kind==PGA_PRINTER_LINK&&ps_home_pga_printer_candidate(index,out);
 }
@@ -448,6 +450,7 @@ static const pico_app_host_t s_host={
     .printer_link=host_home_link,.printer_item=host_home_link_printer,
     .printer_config=host_printer_config,.printer_input=host_home_link_input,
     .home_rooms=host_home_rooms,.printer_candidate=host_printer_candidate,
+    .home_catalog=host_home_catalog,.home_selection=host_home_selection,
     .tr=ps_tr,
     .duo_role=host_duo_role,.duo_input_send=host_duo_send,.duo_input_recv=host_duo_recv,
     .duo_packet_send=host_duo_packet_send,.duo_packet_recv=host_duo_packet_recv

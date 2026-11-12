@@ -30,3 +30,5 @@ unsigned native_preview_book_px(void);
 uint32_t native_preview_dual_page(void);
 bool native_preview_dual_blank(void);
 size_t native_preview_page_offset(bool end);
+bool native_preview_book_prep_active(void);
+int native_preview_book_prep_page(void);

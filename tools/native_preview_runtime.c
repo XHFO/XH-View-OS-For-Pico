@@ -4,6 +4,8 @@
  */
 #include "native_preview_hal.h"
 #include "pico_system.h"
+#include "pico_home_pga.h"
+#include "pico_home_portal.h"
 #include "pico_dual.h"
 #include "native_preview_book.h"
 #include "ui_gesture.h"
@@ -76,23 +78,54 @@ static void host_task_cleanup(void*p){host_task_t*t=p;if(t->detached){pthread_mu
 static void *host_task_run(void *p){host_task_t*t=p;runtime_task=t;pthread_cleanup_push(host_task_cleanup,t);t->fn(t->arg);pthread_cleanup_pop(1);return NULL;}
 int xTaskCreateWithCaps(void(*fn)(void*),const char*name,unsigned stack,void*arg,int priority,TaskHandle_t*out,unsigned caps){(void)name;(void)stack;(void)priority;(void)caps;host_task_t*t=calloc(1,sizeof(*t));if(!t)return pdFAIL;t->fn=fn;t->arg=arg;t->detached=out==NULL;pthread_mutex_init(&t->lock,NULL);pthread_cond_init(&t->condition,NULL);pthread_attr_t attr;pthread_attr_init(&attr);if(!out)pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);pthread_t thread;int result=pthread_create(&thread,&attr,host_task_run,t);pthread_attr_destroy(&attr);if(result){pthread_mutex_destroy(&t->lock);pthread_cond_destroy(&t->condition);free(t);return pdFAIL;}if(out){t->thread=thread;*out=t;}return pdPASS;}
 int xTaskCreate(void(*fn)(void*),const char*n,unsigned s,void*a,int p,TaskHandle_t*h){return xTaskCreateWithCaps(fn,n,s,a,p,h,0);}
-int xTaskCreatePinnedToCore(void(*fn)(void*),const char*n,unsigned s,void*a,int p,TaskHandle_t*h,int c){(void)fn;(void)n;(void)s;(void)a;(void)p;(void)h;(void)c;return pdFAIL;}
+int xTaskCreatePinnedToCore(void(*fn)(void*),const char*n,unsigned s,void*a,int p,TaskHandle_t*h,int c){
+    (void)c;
+    // 显式启用真实预绘线程；其余硬件固定核任务仍不可用。
+    // Opt into the real prefetch worker; other hardware-pinned tasks remain unavailable.
+    const char *enabled=getenv("PICO_NATIVE_BOOK_PREFETCH");
+    if(n&&!strcmp(n,"book_prep")&&enabled&&!strcmp(enabled,"1"))return xTaskCreate(fn,n,s,a,p,h);
+    return pdFAIL;
+}
+int xTaskCreatePinnedToCoreWithCaps(void(*fn)(void*),const char*n,unsigned s,void*a,int p,TaskHandle_t*h,int c,unsigned caps){(void)caps;return xTaskCreatePinnedToCore(fn,n,s,a,p,h,c);}
 void vTaskDeleteWithCaps(TaskHandle_t h){host_task_t*t=h;if(!t){pthread_exit(NULL);return;}pthread_mutex_lock(&t->lock);t->removed=true;pthread_cond_broadcast(&t->condition);pthread_mutex_unlock(&t->lock);pthread_join(t->thread,NULL);pthread_mutex_destroy(&t->lock);pthread_cond_destroy(&t->condition);free(t);}
 void vTaskDelete(TaskHandle_t h){if(!h)pthread_exit(NULL);else vTaskDeleteWithCaps(h);}
 void vTaskSuspend(TaskHandle_t h){host_task_t*t=h?h:runtime_task;if(!t)return;pthread_mutex_lock(&t->lock);while(!t->removed)pthread_cond_wait(&t->condition,&t->lock);pthread_mutex_unlock(&t->lock);pthread_exit(NULL);}
 void vTaskDelay(unsigned ticks){struct timespec ts={ticks/1000,(long)(ticks%1000)*1000000};nanosleep(&ts,NULL);}
 unsigned uxTaskGetStackHighWaterMark(TaskHandle_t h){(void)h;return 16384;}
-SemaphoreHandle_t xSemaphoreCreateMutex(void){pthread_mutex_t*m=malloc(sizeof(*m));if(m)pthread_mutex_init(m,NULL);return m;}
-int xSemaphoreTake(SemaphoreHandle_t s,unsigned ticks){(void)ticks;return s&&pthread_mutex_lock(s)==0;}
-int xSemaphoreGive(SemaphoreHandle_t s){return s&&pthread_mutex_unlock(s)==0;}
-void vSemaphoreDelete(SemaphoreHandle_t s){if(s){pthread_mutex_destroy(s);free(s);}}
+typedef struct {bool binary,available;pthread_mutex_t lock;pthread_cond_t changed;} host_semaphore_t;
+static SemaphoreHandle_t host_semaphore_create(bool binary){
+    host_semaphore_t*s=calloc(1,sizeof(*s));if(!s)return NULL;
+    s->binary=binary;s->available=!binary;
+    pthread_mutex_init(&s->lock,NULL);pthread_cond_init(&s->changed,NULL);return s;
+}
+SemaphoreHandle_t xSemaphoreCreateMutex(void){return host_semaphore_create(false);}
+SemaphoreHandle_t xSemaphoreCreateBinary(void){return host_semaphore_create(true);}
+int xSemaphoreTake(SemaphoreHandle_t handle,unsigned ticks){
+    host_semaphore_t*s=handle;if(!s)return 0;
+    if(!s->binary)return ticks?pthread_mutex_lock(&s->lock)==0:pthread_mutex_trylock(&s->lock)==0;
+    struct timespec deadline;clock_gettime(CLOCK_REALTIME,&deadline);
+    deadline.tv_sec+=ticks/1000;deadline.tv_nsec+=(long)(ticks%1000)*1000000;
+    if(deadline.tv_nsec>=1000000000){deadline.tv_sec++;deadline.tv_nsec-=1000000000;}
+    pthread_mutex_lock(&s->lock);
+    while(!s->available&&ticks){int err=ticks==portMAX_DELAY?pthread_cond_wait(&s->changed,&s->lock):pthread_cond_timedwait(&s->changed,&s->lock,&deadline);if(err)break;}
+    int acquired=s->available;if(acquired)s->available=false;
+    pthread_mutex_unlock(&s->lock);return acquired;
+}
+int xSemaphoreGive(SemaphoreHandle_t handle){
+    host_semaphore_t*s=handle;if(!s)return 0;
+    if(!s->binary)return pthread_mutex_unlock(&s->lock)==0;
+    pthread_mutex_lock(&s->lock);s->available=true;pthread_cond_signal(&s->changed);pthread_mutex_unlock(&s->lock);return 1;
+}
+void vSemaphoreDelete(SemaphoreHandle_t handle){host_semaphore_t*s=handle;if(s){pthread_cond_destroy(&s->changed);pthread_mutex_destroy(&s->lock);free(s);}}
 unsigned ulTaskNotifyTake(int clear,unsigned ticks){
     host_task_t *t=runtime_task;if(!t){if(ticks!=portMAX_DELAY)vTaskDelay(ticks);return 0;}
     struct timespec deadline;clock_gettime(CLOCK_REALTIME,&deadline);deadline.tv_sec+=ticks/1000;deadline.tv_nsec+=(long)(ticks%1000)*1000000;if(deadline.tv_nsec>=1000000000){deadline.tv_sec++;deadline.tv_nsec-=1000000000;}
     pthread_mutex_lock(&t->lock);
     while(!t->notifications&&!t->removed&&ticks){int e=ticks==portMAX_DELAY?pthread_cond_wait(&t->condition,&t->lock):pthread_cond_timedwait(&t->condition,&t->lock,&deadline);if(e)break;}
     unsigned count=t->notifications;if(count){if(clear)t->notifications=0;else t->notifications--;}
-    pthread_mutex_unlock(&t->lock);return count;
+    bool removed=t->removed;pthread_mutex_unlock(&t->lock);
+    if(removed)pthread_exit(NULL);
+    return count;
 }
 void xTaskNotifyGive(TaskHandle_t h){host_task_t *t=h;if(!t)return;pthread_mutex_lock(&t->lock);if(t->notifications!=0xffffffffu)t->notifications++;pthread_cond_signal(&t->condition);pthread_mutex_unlock(&t->lock);}
 void app_lock_ignore_for(int64_t ms){(void)ms;}
@@ -158,18 +191,52 @@ int read_pico_pmu_cmd(uint16_t cmd,const uint8_t *data,size_t bytes){
 }
 static const char *route_names[]={"书架","阅读","书签与笔记","家庭","打印监看","系统设置","Wi-Fi","家庭设置","打印设置","阅读设置","输入设置","休眠设置","快捷编排","小游戏","棋类对局","首次引导","翻页时钟","划线摘录","导入图书","输入","TF 卡存储","Wi-Fi 传书","USB 传输","休闲游戏","蓝牙翻页器","日期与时间","电源与锁屏","首页导航","应用","电脑画布","无线管理","提示音","网站流量","应用集","双机阅读","外观与操作"};
 _Static_assert(ARRAY_COUNT(route_names)==PS_ROUTE_COUNT,"Every native route needs a readable name");
-// 中文：宿主不执行面板波形，只让生产阅读页走其恢复路径；不伪造硬件时序。
-// English: The host has no panel waveform; force the production reader's recovery path without faking hardware timing.
+// 宿主不执行面板波形；默认验证失败恢复，可显式注入成功边界验证自推屏后的调度。
+// The host runs no waveform; default to failure recovery, with opt-in success injection for self-present scheduling.
 static int native_e0470_tick_us=E0470_TURN_DEFAULT_TICK_US;
 static int native_e0470_last_dir=-1;
 static unsigned native_e0470_calls;
+static unsigned native_e0470_successes;
+static void (*native_relay)(void);
+void e0470_page_turn_set_relay(void (*callback)(void)){native_relay=callback;}
+bool native_preview_body_will_fail(void);
+static void native_turn_event(const char* phase, int result) {
+    const char* path=getenv("PICO_NATIVE_TURN_TRACE");
+    if (!path || !*path) return;
+    FILE* f=fopen(path,"a"); if (!f) return;
+    fprintf(f,"{\"phase\":\"%s\",\"time_us\":%lld,\"direction\":%d,\"result\":%d}\n",
+        phase,(long long)esp_timer_get_time(),native_e0470_last_dir,result);
+    fclose(f);
+}
+void native_preview_book_draw_event(bool begin) {
+    native_turn_event(begin?"draw-begin":"draw-end",0);
+    if(begin){const char* delay=getenv("PICO_NATIVE_COLD_DRAW_MS");if(delay){int ms=atoi(delay);if(ms>0&&ms<=1000)usleep((useconds_t)ms*1000);}}
+}
+void native_preview_display_event(int result) { native_turn_event("display-body",result); }
+static enum EpdDrawError native_e0470_result(EpdiyHighlevelState*hl,EpdRect area){
+    native_turn_event("begin",-1);
+    void (*relay)(void)=native_relay;native_relay=NULL;
+    const char* delay=getenv("PICO_NATIVE_TURN_DELAY_MS");
+    int ms=delay?atoi(delay):0;if(ms<0||ms>1000)ms=0;
+    const char *success=getenv("PICO_NATIVE_E0470_SUCCESS");
+    if(relay&&success&&!strcmp(success,"1")&&!native_preview_body_will_fail()){
+        int before=ms>500?ms-500:1;
+        usleep((useconds_t)before*1000);native_turn_event("relay",0);relay();
+        if(ms>before)usleep((useconds_t)(ms-before)*1000);
+    }else if(ms)usleep((useconds_t)ms*1000);
+    enum EpdDrawError result=(!success||strcmp(success,"1"))?EPD_DRAW_NO_PHASES_AVAILABLE:
+        update_display_area_with(hl,&E0470_WAVEFORM,MODE_GL16,area);
+    if(result==EPD_DRAW_SUCCESS)native_e0470_successes++;
+    native_turn_event("end",result);
+    return result;
+}
 const char* e0470_turn_dir_name(e0470_turn_dir_t dir){return dir==E0470_TURN_RTL?"rtl":dir==E0470_TURN_TTB?"ttb":dir==E0470_TURN_BTT?"btt":"ltr";}
 void e0470_page_turn_set_tick_us(int us){native_e0470_tick_us=us>0?us:E0470_TURN_DEFAULT_TICK_US;}
 int e0470_page_turn_tick_us(void){return native_e0470_tick_us;}
 void e0470_page_turn_release(void){native_e0470_tick_us=E0470_TURN_DEFAULT_TICK_US;}
-enum EpdDrawError e0470_page_turn(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir){(void)hl;(void)area;native_e0470_last_dir=dir;native_e0470_calls++;return EPD_DRAW_NO_PHASES_AVAILABLE;}
-enum EpdDrawError e0470_page_turn_with_waveform(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir,const EpdWaveform*waveform,unsigned bands){(void)hl;(void)area;(void)waveform;(void)bands;native_e0470_last_dir=dir;native_e0470_calls++;return EPD_DRAW_NO_PHASES_AVAILABLE;}
-enum EpdDrawError e0470_page_turn_with_waveform_compact(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir,const EpdWaveform*waveform,unsigned bands){(void)hl;(void)area;(void)waveform;(void)bands;native_e0470_last_dir=dir;native_e0470_calls++;return EPD_DRAW_NO_PHASES_AVAILABLE;}
+enum EpdDrawError e0470_page_turn(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir){native_e0470_last_dir=dir;native_e0470_calls++;return native_e0470_result(hl,area);}
+enum EpdDrawError e0470_page_turn_with_waveform(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir,const EpdWaveform*waveform,unsigned bands){(void)waveform;(void)bands;native_e0470_last_dir=dir;native_e0470_calls++;return native_e0470_result(hl,area);}
+enum EpdDrawError e0470_page_turn_with_waveform_compact(EpdiyHighlevelState*hl,EpdRect area,e0470_turn_dir_t dir,const EpdWaveform*waveform,unsigned bands){(void)waveform;(void)bands;native_e0470_last_dir=dir;native_e0470_calls++;return native_e0470_result(hl,area);}
 static uint64_t frame_hash(void){uint64_t h=UINT64_C(1469598103934665603);for(size_t i=0;i<sizeof(runtime_fb);i++)h=(h^runtime_fb[i])*UINT64_C(1099511628211);return h;}
 void app_present(app_ctx_t *ctx,const app_desc_t *app,app_redraw_t redraw){
     if(redraw==APP_REDRAW_NONE||redraw==APP_REDRAW_DONE)return;
@@ -362,15 +429,15 @@ static bool runtime_seed_tools(void){
 #endif
 }
 static void state(bool ok,const char *error){bool changed=save_state();ps_view_t v=ps_view();printf("{\"ok\":%s,\"version\":\"%s\",\"width\":%d,\"height\":%d,\"logical_width\":%d,\"logical_height\":%d,\"route\":%d,\"route_name\":\"%s\",\"frame\":\"%s\",\"revision\":%llu,\"changed\":%s,\"now_ms\":%lld,\"panel\":%d,\"fan\":%s,\"fan_selected\":%d,\"fan_side\":%d,\"framebuffer\":\"packed4\",\"presents\":%u,\"active_app\":\"%s\",\"font_weight\":%d,\"rotation_locked\":%s,\"dual_locked\":%s",ok?"true":"false",PS_VERSION,epd_rotated_display_width(),epd_rotated_display_height(),v.w,v.h,(int)ps_route(),runtime_app==&app_font_pick?"字体选择":runtime_app==&app_transfer?"传书":route_names[ps_route()],runtime_frame,(unsigned long long)runtime_revision,changed?"true":"false",(long long)runtime_now,s_panel,s_fan?"true":"false",s_fan_selected,s_fan_side,native_preview_present_count(),runtime_app==&app_book?"book":runtime_app==&app_font_pick?"font":runtime_app==&app_transfer?"transfer":"system",ttf_get_weight(),ps_rotation_locked()?"true":"false",ps_dual_rotation_locked()?"true":"false");
-    printf(",\"e0470_last_dir\":\"%s\",\"e0470_calls\":%u",native_e0470_last_dir<0?"none":e0470_turn_dir_name((e0470_turn_dir_t)native_e0470_last_dir),native_e0470_calls);
+    printf(",\"e0470_last_dir\":\"%s\",\"e0470_calls\":%u,\"e0470_successes\":%u",native_e0470_last_dir<0?"none":e0470_turn_dir_name((e0470_turn_dir_t)native_e0470_last_dir),native_e0470_calls,native_e0470_successes);
     printf(",\"rotation\":%d,\"physical_hash\":\"%llx\"",epd_get_rotation(),(unsigned long long)runtime_digest);
     dl_status_t dual_status;ps_dual_status(&dual_status);printf(",\"dual_role\":%d,\"dual_connected\":%s,\"dual_synced\":%s,\"dual_fast_verified\":%s,\"dual_peer_id\":%s,\"dual_scanning\":%s,\"dual_secondary_shelf\":%s,\"dual_has_reading\":%s,\"dual_request_pending\":%s,\"dual_books\":%u,\"dual_spread\":%u,\"dual_revision\":%u",ps_dual_role(),dual_status.connected?"true":"false",dual_status.synced?"true":"false",dual_status.fast_verified?"true":"false",dual_status.peer_id_valid?"true":"false",dual_status.scanning?"true":"false",ps_dual_secondary_shelf()?"true":"false",ps_dual_has_reading()?"true":"false",dual_status.request_pending?"true":"false",dual_status.books,dual_status.reading.spread,dual_status.reading.revision);
     printf(",\"shelf_open_choice\":%s",ps_reader_shelf_choice_open()?"true":"false");
-    printf(",\"dual_left_ready\":%s",dual_status.left_ready?"true":"false");
+    printf(",\"dual_left_ready\":%s,\"dual_peer_presented\":%s,\"dual_relay_ready\":%s,\"dual_turn_ready\":%s",dual_status.left_ready?"true":"false",dual_status.peer_presented?"true":"false",dual_status.relay_ready?"true":"false",dual_status.turn_ready?"true":"false");
     printf(",\"dual_base_rotation\":%d,\"dual_primary_flip\":%s,\"dual_secondary_flip\":%s,\"dual_guard\":%s,\"dual_peer_reading\":%s",dual_status.orientation.inverted?EPD_ROT_INVERTED_PORTRAIT:EPD_ROT_PORTRAIT,dual_status.orientation.primary_flip?"true":"false",dual_status.orientation.secondary_flip?"true":"false",dual_status.guard?"true":"false",dual_status.peer_reading?"true":"false");
     printf(",\"dual_reused\":%u,\"dual_verified_bytes\":%u,\"dual_resumed\":%u",dual_status.reused,dual_status.verified_bytes,dual_status.resumed);
     if(runtime_app==&app_book)printf(",\"book_page\":%zu,\"book_pages\":%zu,\"book_chapter\":%zu,\"book_jump\":%s,\"book_tools\":%s,\"selection\":%s",native_preview_book_page()+1,native_preview_book_pages(),native_preview_book_chapter()+1,native_preview_book_jump_open()?"true":"false",native_preview_book_tools_open()?"true":"false",native_preview_book_selection_active()?"true":"false");
-    if(runtime_app==&app_book)printf(",\"book_px\":%u",native_preview_book_px());
+    if(runtime_app==&app_book)printf(",\"book_px\":%u,\"book_prep_active\":%s,\"book_prep_page\":%d",native_preview_book_px(),native_preview_book_prep_active()?"true":"false",native_preview_book_prep_page());
     printf(",\"dual_font_px\":%u,\"dual_reflow\":%s",dual_status.reading.font_px,dual_status.reading.reflow_pending?"true":"false");
     if(runtime_app==&app_book){app_book_dual_status_t book_dual;app_book_dual_status(&book_dual);printf(",\"dual_target\":%u,\"dual_page\":%u,\"dual_blank\":%s,\"book_solo\":%s,\"book_animation_lead\":%s,\"book_painted_page\":%u,\"book_turn_dir\":%d,\"page_start\":%zu,\"page_end\":%zu,\"book_path\":",native_preview_dual_target(),native_preview_dual_page(),native_preview_dual_blank()?"true":"false",book_dual.solo?"true":"false",book_dual.animation_lead?"true":"false",book_dual.painted_page,book_dual.turn_dir,native_preview_page_offset(false),native_preview_page_offset(true));runtime_json_string(native_preview_book_path());}
     if(runtime_app==&app_book)printf(",\"book_kind\":\"%s\",\"book_view\":\"%s\"",native_preview_book_kind(),native_preview_book_view());
@@ -382,6 +449,7 @@ static void state(bool ok,const char *error){bool changed=save_state();ps_view_t
     printf(",\"games_sort\":");runtime_json_string(ps_games_sort_label());printf(",\"games_order\":[");
     for(unsigned i=0;i<ps_games_count();i++){const char *game_id=NULL,*game_title=NULL;if(ps_games_item(i,&game_id,&game_title)){if(i)putchar(',');runtime_json_string(game_id);}}
     putchar(']');
+    printf(",\"status_percent\":%s,\"wifi_level\":%u",ps_status_percent()?"true":"false",s_wifi_level);
     printf(",\"dual_wifi_connected\":%s,\"dual_ble_simulated\":true,\"status_style\":%u,\"shelf_card_style\":%u",dual_status.data_connected?"true":"false",ps_status_style(),ps_shelf_card_style());
     printf(",\"firmware_ready\":%s,\"update_channel\":%u",
            ps_updates_firmware_ready()?"true":"false",ps_updates_channel());
@@ -410,10 +478,31 @@ int main(int argc,char **argv){
         if(!strcmp(command,"desktop-canvas")){extern void native_preview_desktop_canvas(const char*,FILE*);native_preview_desktop_canvas(line+15,stdout);memset(line,0,sizeof(line));continue;}
         if(!strcmp(command,"manage-content")){extern void native_preview_content_rpc(const char*,FILE*);native_preview_content_rpc(line+15,stdout);memset(line,0,sizeof(line));continue;}
         if(!strcmp(command,"manage-web")){extern void native_preview_management_rpc(const char*,FILE*);native_preview_management_rpc(line+11,stdout);memset(line,0,sizeof(line));continue;}
+        if(!strcmp(command,"home-test-state")){
+            pico_app_home_config_t cfg={.bytes=sizeof(cfg)};pico_app_home_selection_t *sel=calloc(1,sizeof(*sel));sel->bytes=sizeof(*sel);
+            pico_app_home_status_t hs={.bytes=sizeof(hs)};bool read=ps_home_pga_config(PGA_HOME_CONFIG_GET,&cfg)&&ps_home_pga_selection(PGA_SELECTION_GET,sel);
+            (void)ps_home_pga_peek_status(&hs);printf("{\"ok\":%s,\"now_ms\":%lld,\"local\":",read?"true":"false",(long long)runtime_now);runtime_json_string(cfg.local);
+            printf(",\"selected\":%u,\"revision\":%u,\"pending\":%s,\"entities\":%u,\"flags\":%u}\n",sel->count,sel->revision,sel->pending?"true":"false",hs.entity_count,hs.flags);free(sel);fflush(stdout);continue;
+        }
         if(!strcmp(command,"portal-web")){native_preview_home_portal_rpc(line+11,stdout);memset(line,0,sizeof(line));continue;}
         if(!strcmp(command,"portal-open")||!strcmp(command,"portal-status")){native_preview_home_portal_rpc(!strcmp(command,"portal-open")?"open":"status",stdout);memset(line,0,sizeof(line));continue;}
         if(!strcmp(command,"manage-open")||!strcmp(command,"manage-status")){extern void native_preview_management_rpc(const char*,FILE*);native_preview_management_rpc(!strcmp(command,"manage-open")?"open":"status",stdout);continue;}
         if(!strcmp(command,"touch")){if(sscanf(line,"%*s %79s %d %d %lld",action,&x,&y,&ms)<3){ok=false;error="invalid touch";}else set_touch(action,x,y,ms);}
+        else if(!strcmp(command,"home-test-config")){
+            char url[192]={0};rp_home_config_t *cfg=calloc(1,sizeof(*cfg));cfg->version=RP_HOME_CONFIG_VERSION;
+            if(sscanf(line,"%*s %191s",url)==1&&strncmp(url,"http://127.0.0.1:",17)==0){cfg->enabled=1;snprintf(cfg->local,sizeof(cfg->local),"%s",url);strcpy(cfg->home_wifi,"Home");strcpy(cfg->ha_token,"synthetic-only");}
+            else if(strcmp(url,"clear"))ok=false;
+            bool queued;if(ok)ok=ps_home_pga_portal_commit(cfg,&queued);free(cfg);step();
+        }
+        else if(!strcmp(command,"home-test-select")){
+            pico_app_home_selection_t *sel=calloc(1,sizeof(*sel));sel->bytes=sizeof(*sel);ok=ps_home_pga_selection(PGA_SELECTION_GET,sel)&&sscanf(line,"%*s %d",&x)==1&&x>=0&&x<=96;
+            if(ok){sel->count=x;for(int i=0;i<x;i++)snprintf(sel->ids[i],96,"light.room_%d",i);ok=ps_home_pga_selection(PGA_SELECTION_SET,sel);}free(sel);step();
+        }
+        else if(!strcmp(command,"home-test-rooms")){
+            pico_app_home_rooms_t *rooms=calloc(1,sizeof(*rooms));rooms->bytes=sizeof(*rooms);ok=sscanf(line,"%*s %d",&x)==1;
+            if(ok&&x<0)ok=ps_home_pga_rooms(PGA_ROOMS_SCAN,rooms);
+            else if(ok){ok=ps_home_pga_rooms(PGA_ROOMS_GET,rooms);rooms->selected=(uint32_t)x;if(ok)ok=ps_home_pga_rooms(PGA_ROOMS_SET,rooms);}free(rooms);step();
+        }
         else if(!strcmp(command,"tick")){sscanf(line,"%*s %lld",&ms);runtime_now=ms>runtime_now?ms:runtime_now+1;step();}
         else if(!strcmp(command,"key")){if(sscanf(line,"%*s %d %79s",&x,action)!=2||x<0||x>2){ok=false;error="invalid key";}else{key_sample(x,true,true,false,1);if(!strcmp(action,"long"))key_sample(x,true,false,false,700);key_sample(x,false,false,true,40);if(!strcmp(action,"double")){key_sample(x,true,true,false,90);key_sample(x,false,false,true,40);}key_sample(x,false,false,false,310);}}
         else if(!strcmp(command,"rotate")){sscanf(line,"%*s %d",&x);if(!ps_power_pending()&&!ps_rotation_locked()){apply_rotation(x?EPD_ROT_INVERTED_LANDSCAPE:EPD_ROT_INVERTED_PORTRAIT);app_present(&runtime_ctx,runtime_app,APP_REDRAW_FULL);}}
@@ -448,9 +537,10 @@ int main(int argc,char **argv){
         else if(!strcmp(command,"dual")){char host[48]={0},code[7]={0};if(sscanf(line,"%*s %d %47s %6s",&x,host,code)!=3)ok=false;else ok=ps_dual_configure(x,host,code);step();}
         else if(!strcmp(command,"dual-scan")){extern void ps_dual_native_scan_start(void);ps_dual_native_scan_start();step();}
         else if(!strcmp(command,"dual-open")){line[strcspn(line,"\r\n")]=0;ok=ps_dual_open(line+10);step();}
-        else if(!strcmp(command,"book-select")){line[strcspn(line,"\r\n")]=0;ps_dual_set_local_away(true);app_book_dual_pause();ok=app_book_open_path(line+12);step();}
+        else if(!strcmp(command,"book-select")){line[strcspn(line,"\r\n")]=0;ps_dual_set_local_away(true);app_book_dual_pause();ok=app_book_open_path(line+12);if(ok)ps_legacy(&app_book);step();}
         else if(!strcmp(command,"dual-wifi")){int enabled=0;ok=sscanf(line,"%*s %d",&enabled)==1;ps_dual_native_wifi(enabled!=0);step();}
         else if(!strcmp(command,"update-channel")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>1)ok=false;else ok=ps_updates_channel_set((uint8_t)x);step();}
+        else if(!strcmp(command,"status-percent")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>1)ok=false;else ok=ps_status_percent_set(x!=0);step();}
         else if(!strcmp(command,"status-style")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>=PS_STATUS_STYLE_COUNT)ok=false;else ok=ps_status_style_set((uint8_t)x);step();}
         else if(!strcmp(command,"shelf-card-style")){if(sscanf(line,"%*s %d",&x)!=1||x<0||x>=PS_SHELF_CARD_STYLE_COUNT)ok=false;else ok=ps_shelf_card_style_set((uint8_t)x);step();}
         else if(!strcmp(command,"dual-radio")){int enabled=0;ok=sscanf(line,"%*s %d",&enabled)==1;pico_dual_ble_test_enabled(enabled!=0);step();}

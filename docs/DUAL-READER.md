@@ -35,14 +35,14 @@ This private branch contains the complete firmware tree; the repository’s exis
 4. 任意一台从书架打开 TXT 或 EPUB，首次打开主机显示第 1 页，从机显示第 2 页；重新打开当前共享书保留阅读位置。两端均以主机确认的阅读状态为准。
 5. 主机电源键**短按上一组**，从机电源键**短按下一组**：1／2 → 3／4。屏幕左右翻页和底部翻页键同样以双页为单位。本端电源键翻页被接收后异步播放短提示音，受「提示音 → 按键与触摸」控制；另一台同步时不重复响，长按电源菜单不触发翻页音。
 6. 点击顶部页码输入目标页，点黑底白字的「跳转」后两台打开包含该页的双页组合。例如第 10 页对应主机第 9 页、副机第 10 页。无效页码或连接中断保留原阅读位置，可取消。窗口仅保留数字、退格、清空及「取消／跳转」，目录仍从阅读工具进入；定位中不重复提交。
-7. 主机为左页、副机为右页。任意端发起开书、翻页或跳页，最终页组仍由主机 revision 裁定。下一页先放行右侧从设备起动画，主机让出约两轮 UI tick；上一页由左侧主机先起。主机仍在弹窗或排版失败时，不提交新页组。
+7. 主机为左页、副机为右页。任意端发起开书、翻页或跳页，最终页组仍由主机 revision 裁定。下一页从右向左：右侧从设备完整刷新后，左侧主机才开始；上一页从左向右：左侧完整刷新后右侧才开始。双方实际推屏成功才确认当前 revision，失败重试、丢包或迟到通知不会提前放行或重复推进页组。主机仍在弹窗或排版失败时，不提交新页组。
 8. 在双机菜单的「主机」「从机」下分别设置「旋转屏幕 180°」。自动方向以主机的稳定竖握姿态为基准，从机跟随；两个开关分别叠加各自的180度翻转。从机自己的重力方向不会覆盖主机，两端系统的旋转与方向锁定偏好保持独立，关闭双机后恢复。快捷菜单的旋转等同于切换当前角色的开关；从机须连接主机才能修改，开关确认后自动保存。横屏姿态不重排正文，翻页方向不变。
 9. 长按电源键仍打开电源菜单，可以锁屏、关机或重启。书库校验、文件传输、已连接的双机会话和双机正文阅读期间暂缓自动休眠；未连接且无任务时恢复原自动休眠规则。保存的休眠时间不变，主动锁屏仍有效。关闭双机功能后短按电源恢复原锁屏操作。
 10. 对端停留在书架、配对页或普通系统设置页时，会跟随开书。输入框、应用编辑等页面暂不被打断，回到可阅读页面后再应用最新位置。同步未完成时，点击图书会提示等待并排队，完成后自动打开；浮层打开时继续通信，关闭浮层后再进入正文。
 
 Either device may start with an empty library. After pairing, each side uploads files missing from the peer, including books and TTF fonts, until both manifests are identical. Selecting Secondary opens visible automatic/manual choices, and a configured secondary can reopen them with Edit Pairing. Either shelf can then open a book. Primary short power means previous spread; secondary short power means next spread. Hold still opens the power menu. An accepted local power-key turn emits one asynchronous interaction cue, subject to the sound preferences; the synchronized peer does not echo it.
 
-The primary is the left page. Either device may request a turn or a validated page jump, and the primary still owns the resulting revision. Next turns release the right-side secondary first while the primary yields two UI ticks; previous turns remain primary-led. A page request opens its containing spread (page 10 gives pages 9/10). The primary supplies the automatic portrait orientation. Separate 180-degree switches below Primary and Secondary apply an offset for each role. The secondary ignores its own gravity direction; normal system orientation and lock preferences are preserved and restored after pairing is disabled. The rotation shortcut toggles the current role; the secondary must be connected to change these shared preferences. Landscape poses do not reflow text.
+The primary is the left page. Either device may request a turn or a validated page jump, and the primary still owns the resulting revision. Next turns complete the right screen before starting the left; previous turns complete the left before starting the right. Revision-bound acknowledgements follow successful presentation, retry after loss, and never release on a failed display or replay an older spread. A page request opens its containing spread (page 10 gives pages 9/10). The primary supplies the automatic portrait orientation. Separate 180-degree switches below Primary and Secondary apply an offset for each role. The secondary ignores its own gravity direction; normal system orientation and lock preferences are preserved and restored after pairing is disabled. The rotation shortcut toggles the current role; the secondary must be connected to change these shared preferences. Landscape poses do not reflow text.
 
 Both toolbars adjust one shared font size (36–72px, step 4). Reflow preserves the primary source-text anchor and releases the right page after the left is rendered. Contents, scrubbing, return-to-origin and local annotation source jumps use shared spreads; settings Back and reopening the current book retain position. An interrupted reflow restores the last completed typography checkpoint. Notes remain local to each device.
 
@@ -88,16 +88,18 @@ Synchronization is an additive union, identified by SHA-256. A trusted live stor
 
 The data channel uses local IPv4 pairing and authenticated TCP; controls use separate authenticated BLE. Book payloads are not encrypted. Shared typography, contents and validated page jumps are supported; independent per-role portrait flips follow the primary’s automatic direction. Landscape reflow and independent per-device fonts are not available while paired. Software validation is separate from physical two-device acceptance.
 
-## 主设备进度与从机书架
+## 阅读进度、重连与 TF 记录 / Progress, reconnect and TF records
 
-- 阅读进度以主设备为唯一持久化来源。无论开书、翻页、目录跳转还是页码定位由哪一端发起，最终页组都由主设备确认，并由主设备写入 `book_progress`。
-- 从设备通过 BLE 接收按 SHA-256 书籍摘要索引的只读进度表；它只用于封面百分比、在读筛选和续读目标，不写本地 `rp_books` 进度。
-- 从机连接并完成书库一致性校验后，保留用户原有书架样式，但隐藏本机“上次读到/最近阅读”入口；主设备断线时保留最后一次已同步进度用于显示。双方文件列表一致后，双方书架均可打开刚从对端补入的图书。
-- 双方都在阅读时，翻页仍以 revision 和请求序号仲裁。下一页为右侧先起手会在动画准备阶段放行 `left_ready`，主机随后让出两轮 UI tick；上一页继续由主机先起。动画期间的新输入排队，当前页组不会被覆盖。
-- 一方离架后，仍在阅读的一方立即保持本页并在每次翻页后接力。主机单读直接写入权威页组，成功推屏后确认 `left_ready`；从机单读只发送当前页请求，本地不再接收自己的回显来改变正在阅读的页。
-- 返回端从主机最新 revision 构造目标页；目标尚未可显示时保留加载画面，不先读取本机旧进度。只有离线分读造成页码真正分叉时，才补发一次最新页。
+- 用户修订：同一本书的单机与双机记录合并时采用更靠后的正文位置，合并后由主机仲裁共享双页；两台设备均保存合并记录。书籍身份由已验证的 SHA-256 目录确定，比较章节和章内 UTF-8 偏移，不用不同字号下的裸页码或四舍五入百分比判断前后。
+- 书架的“双设备打开”与普通开书共用历史恢复流程：先通过已认证的 BLE 交换该书锚点，再加载/定位。主机新开书及同书重开带独立打开标记，慢布局期间保留请求，重复通知不会重复打开。书架/家庭页暂停后仍需用户主动恢复；单纯心跳不拉回阅读。
+- 双方仍在阅读时，断联重连先由主机合并锚点并定位新页组，再放行左右页显示。已连接的从机保存共同左页锚点，脱离后保存自己的单页位置，避免右页天然多一页造成反复合流推进。
+- 进度文件位于 TF 的 `books/.pico-system/b_XXXXXXXX.dat`：v3 分别保留单机、双机记录和最远续读锚点，`progress-last.dat` 保存最近路径；通用存储负责 CRC、临时文件、同步和备份提升。旧 `rp_books` NVS 数据逐书保留源迁移，NVS 只继续保存排序计数。TF 出错不把新进度暗中写到 NVS；失败的会话记录保留待重试。
+- 阅读记录根独立于系统设置根：内置存储可继续保留系统设置，同时有 TF 时优先把进度、批注和草稿保存到 TF；不要求用户先迁移全部设置。
+- 批注、划线和书签继续使用该 TF 目录中的 `reader-r3-index.dat` 和 `reader-r3-o-*.dat` 对象；草稿也必须写 TF，卡不可写时保留编辑内容并提示。原有内置存储笔记通过设置中的显式合并入口导入，保留源库。
+- 快速翻页先保留当前正文锚点，进度与共享会话均在停翻 1.5 秒或退出时保存；开书前交换可读取尚未批量落盘的位置。普通书架进度交换按轮完成、15 秒重新检查，重复锚点不重复写卡；共享阅读的当前进度优先发送。书架两端采用同一进度条绘制规则。
+- 控制协议升级为 v11，两台设备均需升级（dual107 不能与 dual106 及更早固件建立控制会话）。进度帧携带独立序号，保存成功后回确认；丢包或丢确认按原序号重试，过期确认不能取消新传输。任一设备阅读时暂停全库进度扫描，当前书籍的就绪锚点仍优先同步。
 
-The primary is the only persistent reading-progress owner. BLE publishes a read-only progress table keyed by book SHA-256; the secondary uses it only for cover percentages, in-progress filtering and resume targets. Once paired and synchronized, the secondary keeps the user's existing shelf style while omitting its local recent-reading entry. Both shelves expose the latest shared spread. When one reader leaves, the remaining reader continues solo and relays each page; the primary confirms its own solo paint before a peer may resume. The returning reader waits for that confirmed revision instead of opening stale local progress and correcting afterward. Transfer chunks are 16 KiB and their buffers live in the session's PSRAM allocation, reducing per-tick overhead without increasing the UI stack. Annotation and game-state frames use bounded application acknowledgements and retry unconfirmed events.
+For the same verified book, merge solo and paired records by the later chapter/UTF-8 anchor, then let the primary arbitrate the shared spread. Persist the merged record on both TF cards. Explicit opens exchange that book's anchor first and carry a deduplicated open intent. Reconnect resolves a new spread before presentation; use the canonical left anchor while paired and the actual solo page while detached to prevent right-page drift. TF stores progress, annotations and drafts with CRC/backup transactions; retain legacy NVS sources during lazy migration. Fast turns checkpoint after 1.5 seconds idle, and pre-open exchange includes unsaved live anchors. Both readers require protocol v11 (dual107 is incompatible with dual106 and earlier control sessions): progress packets have durable-save ACKs and sequence-preserving retries; stale ACKs cannot discard a newer transfer. Full-library progress enumeration pauses while either reader is active, while the current resolved anchor stays prioritized.
 
 ## 构建与验证 / Build and verify
 
@@ -154,3 +156,19 @@ On the secondary, select Secondary to discover the primary over BLE. An existing
 配置保存之后才开始连接；保存成功不等于已连接。配对页分别显示 Wi-Fi 数据通道、蓝牙翻页通道和书库同步状态。错误输入留在当前步骤，取消未完成输入不会覆盖原配对；重复点选主机不会重新生成配对码。
 
 Connection begins only after configuration is saved; saving does not establish a connection. The pairing page separately reports Wi-Fi data, Bluetooth page control and library synchronization. Invalid input remains editable. Canceling preserves an existing pair, and reselecting Primary preserves its code.
+
+## 当前双页恢复 / Resume the current spread
+
+“恢复当前双页”使用主机当前图书、字体、全书双页位置与修订号，不重新打开图书或读取本地历史位置。家庭页只暂停本机阅读显示，双机会话保留；返回书架后点击恢复入口，不自动拉回正文。恢复卡复用上次阅读卡片的四种外观。单机接力使用全书页码，主机在离架时继续接收副机位置；合流先比较双方最远正文锚点，再由主机发布新修订，不补发旧位置。两端均持久化进度，主机仲裁共享双页。
+
+Resume uses the primary's current book/font/book-wide spread/revision without reopening from local history. Home pauses local presentation while preserving the session; shelf resumes explicitly with the selected recent-reading card style. Solo relay uses absolute book positions; rejoin takes the current primary revision without replaying stale locations.
+
+## 双屏动画衔接 / Display handover
+
+下一页右屏先、左屏后；上一页左屏先、右屏后。主机布局就绪即允许另一端准备目标页，两方向均复用单帧缓存提前绘制、启动屏幕电源；前屏每个成功扫描拍后估计剩余扫描时间，在预计剩余约500毫秒时发送当前修订号的提前接力信号，后屏即可推屏；至少先完成一拍，保持方向设备先启动。提前信号与真正完成分别确认，双方真正完成后才接收下一次翻页。门槛前失败不放行；提前接力后发生失败可能已产生部分重叠，但不会伪造完成，仍走原恢复流程。实际提前量受绘制、电源准备和通信耗时影响，500毫秒是目标估计值。BLE 控制入队唤醒已有发送循环，不增加线程或扩大队列。预绘线程栈使用 PSRAM，创建失败保留同步绘制。
+
+Next presents right then left; previous presents left then right. Primary layout releases peer preparation in both directions, using the existing frame cache to render and start rails ahead of handover. After each successful scan tick, estimate remaining scan time and release the trailing screen at about 500 ms remaining for the current revision, after at least one lead tick. Early relay and actual completion have separate acknowledgements; another turn requires both displays to finish. Failure before the threshold does not release the peer; a late failure may follow an early release but cannot fake completion. Rendering, rail preparation and transport affect actual overlap. Enqueue wakes the existing BLE loop, without extra workers or larger queues. The prefetch stack uses PSRAM and retains synchronous fallback.
+
+重连后首个状态可能已是主机合并后的修订；从机收到该修订的主机布局就绪状态即可应用，不再空等另一个修订。仍须正常定位及实际推屏成功后才确认，不能以重连或布局就绪代替推屏完成。
+
+The first reconnect state may already contain the primary reconciliation. Apply it once primary layout is ready rather than waiting for another revision. Normal positioning and successful presentation still precede completion acknowledgement; reconnect or layout readiness cannot substitute for successful display.

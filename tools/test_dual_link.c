@@ -14,6 +14,7 @@ static void pump(dual_link_t *a,dual_link_t *b,int count){
   if(auto_present&&nonzero(a->reading.book))assert(dl_presented(a,a->reading.revision));
   uint8_t p[DL_CONTROL_MAX];size_t n=dl_control_take(a,p,sizeof(p));
   if(n){reading_frames+=p[0]==2;orientation_frames+=p[0]==7;if(!dl_control_receive(b,p,n)){fprintf(stderr,"A->B rejected type=%u bytes=%zu clock=%lld\n",p[0],n,(long long)clock_ms);abort();}}
+  if(auto_present&&b->left_ready&&nonzero(b->reading.book)&&!b->reading.reflow_pending)assert(dl_presented(b,b->reading.revision));
   n=dl_control_take(b,p,sizeof(p));if(n&&!dl_control_receive(a,p,n)){fprintf(stderr,"B->A rejected type=%u bytes=%zu clock=%lld\n",p[0],n,(long long)clock_ms);abort();}
   usleep(100);
  }
@@ -21,7 +22,7 @@ static void pump(dual_link_t *a,dual_link_t *b,int count){
 static void write_book(const char *p,unsigned seed,unsigned bytes){FILE *f=fopen(p,"wb");assert(f);for(unsigned i=0;i<bytes;i++)fputc('a'+(i+seed)%26,f);assert(!fclose(f));}
 static bool test_progress_get(const char* path,uint32_t bytes,dl_book_progress_t* out,void* context){
     (void)path;(void)bytes;(void)context;
-    *out=(dl_book_progress_t){.started=true,.pct=42,.recent=77};
+    *out=(dl_book_progress_t){.started=true,.pct=42,.recent=0x12345678,.px=48,.chapter=2,.byte_off=900};
     return true;
 }
 static void synchronized(dual_link_t *a,dual_link_t *b){
@@ -30,22 +31,27 @@ static void synchronized(dual_link_t *a,dual_link_t *b){
 }
 static void progress_ack_test(dual_link_t *a,dual_link_t *b,const char *path,uint32_t bytes){
     a->cfg.progress_get=test_progress_get;
+    bool reading=a->reading_active,peer=a->peer_reading;
+    a->reading_active=a->peer_reading=false;
     for(unsigned i=0;i<a->count;i++)a->local[i].progress_loaded=false;
     a->progress_at=0;a->progress_dirty=true;a->current_progress_dirty=false;
     uint8_t packet[DL_CONTROL_MAX];bool sent=false;
     for(int i=0;i<100&&!sent;i++){
         size_t n=dl_control_take(a,packet,sizeof(packet));
-        if(n==38&&packet[0]==PROGRESS){assert(dl_control_receive(b,packet,n));sent=true;}
+        if(n==50&&packet[0]==PROGRESS){assert(dl_control_receive(b,packet,n));sent=true;}
         else if(n)assert(dl_control_receive(b,packet,n));
     }
     assert(sent);
+    uint8_t progress_ack[DL_CONTROL_MAX];size_t ack_n=dl_control_take(b,progress_ack,sizeof(progress_ack));
+    assert(ack_n==6&&progress_ack[0]==ACK&&progress_ack[1]==PROGRESS&&dl_control_receive(a,progress_ack,ack_n));
+    a->reading_active=reading;a->peer_reading=peer;
     dl_book_progress_t progress;
     int local=-1;
     for(unsigned i=0;i<b->count;i++)if(b->local[i].bytes==bytes&&!strcmp(path,b->local[i].path)){local=(int)i;break;}
     if(local<0){uint8_t id[32];memcpy(id,a->local[0].id,32);for(unsigned i=0;i<b->count;i++)if(same(id,b->local[i].id,32)){local=(int)i;break;}}
     assert(local>=0);
     assert(dl_book_progress(b,b->local[local].path,b->local[local].bytes,&progress));
-    assert(progress.started&&progress.pct==42&&progress.recent==77);
+    assert(progress.started&&progress.pct==42&&progress.recent==0x12345678&&progress.chapter==2&&progress.byte_off==900);
 
     assert(dl_annotation(a,1,2,3,4,"reliable annotation"));
     uint32_t seq=a->annotations[a->annotation_head].seq;
@@ -73,6 +79,36 @@ static void progress_ack_test(dual_link_t *a,dual_link_t *b,const char *path,uin
     assert(dl_control_receive(a,packet,n)&&!a->game_payload_pending);
     uint8_t received[4];assert(dl_game_packet_take(b,received,sizeof(received))==4&&!memcmp(received,state,4));
     puts("PASS: primary progress table, annotation retry/application ACK and game-state ACK");
+}
+typedef struct {dl_book_progress_t p;unsigned writes;} merge_store_t;
+static bool merge_get(const char* path,uint32_t bytes,dl_book_progress_t* out,void* context){
+    (void)path;(void)bytes;*out=((merge_store_t*)context)->p;return out->started;
+}
+static bool merge_set(const char* path,uint32_t bytes,const dl_book_progress_t* in,void* context){
+    (void)path;(void)bytes;merge_store_t* v=context;
+    if(progress_ahead(in,&v->p)){v->p=*in;v->writes++;}return true;
+}
+static void merged_open_test(dual_link_t* a,dual_link_t* b){
+    dl_reading_t old_a=a->reading,old_b=b->reading;
+    merge_store_t left={.p={.started=true,.pct=80,.recent=1,.chapter=1,.byte_off=900,.px=48}},
+                  right={.p={.started=true,.pct=25,.recent=0x12345678,.chapter=3,.byte_off=100,.px=64}};
+    a->cfg.progress_get=b->cfg.progress_get=merge_get;a->cfg.progress_set=b->cfg.progress_set=merge_set;
+    a->cfg.progress_context=&left;b->cfg.progress_context=&right;
+    const char* path=a->local[0].path;
+    dl_prepare_open_reset(a);assert(!dl_prepare_open(a,path));
+    for(int i=0;i<1000&&!dl_prepare_open(a,path);i++)pump(a,b,1);
+    assert(dl_prepare_open(a,path)&&left.p.chapter==3&&left.p.byte_off==100&&left.writes==1);
+    // 延迟重复回复不得再次写入，也不能按更高百分比回退章节。/ Duplicate replies neither rewrite nor replace a later chapter by a higher percentage.
+    pump(a,b,200);assert(left.p.chapter==3&&right.p.chapter==3&&left.writes==1);
+    assert(dl_open_at(a,path,7));pump(a,b,100);assert(dl_remote_open_take(b));
+    pump(a,b,100);assert(!dl_remote_open_pending(b));
+    assert(dl_open_at(a,path,7));pump(a,b,100);assert(dl_remote_open_take(b));
+    uint8_t malformed[46]={PROGRESS};assert(!dl_control_receive(a,malformed,38));
+    memset(a->progress,0,sizeof(a->progress));memset(b->progress,0,sizeof(b->progress));
+    a->cfg.progress_get=b->cfg.progress_get=NULL;a->cfg.progress_set=b->cfg.progress_set=NULL;
+    a->cfg.progress_context=b->cfg.progress_context=NULL;
+    a->reading=old_a;b->reading=old_b;a->open_revision=b->peer_open_revision=0;
+    puts("PASS: per-book pre-open exchange; later text anchor beats larger percentage/font page count; duplicate persistence; same-book explicit reopen and malformed frame");
 }
 static void scan_complete(dual_link_t *d){
     for(unsigned i=0;d->scan&&i<60000;i++)dl_tick(d,++clock_ms,false);
@@ -219,6 +255,78 @@ static void slow_orientation_test(dual_link_t *a,dual_link_t *b){
     tick_step=2;
     puts("PASS: 1000 ms ticks deliver reading and orientation fairly, including concurrent secondary requests without reflow");
 }
+static void relay_completion_test(dual_link_t *a,dual_link_t *b,const char *path){
+    auto_present=false;
+    assert(dl_open_path(a,path));pump(a,b,8);
+    uint32_t revision=a->reading.revision;
+    assert(!dl_release(b,revision)&&!dl_release(a,revision-1));
+    assert(dl_release(a,revision));pump(a,b,8);
+    assert(a->left_ready&&b->left_ready&&!a->display_flags&&!b->display_flags);
+    assert(!dl_turn(a,1)&&!dl_turn(b,-1));
+    // 右屏推屏完成前，不设完成位；任意等待不允许左屏越过接力。/ Without real right display completion, waiting cannot release the left.
+    clock_ms+=5000;pump(a,b,8);assert(!a->display_flags&&!b->display_flags);
+    assert(dl_presented(b,revision));b->catalog_dirty=false;b->control_sent=b->now;
+    uint8_t done[96],state[96];assert(dl_control_take(b,done,sizeof(done))==5&&done[0]==35);
+    assert(b->display_pending&&!a->display_flags); // 丢完成通知。/ Drop completion.
+    clock_ms+=151;dl_tick(b,clock_ms,false);
+    assert(dl_control_take(b,done,sizeof(done))==5&&dl_control_receive(a,done,5));
+    assert(a->display_flags==4&&!dl_turn(a,1));
+    uint32_t stable=a->reading.revision;
+    a->catalog_dirty=false;a->control_sent=a->now;
+    assert(dl_control_take(a,state,sizeof(state))==89&&state[81]==5);
+    // 丢确认后原revision重发；重复不会推进双页。/ Lost ACK retries the same revision; duplicates never advance a spread.
+    clock_ms+=151;dl_tick(b,clock_ms,false);
+    assert(dl_control_take(b,done,sizeof(done))==5&&dl_control_receive(a,done,5));
+    assert(a->reading.revision==stable&&dl_control_receive(b,state,89)&&!b->display_pending);
+    assert(dl_presented(a,revision));pump(a,b,8);
+    dl_status_t x,y;dl_status(a,&x);dl_status(b,&y);
+    assert(x.peer_presented&&y.peer_presented&&x.turn_ready&&y.turn_ready);
+    assert(dl_turn(a,1));pump(a,b,8);
+    assert(!a->left_ready&&!b->left_ready&&!a->display_flags&&!b->display_flags);
+    assert(dl_control_receive(a,done,5)&&!a->display_flags);
+    assert(dl_control_receive(b,state,89)&&!b->left_ready);
+    // 上一页由左屏完成后放右屏；半截/重试不自动当作成功。/ Previous releases right only after left completes, never after partial/failing display.
+    assert(dl_presented(a,a->reading.revision));pump(a,b,8);
+    assert(b->left_ready&&b->display_flags==2&&!dl_turn(a,-1)&&!dl_turn(b,1));
+    assert(dl_presented(b,b->reading.revision));pump(a,b,8);
+    assert(dl_turn(b,-1));pump(a,b,8);
+    assert(!a->left_ready&&!a->display_flags);
+    assert(dl_release(a,a->reading.revision));pump(a,b,8);
+    assert(dl_presented(b,b->reading.revision)&&b->display_pending);
+    radio=false;pump(a,b,1);
+    assert(!a->display_flags&&!b->display_flags&&!b->display_pending);
+    radio=true;synchronized(a,b);auto_present=true;pump(a,b,30);
+    assert(a->display_flags==6&&b->display_flags==6);
+    puts("PASS: revision-bound right/left relay; lost completion/ACK, duplicates, stale signals, busy input and disconnect reset");
+}
+static void early_relay_test(dual_link_t *a,dual_link_t *b,const char *path){
+ auto_present=false;assert(dl_open_path(a,path));pump(a,b,8);
+ uint32_t revision=a->reading.revision;uint8_t early[96],ack[96],done[96];dl_status_t x,y;
+ assert(!dl_relay_ready(b,revision)&&!dl_relay_ready(a,revision-1));
+ assert(dl_release(a,revision));pump(a,b,8);
+ assert(dl_relay_ready(b,revision));b->catalog_dirty=false;b->control_sent=b->now;
+ assert(dl_control_take(b,early,sizeof(early))==5&&early[0]==36);
+ assert(!a->display_flags);clock_ms+=151;dl_tick(b,clock_ms,false);
+ assert(dl_control_take(b,early,sizeof(early))==5&&dl_control_receive(a,early,5));
+ dl_status(a,&x);assert(x.relay_ready&&!x.peer_presented&&!x.turn_ready&&!dl_turn(a,1));
+ a->catalog_dirty=false;a->control_sent=a->now;
+ assert(dl_control_take(a,ack,sizeof(ack))==89&&ack[81]==9);
+ assert(dl_control_receive(b,ack,89)&&!b->display_pending);
+ assert(dl_presented(b,revision));b->catalog_dirty=false;b->control_sent=b->now;
+ assert(dl_control_take(b,done,sizeof(done))==5&&done[0]==35&&b->display_pending);
+ assert(dl_control_receive(b,ack,89)&&b->display_pending); // 早确认不能确认真正完成。/ Early ACK cannot acknowledge final completion.
+ assert(dl_control_receive(a,done,5));assert(dl_presented(a,revision));pump(a,b,8);
+ dl_status(a,&x);dl_status(b,&y);assert(x.turn_ready&&y.turn_ready&&x.peer_presented&&y.peer_presented);
+ assert(dl_turn(a,-1));pump(a,b,8);assert(!dl_relay_ready(b,revision));
+ assert(dl_control_receive(a,early,5)&&!a->display_flags);
+ revision=a->reading.revision;assert(dl_release(a,revision)&&dl_relay_ready(a,revision));pump(a,b,8);
+ dl_status(b,&y);assert(y.relay_ready&&!y.peer_presented&&!y.turn_ready&&!dl_turn(b,1));
+ assert(dl_presented(b,revision));pump(a,b,8);assert(!dl_turn(a,1));
+ assert(dl_presented(a,revision));pump(a,b,8);dl_status(a,&x);dl_status(b,&y);assert(x.turn_ready&&y.turn_ready);
+ radio=false;pump(a,b,1);dl_status(a,&x);dl_status(b,&y);assert(!x.relay_ready&&!y.relay_ready);
+ radio=true;synchronized(a,b);auto_present=true;wait_data_done(a,b);
+ puts("PASS: early relay is distinct from completion; dropped relay/ACK, stale revision, both roles and reconnect reset");
+}
 static void display_order_test(dual_link_t *a,dual_link_t *b,const char *path){
     auto_present=false;
     assert(dl_open_path(a,path));pump(a,b,8);
@@ -228,19 +336,21 @@ static void display_order_test(dual_link_t *a,dual_link_t *b,const char *path){
     assert(!dl_presented(a,a->reading.revision-1)&&!dl_presented(b,b->reading.revision));
     uint8_t prepare[DL_CONTROL_MAX],ready[DL_CONTROL_MAX],packet[DL_CONTROL_MAX];
     a->state_dirty=true;a->catalog_dirty=false;a->control_sent=a->now;
-    assert(dl_control_take(a,prepare,sizeof(prepare))==85&&!prepare[81]);
-    assert(!dl_control_receive(b,prepare,81));memcpy(packet,prepare,85);packet[81]=2;
-    assert(!dl_control_receive(b,packet,85));
+    assert(dl_control_take(a,prepare,sizeof(prepare))==89&&!prepare[81]);
+    assert(!dl_control_receive(b,prepare,81));memcpy(packet,prepare,89);packet[81]=8;
+    assert(!dl_control_receive(b,packet,89));
     // 老 BLE 协议和错误版本不能达成书库同步。/ Old BLE framing and incompatible versions cannot synchronize catalogs.
     uint8_t catalog[43]={1,1};memcpy(catalog+2,a->catalog,32);catalog[34]=CONTROL_VERSION;
-    assert(!dl_control_receive(b,catalog,42));catalog[34]=1;assert(!dl_control_receive(b,catalog,43));
+    assert(!dl_control_receive(b,catalog,42));catalog[34]=CONTROL_VERSION-1;assert(!dl_control_receive(b,catalog,43));
+    assert(!control_ready(b)&&b->error);
+    catalog[34]=CONTROL_VERSION;assert(dl_control_receive(b,catalog,43)&&control_ready(b)&&!b->error);
     assert(dl_presented(a,a->reading.revision));
-    assert(dl_control_take(a,ready,sizeof(ready))==85&&ready[81]);
+    assert(dl_control_take(a,ready,sizeof(ready))==89&&ready[81]);
     // 首个完成通知丢失时保持右屏，心跳重发后才放行；迟到准备帧不回退。
     // Drop the first completion: hold the right screen until heartbeat retry; a late prepare cannot revoke it.
     pump(a,b,30);assert(!b->left_ready);
     clock_ms+=1501;pump(a,b,8);assert(b->left_ready);
-    assert(dl_control_receive(b,prepare,85)&&b->left_ready);
+    assert(dl_control_receive(b,prepare,89)&&b->left_ready);
     // 从机跳页仅提交请求；没有主机推屏确认，等待超过一分钟也不得自动放行。
     // A secondary seek only requests a spread; even a minute cannot release it without primary presentation.
     uint32_t previous=b->reading.spread;assert(dl_seek(b,4)&&b->reading.spread==previous);
@@ -292,10 +402,10 @@ static void resize_test(dual_link_t *a,dual_link_t *b,const char *path){
     assert(!dl_open_path(a,dl_reading_path(a))&&!dl_open_path(b,dl_reading_path(b)));
     dl_total(a,3);assert(!a->reading.total&&a->reading.revision==revision&&a->reading.spread==4);
     a->state_dirty=true;a->catalog_dirty=false;a->control_sent=a->now;
-    assert(dl_control_take(a,prepare,sizeof(prepare))==85&&prepare[83]);
-    assert(!dl_control_receive(b,prepare,82));memcpy(bad,prepare,85);bad[81]=1;assert(!dl_control_receive(b,bad,85));
-    memcpy(bad,prepare,85);bad[82]=37;assert(!dl_control_receive(b,bad,85));
-    memcpy(bad,prepare,85);bad[84]=0;assert(!dl_control_receive(b,bad,85));
+    assert(dl_control_take(a,prepare,sizeof(prepare))==89&&prepare[83]);
+    assert(!dl_control_receive(b,prepare,82));memcpy(bad,prepare,89);bad[81]=1;assert(!dl_control_receive(b,bad,89));
+    memcpy(bad,prepare,89);bad[82]=37;assert(!dl_control_receive(b,bad,89));
+    memcpy(bad,prepare,89);bad[84]=0;assert(!dl_control_receive(b,bad,89));
     assert(!dl_reflow_resolved(b,revision,6)&&!dl_reflow_resolved(a,revision-1,6));
     assert(!dl_reflow_resolved(a,revision,5)&&!dl_reflow_resolved(a,revision,UINT32_MAX-1));
     // 中途断线保留旧页和旧字号锚点信息；重排完成后独立版本拒绝迟到准备帧。
@@ -304,7 +414,7 @@ static void resize_test(dual_link_t *a,dual_link_t *b,const char *path){
     assert(a->reading.reflow_pending&&b->reading.reflow_pending&&!a->left_ready&&!b->left_ready);
     assert(dl_reflow_resolved(a,revision,6)&&a->reading.revision!=revision&&!a->reading.reflow_pending&&!a->left_ready);
     pump(a,b,8);assert(b->reading.spread==6&&b->reading.font_px==52&&!b->reading.reflow_pending&&!b->left_ready);
-    assert(dl_control_receive(b,prepare,85)&&b->reading.spread==6&&!b->reading.reflow_pending);
+    assert(dl_control_receive(b,prepare,89)&&b->reading.spread==6&&!b->reading.reflow_pending);
     assert(!dl_presented(a,revision)&&dl_presented(a,a->reading.revision));pump(a,b,8);assert(b->left_ready);
     // 主机发起也进入同一流程；新开书取消旧重排并沿用共享字号。
     // Primary resizing follows the same flow; opening another book cancels old reflow while retaining shared size.
@@ -452,6 +562,7 @@ int main(void){
     dual_link_t *a=dl_create(&ac),*b=dl_create(&bc);assert(a&&b);synchronized(a,b);
     assert(a->count==2&&b->count==2&&a->imports==1&&b->imports==1);
     progress_ack_test(a,b,a->local[0].path,a->local[0].bytes);
+    merged_open_test(a,b);
     orientation_test(a,b);
     assert(dl_open_path(b,bp));pump(a,b,80);assert(a->reading.revision==b->reading.revision&&same(a->reading.book,b->reading.book,32));assert(dl_reading_path(a)&&dl_reading_path(b));
     assert(dl_turn(b,1));pump(a,b,80);assert(a->reading.spread==2&&b->reading.spread==2);
@@ -470,15 +581,16 @@ int main(void){
     assert(dl_turn(a,1));a->catalog_dirty=false;a->control_sent=a->now;
     uint8_t lost_state[DL_CONTROL_MAX],retry[DL_CONTROL_MAX];
     assert(dl_presented(a,a->reading.revision));
-    assert(dl_control_take(a,lost_state,sizeof(lost_state))==85);
+    assert(dl_control_take(a,lost_state,sizeof(lost_state))==89);
     assert(a->reading.revision!=b->reading.revision);
     clock_ms+=1501;dl_tick(a,clock_ms,false);dl_tick(b,clock_ms,false);
     assert(dl_control_take(a,retry,sizeof(retry))==43&&dl_control_receive(b,retry,43));
     assert(dl_control_take(a,retry,sizeof(retry))==10&&retry[0]==7&&dl_control_receive(b,retry,10));
-    assert(dl_control_take(a,retry,sizeof(retry))==85&&dl_control_receive(b,retry,85));
+    assert(dl_control_take(a,retry,sizeof(retry))==89&&dl_control_receive(b,retry,89));
     assert(a->reading.revision==b->reading.revision&&b->reading.spread==2);
+    assert(!dl_turn(a,-1));pump(a,b,8);
     assert(dl_turn(a,-1));pump(a,b,80);uint32_t latest=b->reading.revision;
-    assert(dl_control_receive(b,lost_state,85)&&b->reading.revision==latest&&!b->reading.spread);
+    assert(dl_control_receive(b,lost_state,89)&&b->reading.revision==latest&&!b->reading.spread);
     assert(dl_turn(b,1));int64_t started=b->request_started;
     for(int i=0;i<21;i++){clock_ms+=500;dl_tick(b,clock_ms,false);(void)dl_control_take(b,retry,sizeof(retry));}
     assert(!b->request_pending&&b->request_started==started&&!a->reading.spread);
@@ -493,6 +605,8 @@ int main(void){
         for(int i=0;i<12000&&(!a->authenticated||!b->authenticated||!a->done||!b->done);i++)pump(a,b,1);
         assert(a->authenticated&&b->authenticated&&a->done&&b->done);
     }
+    relay_completion_test(a,b,ap);
+    early_relay_test(a,b,ap);
     display_order_test(a,b,ap);
     resize_test(a,b,ap);
     slow_orientation_test(a,b);

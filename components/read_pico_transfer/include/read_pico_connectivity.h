@@ -81,6 +81,7 @@ bool read_pico_connectivity_online(void);
 typedef struct {
     bool online; ///< 已取得 IP 且未挂起 / IP acquired and not suspended
     char ssid[33]; ///< 当前 STA 的 SSID / Current STA SSID
+    int8_t rssi; ///< 当前信号，离线为0 / Current signal, zero offline
 } read_pico_connectivity_link_t;
 void read_pico_connectivity_get_link(read_pico_connectivity_link_t *out);
 /// 小型电源生命周期快照，避免在UI栈上分配完整扫描列表。/ Compact power-lifecycle snapshot without allocating the full scan list on the UI stack.

@@ -102,6 +102,7 @@ void read_pico_connectivity_get_link(read_pico_connectivity_link_t *out) {
     if (!out) return;
     portENTER_CRITICAL(&c_lock);
     out->online = c_status.connected && !c_status.suspended;
+    out->rssi = out->online ? c_status.rssi : 0;
     memcpy(out->ssid, c_status.ssid, sizeof(out->ssid));
     portEXIT_CRITICAL(&c_lock);
     out->ssid[sizeof(out->ssid) - 1] = 0;

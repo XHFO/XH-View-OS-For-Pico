@@ -7,9 +7,10 @@
  * The phone portal and the Mac manage page share the PGA store. While the portal is open, neither the device keyboard nor Mac saves.
  */
 #include "pico_app_sdk.h"
+#include "pico_app_switch.h"
 #include "../../main/system/pico_scroll.h"
 
-enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10109 };
+enum { HOME_LINK_KIND = 130, HOME_LINK_VERSION = 10111 };
 enum { PAGE_MONITOR, PAGE_SETUP, PAGE_DEVICES, PAGE_ROOMS };
 
 static const pico_app_host_t *host;
@@ -26,7 +27,7 @@ static int draft_kind; /* 0 local 1 external 2 token 3 cf_id 4 cf_secret 5 wifi 
 
 /* 卡片面板：类型筛选与拖拽顺序按实体 id 哈希保存，同步后索引变化不会打乱。
  * Card panel: type filter and drag order persist by entity-id hash, so sync reindexing is safe. */
-#define HLC_MAX 64u
+#define HLC_MAX 96u
 #define HLC_UI_MAGIC 0x484C4331u
 typedef struct {
     uint32_t magic, version;
@@ -38,7 +39,7 @@ typedef struct {
 typedef struct {
     uint32_t hash;
     char id[96], name[64], state[48], unit[12], room[32];
-    uint8_t kind, available, on;
+    uint8_t kind, available, on,brightness,dimmable,hvac_modes;
     float number;
 } hlc_ent_t;
 static hlc_ui_t cards;
@@ -51,6 +52,14 @@ static uint32_t room_selection;
 static unsigned room_page,room_return;
 static char room_message[96];
 static int64_t room_poll_us;
+static pico_app_home_catalog_t catalog;
+static pico_app_home_selection_t selection,selection_submit;
+static int brightness_slot=-1,brightness_value,mode_slot=-1;
+static int switch_slot=-1,switch_x,switch_y,switch_left,switch_top;
+static bool switch_on,switch_suppress;
+static char switch_id[96];
+static bool control_suppress,selection_migrated;
+static int64_t catalog_poll_us,sync_due_us;
 static unsigned cache_count;
 static uint32_t cache_revision;
 static int drag_from = -1, drag_to = -1;
@@ -71,6 +80,15 @@ static bool has_home(void) {
 static bool has_rooms(void){
     return host->bytes>=offsetof(pico_app_host_t,home_rooms)+sizeof(host->home_rooms)&&host->home_rooms;
 }
+static bool hl_same(const char *,const char *);
+static bool has_selection(void){return host->bytes>=offsetof(pico_app_host_t,home_selection)+sizeof(host->home_selection)&&host->home_selection&&host->home_catalog;}
+static void catalog_scan(unsigned offset){
+    if(!has_selection())return;
+    catalog.bytes=sizeof(catalog);catalog.offset=offset;
+    if(!host->home_catalog(PGA_CATALOG_SCAN,&catalog))host->toast("目录正在获取，请稍候");
+}
+static void selection_get(void){selection.bytes=sizeof(selection);if(has_selection())(void)host->home_selection(PGA_SELECTION_GET,&selection);}
+static int selected_at(const char *id){for(unsigned i=0;i<selection.count;i++)if(hl_same(selection.ids[i],id))return (int)i;return -1;}
 static void rooms_refresh(void){
     if(!has_rooms())return;
     uint32_t revision=rooms.revision;bool busy=rooms.busy;
@@ -104,6 +122,12 @@ static void cards_load(void) {
         cards.type_filter &= 0x3fu;
         if (cards.order_count > HLC_MAX) cards.order_count = (uint8_t)HLC_MAX;
     } else {
+        // 旧64项布局按原长度读取，保留筛选和顺序。/ Read the legacy 64-item record at its original size.
+        struct {uint32_t magic,version;uint8_t type_filter,order_count;uint16_t reserved;uint32_t order[64];} old;
+        host->set(&old,0,sizeof(old));
+        if(host->load&&host->load("homecards1",&old,sizeof(old))&&old.magic==HLC_UI_MAGIC&&old.version==1&&old.order_count<=64){
+            host->set(&cards,0,sizeof(cards));host->copy(&cards,&old,sizeof(old));cards.type_filter&=0x3fu;return;
+        }
         host->set(&cards, 0, sizeof(cards));
         cards.magic = HLC_UI_MAGIC;
         cards.version = 1;
@@ -116,6 +140,7 @@ static void cards_save(void) {
 
 // 实体缓存只在状态修订号变化时读取；render 不调用宿主服务。
 // The entity cache is filled only when the status revision changes; render calls no host service.
+static void migrate_selection(void);
 static void refresh_cache(void) {
     unsigned count = 0;
     if (has_home()) {
@@ -140,12 +165,18 @@ static void refresh_cache(void) {
             d->kind = e.kind;
             d->available = e.available;
             d->on = e.on;
-            d->number = e.number;
+            d->number = e.number;d->brightness=e.brightness;d->dimmable=e.dimmable;d->hvac_modes=e.hvac_modes;
             count++;
         }
     }
     cache_count = count;
     cache_revision = status.revision;
+    if(has_selection()&&page!=PAGE_DEVICES){
+        selection_get();
+        if(!selection.configured&&!selection_migrated&&status.result==2&&cache_count)migrate_selection();
+        if(selection.configured){cards.order_count=(uint8_t)selection.count;hidden.count=0;
+            for(unsigned i=0;i<selection.count;i++)cards.order[i]=card_hash(selection.ids[i]);}
+    }
 }
 
 // 只保存本机显示选择，不删除 HA 实体；草稿失败或取消时保留当前配置。
@@ -156,11 +187,17 @@ static bool excluded(const hidden_t *prefs,uint32_t hash){
 }
 static void hidden_load(void){
     host->set(&hidden,0,sizeof(hidden));
-    if(!host->load||!host->load("homehidden1",&hidden,sizeof(hidden))||hidden.magic!=0x48484431u||hidden.count>HLC_MAX)
-        host->set(&hidden,0,sizeof(hidden));
+    if(!host->load||!host->load("homehidden1",&hidden,sizeof(hidden))||hidden.magic!=0x48484431u||hidden.count>HLC_MAX){
+        struct {uint32_t magic,count,hashes[64];} old;host->set(&old,0,sizeof(old));host->set(&hidden,0,sizeof(hidden));
+        if(host->load&&host->load("homehidden1",&old,sizeof(old))&&old.magic==0x48484431u&&old.count<=64)host->copy(&hidden,&old,sizeof(old));
+    }
     hidden.magic=0x48484431u;
 }
-static void manage_begin(void){hidden_draft=hidden;manage_page=0;page=PAGE_DEVICES;host->dirty();}
+static void manage_begin(void){
+    hidden_draft=hidden;manage_page=0;page=PAGE_DEVICES;
+    if(has_selection()){selection_get();host->set(&catalog,0,sizeof(catalog));catalog_scan(0);}
+    host->dirty();
+}
 static void visibility_toggle(uint32_t hash){
     for(unsigned i=0;i<hidden_draft.count;i++)if(hidden_draft.hashes[i]==hash){
         for(unsigned j=i+1;j<hidden_draft.count;j++)hidden_draft.hashes[j-1]=hidden_draft.hashes[j];
@@ -231,8 +268,8 @@ static const struct { const char *label; uint8_t mask; } card_chips[] = {
 };
 #define CARD_CHIP_COUNT ((int)(sizeof(card_chips) / sizeof(card_chips[0])))
 
-static int card_columns(pico_app_view_t v) { return v.landscape ? 3 : 2; }
-static int card_rows(pico_app_view_t v) { return v.landscape ? 2 : 3; }
+static int card_columns(pico_app_view_t v) { (void)v;return 2; }
+static int card_rows(pico_app_view_t v) { return v.landscape ? 1 : 3; }
 static int cards_per_page(pico_app_view_t v) { return card_columns(v) * card_rows(v); }
 static int card_top(pico_app_view_t v) { return v.landscape ? 150 : 160; }
 
@@ -278,28 +315,46 @@ static void draw_header(uint8_t *fb, int visible, int pages) {
     }
 }
 
+// 首次迁移只提交当前已显示实体，复用旧隐藏与排序。/ Migrate visible entities once, preserving legacy visibility and order.
+static void migrate_selection(void){
+    int idx[HLC_MAX],n=0;sorted_all(idx,&n);selection_submit=selection;selection_submit.count=0;
+    for(int i=0;i<n;i++)if(!excluded(&hidden,cache[idx[i]].hash))host->copy(selection_submit.ids[selection_submit.count++],cache[idx[i]].id,96);
+    if(host->home_selection(PGA_SELECTION_SET,&selection_submit)){selection_migrated=true;selection=selection_submit;need_sync=true;}
+}
+
 static int action_y(int y,int h){return y+h-(h<100?34:54);}
 static void draw_card(uint8_t *fb,int x,int y,int w,int h,const hlc_ent_t *e,int display_index){
     bool small=h<100,avail=e->available,sensor=e->kind>=4;
     host->box(fb,x,y,w,h,10,avail?(e->on?14:15):14,true);
     host->box(fb,x,y,w,h,10,avail?3:10,false);
-    host->wrap(fb,x+10,y+8,w-20,13,small?1:2,e->name[0]?e->name:e->id,1);
+    host->wrap(fb,x+10,y+8,w-20,13,1,e->name[0]?e->name:e->id,1);
     char value[64];
     if(!avail)host->format(value,sizeof(value),"不可用");
     else if(e->kind>=4)host->format(value,sizeof(value),"%s %s",e->state[0]?e->state:"--",e->unit);
     else if(e->kind==2)host->format(value,sizeof(value),"%.0f°",e->number);
     else host->format(value,sizeof(value),"%s",state_label(e->state));
-    if(!small)host->text(fb,x+10,y+46,22,value,avail?1:5);
-    else if(sensor)host->wrap(fb,x+10,y+32,w-20,15,1,value,avail?1:5);
-    else host->wrap(fb,x+10,y+32,e->kind==2?36:w-80,13,1,value,avail?1:5);
+    if(!(e->kind==0&&e->dimmable)){
+        if(!small)host->text(fb,x+10,y+46,22,value,avail?1:5);
+        else if(sensor)host->wrap(fb,x+10,y+32,w-20,15,1,value,avail?1:5);
+        else host->wrap(fb,x+10,y+32,e->kind==2?36:w-80,13,1,value,avail?1:5);
+    }
     int cy=action_y(y,h);
     if(avail&&!sensor){
         if(e->kind==2){
             host->button(fb,x+(small?w-136:10),cy,30,28,"-",false);
             host->button(fb,x+(small?w-100:46),cy,30,28,"+",false);
         }
-        host->button(fb,x+w-64,cy,54,28,e->on?"关闭":"开启",false);
     }
+    if(!sensor)pico_switch_draw(fb,x+w-60,cy+1,48,26,e->on,avail,host->box);
+    if(e->kind==0&&e->dimmable){
+        int value=brightness_slot==display_index?brightness_value:(int)e->brightness*100/255;
+        int sy=y+h-78;char label[24];host->format(label,sizeof(label),"亮度 %d%%",value);
+        host->text(fb,x+10,sy-14,10,label,avail?3:8);
+        host->box(fb,x+12,sy+7,w-24,4,2,11,true);
+        if(value)host->box(fb,x+12,sy+7,(w-24)*value/100,4,2,3,true);
+        host->box(fb,x+8+(w-24)*value/100,sy+3,8,12,4,avail?2:8,true);
+    }
+    if(e->kind==2&&e->hvac_modes)host->button(fb,x+w-62,y+43,52,28,"模式",false);
     if(!small)host->wrap(fb,x+10,y+h-20,w-20,10,1,e->room[0]?e->room:(sensor?"只读传感器":"长按拖动排序"),5);
     if(display_index==drag_from||display_index==drag_to)host->box(fb,x-2,y-2,w+4,h+4,11,1,false);
 }
@@ -316,7 +371,7 @@ static int card_at(pico_app_view_t v, int px, int py) {
     return -1;
 }
 
-static void move_hash(uint32_t from_hash, uint32_t to_hash) {
+static bool move_hash(uint32_t from_hash, uint32_t to_hash) {
     int all_idx[HLC_MAX], n = 0;
     sorted_all(all_idx, &n);
     int from = -1, to = -1;
@@ -324,16 +379,22 @@ static void move_hash(uint32_t from_hash, uint32_t to_hash) {
         if (cache[all_idx[i]].hash == from_hash) from = i;
         if (cache[all_idx[i]].hash == to_hash) to = i;
     }
-    if (from < 0 || to < 0 || from == to) return;
+    if (from < 0 || to < 0 || from == to) return false;
     int moved = all_idx[from];
     if (from < to)
         for (int i = from; i < to; i++) all_idx[i] = all_idx[i + 1];
     else
         for (int i = from; i > to; i--) all_idx[i] = all_idx[i - 1];
     all_idx[to] = moved;
+    if(has_selection()){
+        selection_get();selection_submit=selection;selection_submit.count=(uint32_t)n;
+        for(int i=0;i<n;i++)host->copy(selection_submit.ids[i],cache[all_idx[i]].id,96);
+        if(!host->home_selection(PGA_SELECTION_SET,&selection_submit)){host->toast("顺序保存失败，请重试");return false;}
+        if(selection_submit.pending)return true;
+    }
     cards.order_count = (uint8_t)n;
     for (int i = 0; i < n; i++) cards.order[i] = cache[all_idx[i]].hash;
-    cards_save();
+    cards_save();return true;
 }
 
 static void commit_drag(void) {
@@ -344,8 +405,7 @@ static void commit_drag(void) {
         int disp[HLC_MAX], n = 0;
         build_display(disp, &n, false);
         if (from < n && to < n) {
-            move_hash(cache[disp[from]].hash, cache[disp[to]].hash);
-            host->toast("卡片顺序已保存");
+            if(move_hash(cache[disp[from]].hash,cache[disp[to]].hash))host->toast(selection_submit.pending?"顺序草稿已保存，等待主机确认":"卡片顺序已保存");
         }
     }
     host->dirty();
@@ -359,6 +419,8 @@ static bool monitor_drag_event(const pico_app_event_t *e) {
         if (drag_from >= 0) return true;
         int slot = card_at(host->view(), e->x, e->y);
         if (slot < 0) return false;
+        int x,y,w,h;card_rect(host->view(),slot-(int)(entity_page*cards_per_page(host->view())),&x,&y,&w,&h);
+        if(e->y>=y+40)return true;
         drag_from = drag_to = slot;
         drag_suppress_tap = false;
         host->toast("拖动到目标卡片后松手");
@@ -430,7 +492,7 @@ static void request_sync(void) {
     }
     status.bytes = sizeof(status);
     if(!host->home_link(PGA_HOME_SYNC, &status))host->toast(status.error[0]?status.error:"暂时无法同步");
-    need_sync = false;
+    need_sync = false;sync_due_us=(host->time_us?host->time_us():0)+30000000;
     host->dirty();
 }
 
@@ -468,7 +530,7 @@ static bool save_config(void) {
     bool ok = host->home_link_config(PGA_HOME_CONFIG_SET, &submitted);
     host->set(&submitted, 0, sizeof(submitted));
     if (ok) {
-        host->toast(hl("settings.home_link.saved_toast", "已保存到设备"));
+        refresh_status();host->toast(status.flags&PGA_HOME_PENDING?"已保存草稿，等待主机确认":hl("settings.home_link.saved_toast", "已保存到设备"));
         need_sync = true;
         load_config();
         request_sync();
@@ -509,7 +571,7 @@ static bool start(const pico_app_host_t *h) {
     if (!h || h->abi != PICO_APP_ABI || h->bytes < PICO_APP_HOST_V1_BYTES || !h->view || !h->text || !h->wrap ||
         !h->heading || !h->button || !h->fill || !h->toast || !h->navigate || !h->copy || !h->set || !h->format)
         return false;
-    host = h;
+    host = h;brightness_slot=mode_slot=switch_slot=-1;switch_suppress=false;control_suppress=selection_migrated=false;sync_due_us=0;
     page = PAGE_MONITOR;
     entity_page = setup_field = 0;
     host->set(&entity_scroll, 0, sizeof(entity_scroll));
@@ -618,8 +680,11 @@ static void render_setup(uint8_t *fb) {
     const char *flags[]={"启用","外部","外控"};
     for(unsigned i=0;i<3;i++){
         bool on=i==0?config.enabled:i==1?config.external_enabled:config.external_control;
-        host->format(line,sizeof(line),"%s：%s",flags[i],on?"开":"关");
-        host->button(fb,16+(int)i*(bw+8),y,bw,v.landscape?26:40,line,false);
+        int sx=16+(int)i*(bw+8),sh=v.landscape?26:40;
+        host->box(fb,sx,y,bw,sh,8,15,true);
+        host->box(fb,sx,y,bw,sh,8,12,false);
+        host->text(fb,sx+6,y+(sh-16)/2,10,flags[i],1);
+        pico_switch_draw(fb,sx+bw-40,y+(sh-20)/2,34,20,on,true,host->box);
     }
     host->button(fb, 16, v.h - 56, bw, 40, hl("settings.home_link.phone_fill", "手机填写"), false);
     host->button(fb, 24 + bw, v.h - 56, bw, 40, hl("settings.home_link.save", "保存"), false);
@@ -632,7 +697,31 @@ static void manage_rect(pico_app_view_t v,unsigned i,int *x,int *y,int *w){
     *x=16+(v.landscape?(int)(i%2)*(*w+8):0);
     *y=(v.landscape?118:164)+(int)(v.landscape?i/2:i)*46;
 }
+static const pico_app_home_entity_t *catalog_item(unsigned index){
+    return !catalog.busy&&index>=catalog.offset&&index-catalog.offset<catalog.count?&catalog.items[index-catalog.offset]:NULL;
+}
+static void render_catalog(uint8_t *fb){
+    pico_app_view_t v=host->view();host->fill(fb,0,0,v.w,v.h,15);
+    host->heading(fb,"添加与管理设备",v.landscape?NULL:"分页浏览全部目录，仅缓存选中的控制卡片");
+    unsigned per=manage_per(v),pages=catalog.total?(catalog.total+per-1)/per:1;
+    char text[128];host->format(text,sizeof(text),"已选 %u/96 · 目录 %u 项 · %u/%u 页",selection.count,catalog.total,manage_page+1,pages);
+    host->text(fb,20,v.landscape?88:124,11,text,5);
+    if(catalog.busy||!catalog.total)host->wrap(fb,24,v.landscape?140:224,v.w-48,13,3,catalog.busy?"正在获取本页设备…":catalog.error[0]?catalog.error:"该范围没有可添加的实体，请选择房间",5);
+    for(unsigned i=0;i<per;i++){
+        const pico_app_home_entity_t *e=catalog_item(manage_page*per+i);if(!e)continue;
+        bool checked=selected_at(e->id)>=0;int x,y,w;manage_rect(v,i,&x,&y,&w);
+        host->box(fb,x,y,w,40,7,checked?14:15,true);host->box(fb,x,y,w,40,7,10,false);
+        host->box(fb,x+10,y+12,16,16,3,checked?2:10,checked);
+        if(checked){host->line(fb,x+13,y+20,x+17,y+24,15);host->line(fb,x+17,y+24,x+23,y+16,15);}
+        host->wrap(fb,x+36,y+8,w-48,12,1,e->name[0]?e->name:e->id,1);
+        host->wrap(fb,x+36,y+25,w-48,9,1,e->room[0]?e->room:e->id,5);
+    }
+    int bw=(v.w-48)/3;host->button(fb,16,v.h-56,bw,40,"取消",false);
+    host->button(fb,24+bw,v.h-56,bw,40,"选择房间",false);
+    host->button(fb,32+2*bw,v.h-56,bw,40,"保存选择",false);
+}
 static void render_devices(uint8_t *fb){
+    if(has_selection()){render_catalog(fb);return;}
     pico_app_view_t v=host->view();host->fill(fb,0,0,v.w,v.h,15);
     host->heading(fb,"添加与管理设备",v.landscape?NULL:"勾选在本机显示的设备，不删除 HA 中的实体");
     unsigned per=manage_per(v),pages=cache_count?(cache_count+per-1)/per:1;
@@ -662,8 +751,8 @@ static void render_rooms(uint8_t *fb){
     host->heading(fb,"选择同步房间",v.landscape?NULL:"只同步勾选房间的设备，取消保留原范围");
     unsigned per=manage_per(v),pages=rooms.count?(rooms.count+per-1)/per:1;
     if(room_page>=pages)room_page=pages-1;
-    char line[128];host->format(line,sizeof(line),"已选 %u / 64 项 · %u/%u 页 · 仅同步勾选房间",rooms_total(),room_page+1,pages);
-    host->text(fb,20,v.landscape?88:124,11,line,rooms_total()>64?1:5);
+    char line[128];host->format(line,sizeof(line),"范围 %u 项 · %u/%u 页 · 下一步选择控制卡片",rooms_total(),room_page+1,pages);
+    host->text(fb,20,v.landscape?88:124,11,line,5);
     if(!rooms.count)host->wrap(fb,24,v.landscape?140:224,v.w-48,13,3,
         rooms.busy?"正在获取房间与设备数量…":rooms.error[0]?rooms.error:"没有可同步的房间，请检查 HA 连接和设备所属房间。",5);
     for(unsigned i=0;i<per&&room_page*per+i<rooms.count;i++){
@@ -680,14 +769,16 @@ static void render_rooms(uint8_t *fb){
     int bw=(v.w-48)/3;
     host->button(fb,16,v.h-56,bw,40,"取消",false);
     host->button(fb,24+bw,v.h-56,bw,40,rooms.busy?"获取中":"重新获取",false);
-    host->button(fb,32+2*bw,v.h-56,bw,40,"保存并同步",!rooms.busy&&rooms.result==2&&rooms_total()<=64);
+    host->button(fb,32+2*bw,v.h-56,bw,40,"保存并同步",!rooms.busy&&rooms.result==2);
 }
 
+static void render_mode(uint8_t *fb);
 static void render(uint8_t *fb) {
     if (page == PAGE_SETUP) render_setup(fb);
     else if (page == PAGE_DEVICES) render_devices(fb);
     else if (page == PAGE_ROOMS) render_rooms(fb);
     else render_monitor(fb);
+    render_mode(fb);
 }
 
 static bool hit_bottom3(const pico_app_event_t *e, int which) {
@@ -857,8 +948,139 @@ static bool monitor_scroll(const pico_app_event_t *e) {
     return true;
 }
 
+static bool catalog_event(const pico_app_event_t *e){
+    pico_app_view_t v=host->view();unsigned per=manage_per(v),pages=catalog.total?(catalog.total+per-1)/per:1;
+    if(e->type==PGA_SWIPE_L||e->type==PGA_SWIPE_R){
+        if(catalog.busy)return true;
+        if(e->type==PGA_SWIPE_L&&manage_page+1<pages)manage_page++;
+        else if(e->type==PGA_SWIPE_R&&manage_page)manage_page--;
+        unsigned offset=(manage_page*per/24)*24;
+        if(offset!=catalog.offset)catalog_scan(offset);
+        host->dirty();return true;
+    }
+    if(e->type!=PGA_TAP)return false;
+    if(hit_bottom3(e,0)){page=PAGE_MONITOR;host->dirty();return true;}
+    if(hit_bottom3(e,1)){rooms_begin();return true;}
+    if(hit_bottom3(e,2)){
+        selection_submit=selection;
+        if(host->home_selection(PGA_SELECTION_SET,&selection_submit)){
+            hidden.count=0;page=PAGE_MONITOR;entity_page=0;request_sync();host->dirty();
+            host->toast(selection_submit.pending?"已保存草稿，等待主机确认":"已保存控制卡片");
+        }else host->toast(selection_submit.error[0]?selection_submit.error:"保存失败，选择草稿已保留");
+        return true;
+    }
+    for(unsigned i=0;i<per;i++){
+        const pico_app_home_entity_t *ent=catalog_item(manage_page*per+i);if(!ent)continue;
+        int x,y,w;manage_rect(v,i,&x,&y,&w);
+        if(e->x>=x&&e->x<x+w&&e->y>=y&&e->y<y+40){
+            int at=selected_at(ent->id);
+            if(at>=0){for(unsigned j=(unsigned)at+1;j<selection.count;j++)host->copy(selection.ids[j-1],selection.ids[j],96);selection.count--;}
+            else if(selection.count>=96)host->toast("最多选择96项，请先取消其他卡片");
+            else host->copy(selection.ids[selection.count++],ent->id,96);
+            host->dirty();return true;
+        }
+    }
+    return false;
+}
+static const char *mode_names[]={"off","heat","cool","heat_cool","auto","dry","fan_only"};
+static const char *mode_labels[]={"关闭","制热","制冷","冷热自动","自动","除湿","送风"};
+static void render_mode(uint8_t *fb){
+    if(mode_slot<0||(unsigned)mode_slot>=cache_count)return;
+    pico_app_view_t v=host->view();hlc_ent_t *ent=&cache[mode_slot];
+    int x=(v.w-280)/2,y=v.landscape?24:130,h=v.landscape?312:390;
+    host->fill(fb,0,0,v.w,v.h,13);host->box(fb,x,y,280,h,12,15,true);host->box(fb,x,y,280,h,12,3,false);
+    host->text(fb,x+16,y+16,17,"空调模式",1);
+    int row=0;for(unsigned i=0;i<7;i++)if(ent->hvac_modes&(1u<<i)){
+        int rh=v.landscape?25:38;host->button(fb,x+16,y+48+row*(rh+3),248,rh,mode_labels[i],hl_same(ent->state,mode_names[i]));row++;
+    }
+    host->button(fb,x+16,y+h-44,248,32,"取消",false);
+}
+// 滑杆接触先于排序与翻页处理；抬手才发送一次服务请求。/ Sliders precede sorting/paging and submit only once on lift.
+static bool control_event(const pico_app_event_t *e){
+    if(page!=PAGE_MONITOR)return false;
+    if(mode_slot>=0){
+        if(e->type==PGA_CANCEL){mode_slot=-1;host->dirty();return true;}
+        if(e->type!=PGA_TAP)return true;
+        pico_app_view_t v=host->view();int x=(v.w-280)/2,y=v.landscape?24:130,row=0,selected=-1;
+        hlc_ent_t *ent=&cache[mode_slot];
+        for(unsigned i=0;i<7;i++)if(ent->hvac_modes&(1u<<i)){
+            int rh=v.landscape?25:38,ry=y+48+row*(rh+3);
+            if(e->x>=x+16&&e->x<x+264&&e->y>=ry&&e->y<ry+rh)selected=(int)i;
+            row++;
+        }
+        if(selected>=0){bool ok=host->home_link_control(ent->id,"set_hvac_mode",(float)selected);host->toast(ok?"已提交模式，等待设备确认":"模式提交失败");}
+        mode_slot=-1;host->dirty();return true;
+    }
+    if(control_suppress){if(e->type==PGA_PRESS)control_suppress=false;else return true;}
+    int disp[HLC_MAX],n=0;build_display(disp,&n,false);
+    int slot=brightness_slot>=0?brightness_slot:card_at(host->view(),e->x,e->y);
+    if(slot<0||slot>=n)return false;
+    int index=disp[slot],x,y,w,h;hlc_ent_t *ent=&cache[index];
+    card_rect(host->view(),slot-(int)(entity_page*cards_per_page(host->view())),&x,&y,&w,&h);
+    if(ent->kind==2&&ent->hvac_modes&&e->type==PGA_TAP&&e->x>=x+w-62&&e->y>=y+43&&e->y<y+71){mode_slot=index;host->dirty();return true;}
+    bool slider=ent->kind==0&&ent->dimmable&&ent->available&&e->x>=x+6&&e->x<x+w-6&&e->y>=y+h-92&&e->y<y+h-56;
+    if(brightness_slot<0&&(!slider||(e->type!=PGA_PRESS&&e->type!=PGA_TAP)))return false;
+    if(e->type==PGA_CANCEL){brightness_slot=-1;control_suppress=true;host->dirty();return true;}
+    if(e->type==PGA_PRESS||e->type==PGA_MOVE||e->type==PGA_RELEASE||e->type==PGA_TAP){
+        brightness_slot=slot;int value=(e->x-x-12)*100/(w-24);if(value<0)value=0;if(value>100)value=100;
+        if(value!=brightness_value){brightness_value=value;host->dirty();}
+        if(e->type==PGA_RELEASE||e->type==PGA_TAP){
+            bool ok=host->home_link_control(ent->id,"set_brightness",(float)value);
+            brightness_slot=-1;control_suppress=true;host->toast(ok?"已提交亮度，等待设备确认":"亮度提交失败");host->dirty();
+        }
+        return true;
+    }
+    return true;
+}
+// Capture only the switch itself; never let its drag page or reorder cards.
+// Commit once on release, without optimistic HA state changes or animated EPD redraws.
+static bool switch_event(const pico_app_event_t *e){
+    if(e->type==PGA_PRESS)switch_suppress=false;
+    else if(switch_suppress)return true;
+    if(switch_slot>=0){
+        if(e->type==PGA_RELEASE){
+            int dx=e->x-switch_x,dy=e->y-switch_y;bool next=dx>=8?true:dx<=-8?false:!switch_on;
+            bool valid=(dy<0?-dy:dy)<=24&&(dx>=8||dx<=-8||(e->x>=switch_left&&e->x<switch_left+54&&e->y>=switch_top&&e->y<switch_top+28));
+            if(valid){
+                if(switch_slot>=100){
+                    if(switch_slot==100)config.enabled=next;
+                    else if(switch_slot==101)config.external_enabled=next;
+                    else config.external_control=next;
+                    host->dirty();
+                }else if(next!=switch_on){
+                    bool ok=host->home_link_control(switch_id,next?"turn_on":"turn_off",0);
+                    host->toast(ok?"已提交，等待设备确认":"控制失败，请稍后重试");
+                }
+            }
+            switch_slot=-1;switch_suppress=true;return true;
+        }
+        if(e->type==PGA_CANCEL||e->type==PGA_LONG){switch_slot=-1;switch_suppress=true;return true;}
+        return true;
+    }
+    if(e->type!=PGA_PRESS||mode_slot>=0||brightness_slot>=0)return false;
+    pico_app_view_t v=host->view();int left=0,top=0,slot=-1;bool on=false;
+    if(page==PAGE_SETUP){
+        int bw=(v.w-48)/3,fy=setup_flags_y(v),fh=v.landscape?26:40;
+        for(int i=0;i<3;i++){
+            int x=16+i*(bw+8)+bw-44;
+            if(e->x>=x&&e->x<x+44&&e->y>=fy&&e->y<fy+fh){slot=100+i;left=x;top=fy+(fh-28)/2;on=i==0?config.enabled:i==1?config.external_enabled:config.external_control;break;}
+        }
+    }else if(page==PAGE_MONITOR&&has_home()&&drag_from<0){
+        int display=card_at(v,e->x,e->y),disp[HLC_MAX],n=0;build_display(disp,&n,false);
+        if(display>=0&&display<n){
+            int x,y,w,h;card_rect(v,display-(int)(entity_page*cards_per_page(v)),&x,&y,&w,&h);
+            hlc_ent_t *ent=&cache[disp[display]];left=x+w-64;top=action_y(y,h);
+            if(ent->kind<4&&ent->available&&e->x>=left&&e->x<left+54&&e->y>=top&&e->y<top+28){slot=disp[display];on=ent->on;host->copy(switch_id,ent->id,sizeof(switch_id));}
+        }
+    }
+    if(slot<0)return false;
+    switch_slot=slot;switch_on=on;switch_x=e->x;switch_y=e->y;switch_left=left;switch_top=top;return true;
+}
 static bool event(const pico_app_event_t *e) {
     if (!e) return false;
+    if(switch_event(e))return true;
+    if(control_event(e))return true;
+    if(page==PAGE_DEVICES&&has_selection())return catalog_event(e);
     if (e->type == PGA_PRESS) drag_suppress_tap = false;
     // 先处理卡片拖拽；拖拽中的移动不会再被横向翻页吃掉。
     // Handle card dragging first so its moves are never consumed by horizontal paging.
@@ -880,10 +1102,11 @@ static bool event(const pico_app_event_t *e) {
             }
             if(hit_bottom3(e,2)){
                 if(rooms.busy||rooms.result!=2){host->toast("请先获取房间列表");return true;}
-                if(rooms_total()>64){host->toast("超过64项，请减少房间");return true;}
                 room_submit=rooms;room_submit.selected=room_selection;
                 if(host->home_rooms(PGA_ROOMS_SET,&room_submit)){
-                    rooms=room_submit;page=PAGE_DEVICES;hidden_draft=hidden;manage_page=0;entity_page=0;request_sync();
+                    refresh_status();
+                    if(status.flags&PGA_HOME_PENDING){page=PAGE_MONITOR;host->toast("房间草稿已保存，等待主机确认后选择卡片");}
+                    else {rooms=room_submit;manage_begin();entity_page=0;if(!has_selection())request_sync();}
                 }else host->format(room_message,sizeof(room_message),"%s",room_submit.error[0]?room_submit.error:"保存失败，请重新获取房间");
                 host->dirty();return true;
             }
@@ -921,6 +1144,7 @@ static bool event(const pico_app_event_t *e) {
 
 static bool key(int k) {
     if (k == -1) {
+        if(mode_slot>=0){mode_slot=-1;host->dirty();return true;}
         if (page != PAGE_MONITOR) {
             page = PAGE_MONITOR;
             host->dirty();
@@ -936,6 +1160,11 @@ static bool tick(void) {
     if (waiting_input) take_input();
     take_entry();
     refresh_status();
+    int64_t clock=host->time_us?host->time_us():0;
+    if(page==PAGE_DEVICES&&has_selection()&&catalog.busy&&clock-catalog_poll_us>=250000){
+        catalog_poll_us=clock;catalog.bytes=sizeof(catalog);(void)host->home_catalog(PGA_CATALOG_GET,&catalog);host->dirty();
+    }
+    if(page==PAGE_MONITOR&&clock>=sync_due_us&&!status.busy&&(status.flags&PGA_HOME_CFG))need_sync=true;
     if (cache_revision != status.revision || (cache_count == 0 && status.entity_count > 0)) refresh_cache();
     int disp[HLC_MAX], n = 0;
     build_display(disp, &n, false);
@@ -956,7 +1185,7 @@ static uint32_t status_bits(void) { return status.busy||rooms.busy ? PGA_STATUS_
 static bool save(void) { return true; }
 static void stop(void) {
     if (has_home() && host->home_link_input) (void)host->home_link_input(PGA_HOME_INPUT_CANCEL, draft, sizeof(draft));
-    waiting_input = false;
+    waiting_input = false;brightness_slot=mode_slot=switch_slot=-1;switch_suppress=false;control_suppress=false;
     drag_from = drag_to = -1;
     drag_suppress_tap = false;
     host->set(draft, 0, sizeof(draft));

@@ -197,7 +197,7 @@ def main():
                             runtime.command('key 1 click')
                             runtime.settle(35)
                             expect_settings(group_frame, 'Status style picker Back must preserve its parent group')
-                            report['checks'].append(label + ': status icon row opens the three-style picker and Back preserves group')
+                            report['checks'].append(label + ': status icon row opens the two-style picker and Back preserves group')
                             continue
                         if route == 'shelf-card':
                             before_style = runtime.command('status')['shelf_card_style']
@@ -271,7 +271,8 @@ def main():
                 capture('restart-root', (*ROOT_LABELS, 'XH View OS For Pico', '双机阅读实验版', args.version))
                 runtime.tap(*center(root_rect(5, landscape)))
                 runtime.settle(35)
-                capture('keep-awake-off-after-restart', ('系统与电源', '保持唤醒', '关闭'))
+                # State is verified above; the binary value is now drawn as a switch, not text.
+                capture('keep-awake-off-after-restart', ('系统与电源', '保持唤醒'))
                 runtime.tap(*center(child_rect(2, landscape)))
                 runtime.settle(35)
                 assert keep_awake(session)
@@ -288,7 +289,7 @@ def main():
             return
         source, decoder = output / 'settings-ocr.swift', output / 'settings-ocr'
         source.write_text(OCR)
-        subprocess.run(['swiftc', str(source), '-o', str(decoder)], check=True)
+        subprocess.run(['swiftc', '-module-cache-path', str(output / 'swift-module-cache'), str(source), '-o', str(decoder)], check=True)
         # Only scenes with a text contract require Vision OCR; route-only child captures remain available for review.
         selected = {path: expected for path, expected in requirements.items() if expected['texts']}
         response = subprocess.run([str(decoder), *selected], capture_output=True, text=True, check=True)

@@ -186,6 +186,10 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-Os"
 )
 
+# 中文：画板资料解析共享冷辅助函数以控制镜像体积；阅读、输入、排版和显示热路径仍为O2。
+# English: Share cold board-data parsing helpers to bound image size; retain O2 on reader/input/layout/display hot paths.
+set_source_files_properties("system/pico_board_data.c" PROPERTIES COMPILE_OPTIONS "-Os;-fno-inline")
+
 # 中文：诊断页与应用装载只在显式操作时执行；缩小控制器以保持原4MiB APP槽，不动输入、排版、字库和面板热路径。
 # English: Diagnostic pages and module loading run on explicit actions; shrink controllers within the original 4MiB APP slot without changing input, layout, fonts or panel hot paths.
 set_source_files_properties(

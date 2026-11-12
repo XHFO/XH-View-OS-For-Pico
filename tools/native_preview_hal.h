@@ -45,6 +45,7 @@ int xTaskCreateWithCaps(void (*fn)(void *),const char *name,unsigned stack,void 
 int xTaskCreate(void (*fn)(void *),const char *name,unsigned stack,void *arg,int priority,TaskHandle_t *handle);
 int xTaskCreatePinnedToCore(void (*fn)(void *),const char *name,unsigned stack,void *arg,int priority,TaskHandle_t *handle,int core);
 void vTaskDeleteWithCaps(TaskHandle_t task);
+int xTaskCreatePinnedToCoreWithCaps(void (*fn)(void *),const char *name,unsigned stack,void *arg,int priority,TaskHandle_t *handle,int core,unsigned caps);
 void vTaskDelete(TaskHandle_t task);
 void vTaskSuspend(TaskHandle_t task);
 void vTaskDelay(unsigned ticks);
@@ -56,7 +57,7 @@ void native_preview_services_tick(int64_t ms);
 bool native_preview_service_scenario(const char *name);
 void native_preview_service_status_json(FILE *out);
 
-SemaphoreHandle_t xSemaphoreCreateMutex(void);int xSemaphoreTake(SemaphoreHandle_t,unsigned);int xSemaphoreGive(SemaphoreHandle_t);void vSemaphoreDelete(SemaphoreHandle_t);unsigned ulTaskNotifyTake(int,unsigned);void xTaskNotifyGive(TaskHandle_t);
+SemaphoreHandle_t xSemaphoreCreateMutex(void);SemaphoreHandle_t xSemaphoreCreateBinary(void);int xSemaphoreTake(SemaphoreHandle_t,unsigned);int xSemaphoreGive(SemaphoreHandle_t);void vSemaphoreDelete(SemaphoreHandle_t);unsigned ulTaskNotifyTake(int,unsigned);void xTaskNotifyGive(TaskHandle_t);
 
 size_t strlcpy(char*,const char*,size_t);
 const char *esp_err_to_name(esp_err_t);

@@ -41,7 +41,7 @@ static uint16_t connection = NONE, local_tx, remote_rx, remote_tx, service_start
 static uint8_t address_type;
 static bool synced, subscribed, connecting, discovering, writing;
 static uint32_t epoch;
-static int64_t retry_at, setup_deadline;
+static int64_t retry_at, setup_deadline, tx_retry_at;
 static bool scan_only;
 static char adv_ip[48], adv_ap_ssid[33];
 static bool adv_info_dirty;
@@ -63,7 +63,7 @@ static bool secure(uint16_t conn) {
 static void ready_update(void) {
     bool ready = subscribed && secure(connection) && ble_att_mtu(connection) >= MTU_MIN;
     portENTER_CRITICAL(&guard); snapshot.connected = ready;
-    if (ready) { snapshot.error = 0; connecting = false; }
+    if (ready) { snapshot.error = 0; connecting = false; rejected_count = 0; }
     portEXIT_CRITICAL(&guard);
 }
 static void clear_link(int error) {
@@ -74,10 +74,11 @@ static void clear_link(int error) {
     if (error) snapshot.error = error;
     portEXIT_CRITICAL(&guard);
     retry_at = esp_timer_get_time() + 2000000;
+    tx_retry_at = 0;
 }
 static void reject(int error) {
     error_set(error);
-    if (current.role == 2 && connecting) {
+    if (current.role == 2 && connecting && error == BLE_HS_EAUTHEN) {
         rejected[rejected_at++ % 4] = attempted;
         if (rejected_count < 4) ++rejected_count;
         reject_until = esp_timer_get_time() + 30000000;
@@ -163,9 +164,24 @@ static int write_cb(uint16_t conn, const struct ble_gatt_error* err, struct ble_
     (void)attr;
     if(!callback_current(conn,arg))return 0;
     writing=false;
+    if(err->status==BLE_HS_ATT_ERR(BLE_ATT_ERR_INSUFFICIENT_RES) ||
+       err->status==BLE_HS_ENOMEM || err->status==BLE_HS_EBUSY){
+        // 对端忙只保留队首稍后重试，不把绘制期间的背压当作断联。
+        // Retain the head on peer backpressure; rendering stalls must not tear down the link.
+        tx_retry_at=esp_timer_get_time()+100000;
+        portENTER_CRITICAL(&guard);++snapshot.tx_retries;portEXIT_CRITICAL(&guard);
+        return 0;
+    }
     if(err->status){reject(err->status);return 0;}
     packet_t p; xQueueReceive(outgoing,&p,0);
     return 0;
+}
+static void notification_received(uint16_t conn, uint16_t attr, const struct os_mbuf* om) {
+    // 通知不能回压；溢出由协议重试恢复，不能主动断开已认证会话。
+    // Notifications cannot exert backpressure; protocol retries recover overflow without disconnecting.
+    if(current.role==2 && attr==remote_tx && !receive_packet(conn,om)) {
+        portENTER_CRITICAL(&guard);++snapshot.rx_dropped;portEXIT_CRITICAL(&guard);
+    }
 }
 static void discover_peer(const struct ble_gap_disc_desc* disc) {
     if(connecting || connection != NONE)return;
@@ -241,8 +257,7 @@ static int gap_event(struct ble_gap_event* event, void* arg) {
             subscribed=event->subscribe.cur_notify;ready_update();
         }break;
     case BLE_GAP_EVENT_NOTIFY_RX:
-        if(current.role==2 && event->notify_rx.attr_handle==remote_tx &&
-           !receive_packet(event->notify_rx.conn_handle,event->notify_rx.om))reject(BLE_HS_ENOMEM);
+        notification_received(event->notify_rx.conn_handle,event->notify_rx.attr_handle,event->notify_rx.om);
         break;
     case BLE_GAP_EVENT_REPEAT_PAIRING: return BLE_GAP_REPEAT_PAIRING_IGNORE;
     default: break;
@@ -299,7 +314,7 @@ static void host_tick(struct ble_npl_event* ev) {
     }
     pico_dual_ble_status_t status;pico_dual_ble_status(&status);
     packet_t p;
-    if(status.connected && !writing && xQueuePeek(outgoing,&p,0)==pdTRUE){
+    if(status.connected && !writing && now>=tx_retry_at && xQueuePeek(outgoing,&p,0)==pdTRUE){
         if(p.generation!=epoch)xQueueReceive(outgoing,&p,0);
         else if(current.role==1){
             struct os_mbuf* om=ble_hs_mbuf_from_flat(p.bytes,p.size);
@@ -321,7 +336,7 @@ static void supervisor(void* unused) {
             if(rc && rc!=ESP_ERR_INVALID_STATE)error_set(rc);
             vTaskDelay(pdMS_TO_TICKS(50));continue;
         }
-        current=next;synced=false;clear_link(0);
+        current=next;synced=false;rejected_count=0;reject_until=0;clear_link(0);
         rc=nimble_port_init();
         if(rc){error_set(rc);vTaskDelay(pdMS_TO_TICKS(1000));continue;}
         ble_hs_cfg.sync_cb=host_sync;ble_hs_cfg.reset_cb=host_reset;
@@ -420,7 +435,11 @@ bool pico_dual_ble_send(const uint8_t* data,size_t n) {
     if(!data || !n || n>PICO_DUAL_BLE_PACKET_MAX || !pico_dual_ble_can_send())return false;
     pico_dual_ble_status_t s;pico_dual_ble_status(&s);
     packet_t p={.generation=s.generation,.size=(uint8_t)n};memcpy(p.bytes,data,n);
-    return xQueueSend(outgoing,&p,0)==pdTRUE;
+    if(xQueueSend(outgoing,&p,0)!=pdTRUE)return false;
+    // 控制包入队即唤醒现有主机循环，不等待20ms轮询；背压仍遵守重试期限。
+    // Wake the existing host loop on enqueue instead of waiting for its 20ms poll; preserve the backpressure deadline.
+    ble_npl_callout_reset(&ticker,1);
+    return true;
 }
 size_t pico_dual_ble_receive(uint8_t* data,size_t capacity) {
     if(!incoming || !data || capacity<PICO_DUAL_BLE_PACKET_MAX)return 0;

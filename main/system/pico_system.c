@@ -97,7 +97,8 @@
 #include "ui_kit.h"
 #include "settings.h"
 
-#define PS_VERSION "0.40.0-dual97"
+#define PS_VERSION PICO_FIRMWARE_VERSION
+#include "pico_version.h"
 #define PS_OS_NAME "XH View OS For Pico"
 #define PS_RELEASE_LABEL "双机阅读实验版"
 const char *ps_version(void){return PS_VERSION;}
@@ -116,6 +117,9 @@ const char *ps_version(void){return PS_VERSION;}
 static app_ctx_t* s_ctx;
 static ps_route_t s_route = PS_SHELF, s_history[10], s_workspace[2] = { PS_SHELF, PS_HA };
 static int s_depth, s_section, s_panel, s_group, s_focus, s_quick_scroll, s_device_page, s_quick_mode;
+static bool s_status_percent;
+static uint8_t s_wifi_level;
+static int64_t s_wifi_sample_ms;
 static uint8_t s_status_style;
 static bool s_status_style_picker;
 static uint8_t s_shelf_card_style;
@@ -420,16 +424,20 @@ static PICO_STORE_COLD bool record_root_allowed(const char *root) {
     }
     return false;
 }
+// 阅读记录优先TF，系统设置仍使用原绑定根；另一根只供显式旧记录合并。
+// Prefer TF for reading records without moving system settings; retain the other root for explicit imports.
 PICO_STORE_COLD bool ps_storage_record_roots(char *current,char *other,size_t capacity,bool *current_is_sd) {
     if(!current||!other||!capacity)return false;
     current[0]=other[0]=0;
     if(s_store_lost||!record_root_allowed(s_store_root))return false;
-    int n=snprintf(current,capacity,"%s",s_store_root);
-    if(n<0||(size_t)n>=capacity){current[0]=0;return false;}
-    if(current_is_sd)*current_is_sd=s_store_is_sd;
     book_store_root_t roots[2];int count=0;
-    if(book_store_roots(roots,&count)!=ESP_OK)return false;
-    for(int i=0;i<count;i++)if(roots[i].is_flash==s_store_is_sd){
+    if(book_store_roots(roots,&count)!=ESP_OK||!count)return false;
+    int selected=0;
+    for(int i=0;i<count;i++)if(!roots[i].is_flash){selected=i;break;}
+    if(current_is_sd)*current_is_sd=!roots[selected].is_flash;
+    int n=snprintf(current,capacity,"%s/.pico-system",roots[selected].path);
+    if(n<0||(size_t)n>=capacity){current[0]=0;return false;}
+    for(int i=0;i<count;i++)if(i!=selected){
         n=snprintf(other,capacity,"%s/.pico-system",roots[i].path);
         if(n<0||(size_t)n>=capacity){other[0]=0;return false;}
         break;
@@ -915,7 +923,7 @@ static void enter(ps_route_t r) {
         "pico_system", "route=%d orientation=%s", r, s_config.landscape ? "landscape" : "portrait");
 }
 static bool resume_real_book(void) {
-    if (!s_real_book_preferred || s_transfer_prepared || s_external_active || ps_storage_busy() || ps_usb_held()) return false;
+    if ((!s_real_book_preferred && !ps_dual_has_reading()) || s_transfer_prepared || s_external_active || ps_storage_busy() || ps_usb_held()) return false;
     if (!ps_games_prepare_storage()) return false;
     if (!app_book_resume_last()) return false;
     s_book_return = false;
@@ -1323,6 +1331,12 @@ bool ps_status_style_set(uint8_t style) {
     s_status_style = style;
     s_dirty = true;
     return true;
+}
+bool ps_status_percent(void) { return s_status_percent; }
+bool ps_status_percent_set(bool enabled) {
+    uint8_t value = enabled;
+    if (!ps_store("statuspct1", &value, sizeof(value))) return false;
+    s_status_percent = enabled; s_dirty = true; return true;
 }
 uint8_t ps_shelf_card_style(void) {
     return s_shelf_card_style < PS_SHELF_CARD_STYLE_COUNT
@@ -1735,24 +1749,23 @@ static const device_setting_t device_settings[] = {
 // 根分组与二级项目共用几何，绘制和触摸始终使用相同边界。
 // Root groups and child items share geometry, keeping paint and touch boundaries identical.
 static EpdRect device_row_rect(int index,bool root){
-    ps_view_t v=ps_view();int rows=root?(v.landscape?3:6):(v.landscape?3:6);
+    ps_view_t v=ps_view();int rows=v.landscape?3:6;
     int rh=root?(v.landscape?48:60):(v.landscape?60:76);
     int top=root?(v.landscape?146:158):(v.landscape?112:126);
     int cols=v.landscape?2:1,cw=(v.w-32-(cols-1)*12)/cols;
     return (EpdRect){16+(index/rows)*(cw+12),top+(index%rows)*rh,cw,rh};
 }
-static PICO_STORE_COLD void device_row_render(uint8_t *fb,EpdRect r,const char *label,const char *detail,ps_icon_t icon,bool toggle){
+static PICO_STORE_COLD void device_row_render(uint8_t *fb,EpdRect r,const char *label,const char *detail,ps_icon_t icon,int toggle){
     ps_surface(fb,r.x,r.y,r.width,r.height-4,false);
     ps_icon(fb,r.x+12,r.y+(r.height-26)/2,22,icon,2);
     ps_text(fb,r.x+46,r.y+8,14,label,1);
     ps_text(fb,r.x+46,r.y+30,10,detail,5);
     int cy=r.y+(r.height-4)/2;
-    if(toggle)ps_text(fb,r.x+r.width-42,r.y+10,12,app_settings_test_awake()?"开启":"关闭",2);
+    if(toggle)ps_switch_draw(fb,r.x+r.width-60,cy-13,48,26,app_settings_test_awake(),true);
     else{ps_line(fb,r.x+r.width-21,cy-4,r.x+r.width-17,cy,6);ps_line(fb,r.x+r.width-17,cy,r.x+r.width-21,cy+4,6);}
 }
 static const char *status_style_name(uint8_t style){
     if(style==PS_STATUS_STYLE_BOOK)return "书页索引";
-    if(style==PS_STATUS_STYLE_LINE_PERCENT)return "墨线·电量";
     return "墨线极简";
 }
 static const char *shelf_card_style_name(uint8_t style){
@@ -1764,8 +1777,11 @@ static const char *shelf_card_style_name(uint8_t style){
 static void status_wifi_draw(uint8_t *fb,int x,int y,bool book){
     bool usb=ps_usb_background();
     bool online=usb||read_pico_connectivity_online();
-    ps_icon(fb,x,y,16,usb?PI_USB:PI_WIFI,online?3:8);
-    if(!online&&!usb)ps_line(fb,x+1,y+15,x+15,y+1,3);
+    if(usb)ps_icon(fb,x,y,16,PI_USB,3);
+    else {
+        ps_wifi_signal(fb,x,y,16,online?s_wifi_level:3,online?3:8);
+        if(!online)ps_line(fb,x+1,y+15,x+15,y+1,3);
+    }
     (void)book;
 }
 static void status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int role){
@@ -1773,8 +1789,8 @@ static void status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int r
     if(book){
         const int size=12,gap=8;
         int left=x,right=left+size+gap;
-        ps_icon(fb,left,y,size,PI_BOOK,linked?2:8);
-        ps_icon(fb,right,y,size,PI_BOOK,linked?6:8);
+        ps_icon(fb,left,y,size,PI_BOOK,role==1?1:7);
+        ps_icon(fb,right,y,size,PI_BOOK,role==2?1:7);
         if(linked){
             ps_fill(fb,left+size+1,y+size/2,2,1,6);
             ps_fill(fb,right-3,y+size/2,2,1,6);
@@ -1784,8 +1800,8 @@ static void status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int r
     }else{
         const int width=8,height=12,gap=8;
         int left=x,right=left+width+gap;
-        ps_box(fb,left,y,width,height,2,linked?3:7,false);
-        ps_box(fb,right,y,width,height,2,linked?5:7,false);
+        ps_box(fb,left,y,width,height,2,role==1?1:7,false);
+        ps_box(fb,right,y,width,height,2,role==2?1:7,false);
         if(linked){
             ps_fill(fb,left+width+1,y+height/2,2,1,6);
             ps_fill(fb,right-3,y+height/2,2,1,6);
@@ -1828,25 +1844,27 @@ static void status_strip_draw(uint8_t *fb,int left,int right,int top,uint8_t sty
     bool book=style==PS_STATUS_STYLE_BOOK;
     status_wifi_draw(fb,left,top+3,book);
     status_pair_draw(fb,left+22,top+4,book,linked,role);
-    bool percent=style==PS_STATUS_STYLE_LINE_PERCENT;
-    status_battery_draw(fb,right-(percent?62:22),top+6,book);
+    bool percent=ps_status_percent();
     if(percent){
         char level[12];
         if(s_battery>=0)snprintf(level,sizeof(level),"%d%%",s_battery>100?100:s_battery);
         else snprintf(level,sizeof(level),"--%%");
-        ps_text_fixed(fb,right-ps_text_width(9,level),top+4,9,level,5);
-    }
+        int text_x=right-ps_text_width(9,level);
+        status_battery_draw(fb,text_x-5-22,top+6,book);
+        ps_text_fixed(fb,text_x,top+4,9,level,5);
+    }else status_battery_draw(fb,right-22,top+6,book);
 }
 static void status_icons_draw(uint8_t *fb,ps_view_t v,bool book,bool linked){
     (void)book;status_strip_draw(fb,12,v.w-12,0,ps_status_style(),linked,ps_dual_role());
 }
-typedef struct {EpdRect panel,option[PS_STATUS_STYLE_COUNT],cancel;} status_style_picker_t;
+typedef struct {EpdRect panel,option[PS_STATUS_STYLE_COUNT],percent,cancel;} status_style_picker_t;
 static status_style_picker_t status_style_picker_layout(void){
     ps_view_t v=ps_view();status_style_picker_t r={0};
-    int h=v.landscape?312:414,w=v.landscape?520:v.w-32;
+    int h=v.landscape?312:390,w=v.landscape?520:v.w-32;
     r.panel=(EpdRect){(v.w-w)/2,(v.h-h)/2,w,h};
     int rh=v.landscape?58:84,step=v.landscape?64:92,top=v.landscape?62:72;
     for(int i=0;i<PS_STATUS_STYLE_COUNT;i++)r.option[i]=(EpdRect){r.panel.x+16,r.panel.y+top+i*step,w-32,rh};
+    r.percent=(EpdRect){r.panel.x+16,r.panel.y+top+2*step+8,w-32,44};
     r.cancel=(EpdRect){r.panel.x+w-112,r.panel.y+h-56,96,40};
     return r;
 }
@@ -1870,6 +1888,7 @@ static void status_style_picker_render(uint8_t *fb){
             ps_text_fixed(fb,row.x+32,row.y+61,10,selected?"当前使用":"轻点使用",5);
         }
     }
+    ps_toggle(fb,r.percent.x,r.percent.y,r.percent.width,r.percent.height,"电量百分比",ps_status_percent(),true);
     ps_button(fb,r.cancel.x,r.cancel.y,r.cancel.width,r.cancel.height,"取消",false);
 }
 typedef struct {EpdRect panel,option[PS_SHELF_CARD_STYLE_COUNT],cancel;} shelf_card_picker_t;
@@ -2255,8 +2274,17 @@ static bool panel_event(const ps_event_t *e) {
 static PICO_STORE_COLD bool device_event(const ps_event_t* e) {
     ps_view_t v=ps_view();
     if(s_status_style_picker){
+        status_style_picker_t layout=status_style_picker_layout();bool next=ps_status_percent();
+        if(ps_switch_swipe(e,layout.percent.x+layout.percent.width-66,layout.percent.y,66,layout.percent.height,&next)){
+            if(!ps_status_percent_set(next))ps_toast("保存失败，请重试");
+            s_dirty=true;return true;
+        }
         if(e->type==PS_TAP){
             status_style_picker_t r=status_style_picker_layout();
+            if(ps_hit(e->x,e->y,r.percent.x,r.percent.y,r.percent.width,r.percent.height)){
+                if(!ps_status_percent_set(!ps_status_percent()))ps_toast("保存失败，请重试");
+                s_dirty=true;return true;
+            }
             for(int i=0;i<PS_STATUS_STYLE_COUNT;i++){
                 EpdRect row=r.option[i];
                 if(ps_hit(e->x,e->y,row.x,row.y,row.width,row.height)){
@@ -2346,6 +2374,13 @@ static PICO_STORE_COLD bool device_event(const ps_event_t* e) {
             s_config.onboard_step=0;ps_navigate(PS_ONBOARDING);return true;
         }
         return false;
+    }
+    if(e->type==PS_SWIPE_L||e->type==PS_SWIPE_R){
+        const device_group_t *g=&device_groups[s_device_page];
+        for(int i=0;s_device_page&&i<g->count;i++)if(device_settings[g->first+i].action==DEVICE_ACTION_TEST_AWAKE){
+            EpdRect r=device_row_rect(i,false);bool next;
+            if(ps_switch_swipe(e,r.x+r.width-66,r.y,66,r.height,&next)){app_settings_set_test_awake(next);s_last_input=ps_now();s_dirty=true;return true;}
+        }
     }
     if(e->type!=PS_TAP)return false;
     if(!s_device_page&&ps_hit(e->x,e->y,16,82,v.w-32,56)){s_device_page=DEVICE_ABOUT;return true;}
@@ -2780,6 +2815,17 @@ bool ps_global_present(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t redra
 }
 static void poll_hardware(void) {
     int64_t now = ps_now();
+    if (!s_wifi_sample_ms || now-s_wifi_sample_ms>=5000) {
+        s_wifi_sample_ms=now;
+        read_pico_connectivity_link_t net={0};read_pico_connectivity_get_link(&net);
+        uint8_t level=s_wifi_level;
+        if(!net.online)level=0;
+        else if(!level)level=net.rssi>=-60?3:net.rssi>=-75?2:1;
+        else if(level==3&&net.rssi<-64)level=2;
+        else if(level==2)level=net.rssi>-56?3:net.rssi<-79?1:2;
+        else if(level==1&&net.rssi>-71)level=2;
+        if(level!=s_wifi_level){s_wifi_level=level;s_dirty=true;}
+    }
     if (now - s_pmu_ms >= 5000 || !s_pmu_ms) {
         s_pmu_ms = now;
         bool refreshed=read_pico_pmu_refresh()==ESP_OK;
@@ -2833,9 +2879,11 @@ static void on_enter(app_ctx_t* ctx) {
         uint8_t guard = 1;
         if (ps_load("touchguard1", &guard, sizeof(guard))) s_touch_guard = guard ? 1 : 0;
         uint8_t status_style = PS_STATUS_STYLE_LINE;
-        if (ps_load("statusstyle1", &status_style, sizeof(status_style)) &&
-            status_style < PS_STATUS_STYLE_COUNT) s_status_style = status_style;
-        else s_status_style = PS_STATUS_STYLE_LINE;
+        (void)ps_load("statusstyle1", &status_style, sizeof(status_style));
+        s_status_style = status_style == PS_STATUS_STYLE_BOOK ? PS_STATUS_STYLE_BOOK : PS_STATUS_STYLE_LINE;
+        uint8_t percent = status_style == 2;
+        (void)ps_load("statuspct1", &percent, sizeof(percent));
+        s_status_percent = percent != 0;
         uint8_t shelf_card_style = PS_SHELF_CARD_DEFAULT;
         if (ps_load("shelfcards1", &shelf_card_style, sizeof(shelf_card_style)) &&
             shelf_card_style < PS_SHELF_CARD_STYLE_COUNT) s_shelf_card_style = shelf_card_style;

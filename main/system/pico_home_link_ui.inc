@@ -150,7 +150,7 @@ static void real_ha_render(uint8_t *fb) {
         ps_center(fb, v.w / 2, 151, 40, b, BLACK);
         ps_button(fb, 20, 223, 80, 44, "− 1°C", false);
         ps_button(fb, v.w - 100, 223, 80, 44, "＋ 1°C", false);
-        ps_button(fb, v.w / 2 - 48, 223, 96, 44, e->on ? "关闭" : "开启", e->on);
+        ps_switch_draw(fb,v.w/2-24,232,48,26,e->on,e->available);
         ps_wrap(fb, 20, 288, v.w - 40, 11, 2, "操作完成后同步服务器状态；不提前伪造开关结果。", MUTED);
         return;
     }

@@ -18,11 +18,15 @@
 #define DL_FONT_STEP 4
 typedef struct dual_link dual_link_t;
 typedef struct {
-    bool started; ///< 是否已有主设备进度。/ Whether primary progress exists.
+    bool started; ///< 是否已有阅读进度。/ Whether reading progress exists.
     uint8_t pct; ///< 全书百分比。/ Whole-book percentage.
-    uint32_t recent; ///< 主设备阅读顺序。/ Primary reading order.
+    uint32_t recent; ///< 阅读顺序。/ Reading order.
+    uint16_t chapter;
+    uint32_t byte_off;
+    uint8_t px;
 } dl_book_progress_t;
 typedef bool (*dl_progress_get_t)(const char* path, uint32_t bytes, dl_book_progress_t* out, void* context);
+typedef bool (*dl_progress_set_t)(const char*,uint32_t,const dl_book_progress_t*,void*);
 typedef struct {
     int role;  ///< 1主机，2从机。/ 1 primary, 2 secondary.
     uint8_t device_id[8]; ///< 本机稳定身份；用于证明重连仍是同一设备。/ Stable local identity for same-peer fast validation.
@@ -30,7 +34,8 @@ typedef struct {
     unsigned port;
     char roots[3][DL_PATH], destination[DL_PATH], font[DL_PATH];
     unsigned root_count;
-    dl_progress_get_t progress_get; ///< 主设备读取本机进度；从设备可省略。/ Primary progress lookup; optional on secondary.
+    dl_progress_get_t progress_get; ///< 双端读取本机最远正文锚点。/ Both peers read local furthest text anchors.
+    dl_progress_set_t progress_set; ///< 合并并保存已验证同书进度。/ Merge and persist verified same-book progress.
     void* progress_context; ///< 回调查询上下文。/ Progress lookup context.
 } dl_config_t;
 typedef struct {
@@ -51,7 +56,9 @@ typedef struct {
     uint8_t catalog[32]; ///< 双方一致时的书库目录摘要。/ Matching library catalog digest.
     bool request_pending; ///< 从机请求已排队。/ Secondary request is queued.
     char host[48]; ///< 已确认的数据通道端点。/ Confirmed data-plane endpoint.
-    bool left_ready; ///< 主机已完成此版本的左页推屏，从机才能显示。/ Primary presented this revision's left page; secondary may now display.
+    bool left_ready; ///< 已允许从机显示当前版本，区别于左屏实际完成。/ Secondary may present this revision; distinct from left-screen completion.
+    bool relay_ready; ///< 前屏进入最后约500ms，可启动后屏；不是完成确认。/ Lead reached its final approximately500ms; permit trailing start, not a completion ACK.
+    bool peer_presented, turn_ready; ///< 对端完成当前推屏；双方完成后才接受新翻页。/ Peer finished this revision; admit another turn only after both finish.
     unsigned books, peer_books, imported;
     uint32_t received, expected, content_revision;
     uint32_t sent;
@@ -94,8 +101,12 @@ bool dl_resize(dual_link_t* link, uint8_t font_px);
 bool dl_reflow_resolved(dual_link_t* link, uint32_t revision, uint32_t spread);
 /// 主机重排失败，恢复旧字号与页组，仍须重新推屏。/ Failed primary reflow restores its old size/spread and requires presentation again.
 bool dl_reflow_failed(dual_link_t* link, uint32_t revision);
-/// UI 确认主机该版本实际推屏成功，旧版本确认不会放行。/ Confirm successful primary presentation; stale revisions cannot release the secondary.
+/// 主机布局就绪，两个方向均可准备右屏；上一页仍须等待主机实际完成。/ Primary layout ready in both directions; previous-page presentation still waits for primary completion.
+bool dl_release(dual_link_t* link, uint32_t revision);
+/// 两端只在实际推屏成功后确认，旧版本不放行。/ Both peers confirm only actual successful presentation; ignore stale revisions.
 bool dl_presented(dual_link_t* link, uint32_t revision);
+/// 当前版本的提前接力通知，不推进进度或完成状态。/ Early relay for the current revision without advancing progress or completion.
+bool dl_relay_ready(dual_link_t* link, uint32_t revision);
 void dl_total(dual_link_t* link, uint32_t total);
 const char* dl_reading_path(const dual_link_t* link);
 const char* dl_font_path(const dual_link_t* link);
@@ -105,8 +116,8 @@ const char* dl_entry(const dual_link_t* link, unsigned index, uint8_t id[32], ui
 /// Reuse unchanged verified entries only within one trusted storage session; destroy before media/USB/external writes.
 void dl_rescan(dual_link_t* link);
 void dl_restore(dual_link_t* link, const dl_reading_t* reading);
-/// 只读主设备发布的书籍进度；从设备不会借此写入本地进度。
-/// Read primary-published book progress; the secondary never persists it locally.
+/// 读取双方按正文锚点合并并落盘的进度。
+/// Read progress merged by text anchor and persisted on both peers.
 bool dl_book_progress(const dual_link_t* link, const char* path, uint32_t bytes, dl_book_progress_t* out);
 /// 主设备进度表更新序号，用于书架按需重绘。/ Primary progress-table revision for on-demand shelf redraws.
 uint32_t dl_progress_revision(const dual_link_t* link);
@@ -162,3 +173,13 @@ bool dl_game_close_take(dual_link_t* link);
 void dl_control_connected(dual_link_t* link, bool connected);
 size_t dl_control_take(dual_link_t* link, uint8_t* packet, size_t capacity);
 bool dl_control_receive(dual_link_t* link, const uint8_t* packet, size_t bytes);
+
+/// 读取双端已合并的正文锚点。/ Read the merged text anchor from either peer.
+bool dl_book_anchor(const dual_link_t*,const char*,uint32_t,dl_book_progress_t*);
+
+/// 显式开书前先交换该书正文锚点；未连接时允许本地打开。/ Exchange one book's anchor before explicit open; disconnected opens stay local.
+bool dl_prepare_open(dual_link_t*,const char*);
+void dl_prepare_open_reset(dual_link_t*);
+
+/// 重连锚点定位后发布新页组，不唤回已离架设备。/ Publish a reconciled spread without pulling away peers back to reading.
+bool dl_reconcile_at(dual_link_t*,uint32_t);

@@ -52,9 +52,15 @@ static esp_err_t sc7a20h_read_events(sc7a20h_handle_t h,sc7a20h_events_t *e) { (
 #ifndef pdTRUE
 #define pdTRUE 1
 #endif
-// 未启用宿主预绘任务，二值等待信号不会被使用。/ No host pre-render task runs, so the binary completion signal is unused.
-#define xSemaphoreCreateBinary xSemaphoreCreateMutex
+static void draw_reader(uint8_t* fb, size_t page);
+void native_preview_book_draw_event(bool begin);
 #include "native-preview-book-source.inc"
+static void draw_reader(uint8_t* fb, size_t page) {
+    bool measured=s_turn_anim_pending && fb==s_next_fb;
+    if(measured)native_preview_book_draw_event(true);
+    actual_draw_reader(fb,page);
+    if(measured)native_preview_book_draw_event(false);
+}
 #include "native_preview_book.h"
 
 static void native_preview_book_raw(uint16_t x, uint16_t y, uint16_t *a, uint16_t *b) {
@@ -109,3 +115,5 @@ unsigned native_preview_book_px(void){return s_px;}
 uint32_t native_preview_dual_page(void){return s_dual_displayed;}
 bool native_preview_dual_blank(void){return s_dual_blank;}
 size_t native_preview_page_offset(bool end){return book_layout_page_start_offset(s_page+(end?1:0));}
+bool native_preview_book_prep_active(void){return s_prep_task != NULL;}
+int native_preview_book_prep_page(void){return s_next_page;}

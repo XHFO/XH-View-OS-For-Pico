@@ -5,6 +5,7 @@
  * 同步不导出TF，不绕过编辑或电源保护。/ Synchronization never exports TF or bypasses edit/power guards.
  */
 #include "pico_dual.h"
+#include "pico_home_pga.h"
 #include "book_progress.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,7 +82,8 @@ static bool calibrated;
 static uint32_t base_applied;
 static bool reading_active = true;
 static bool reading_known;
-static bool local_away;
+static bool local_away, progress_rejoin;
+static uint32_t rejoin_revision;
 static bool contact_latched;
 static uint32_t annotation_applied;
 static int64_t contact_same_since;
@@ -104,6 +106,8 @@ static void orientation_save(void) {
     }
 }
 static uint32_t applied, presented, stored, content_revision;
+static uint32_t checkpoint_revision;
+static int64_t checkpoint_changed;
 static int64_t last_tick, last_ip, last_work;
 static int pair_sock = -1;
 static bool pair_scanning, pair_found, pair_failed, pair_editing;
@@ -315,7 +319,21 @@ static void hotspot_stop(void) {
     hotspot_active = false;
 #endif
 }
+static void reading_checkpoint(bool force, int64_t now) {
+    if (status.reading.revision != checkpoint_revision) {
+        checkpoint_revision = status.reading.revision;
+        checkpoint_changed = now;
+    }
+    // 翻页热路径不逐页同步写卡；退出或停翻后保存最新会话，正文锚点仍独立可靠同步。
+    // Keep synchronous storage off each turn; checkpoint on exit or idle, independently of anchor ACKs.
+    if (settings.role == 1 && dual_session && !status.reading.reflow_pending &&
+        status.reading.revision != stored && dl_reading_path(dual_session) &&
+        (force || now - checkpoint_changed >= 1500) &&
+        ps_store("dualreading2", &status.reading, sizeof(status.reading)))
+        stored = status.reading.revision;
+}
 void ps_dual_suspend(void) {
+    reading_checkpoint(true, ps_now());
     hotspot_stop();
     pico_dual_ble_stop();
     ble_generation = 0;
@@ -325,9 +343,11 @@ void ps_dual_suspend(void) {
     }
     memset(&status, 0, sizeof(status));
     applied = presented = stored = content_revision = 0;
+    checkpoint_revision = 0;
+    checkpoint_changed = 0;
     reading_known = false;
     reading_active = true;
-    local_away = false;
+    local_away = progress_rejoin = false;
 }
 static bool configure_full(int role, const char* host, const char* code, uint8_t net_mode, uint8_t keep_data) {
     load();
@@ -374,9 +394,26 @@ bool ps_dual_configure(int role, const char* host, const char* code) {
 }
 static bool dual_progress_get(const char* path, uint32_t bytes, dl_book_progress_t* out, void* context) {
     (void)context;
-    book_progress_t progress;
-    if (!out || !book_progress_load(path, bytes, &progress)) return false;
-    *out = (dl_book_progress_t){.started = true, .pct = progress.pct, .recent = progress.last_open_s};
+    book_progress_t progress={0},live;
+    if(!out)return false;
+    bool found=book_progress_load(path,bytes,&progress);
+    if(app_book_progress_snapshot(path,bytes,&live)&&(!found||book_progress_ahead(&live,&progress))){progress=live;found=true;}
+    if(!found)return false;
+    *out = (dl_book_progress_t){.started = true, .pct = progress.pct, .recent = progress.last_open_s,
+        .chapter=progress.chapter,.byte_off=progress.byte_off,.px=progress.px};
+    return true;
+}
+static bool dual_progress_set(const char* path,uint32_t bytes,const dl_book_progress_t* in,void* context){
+    (void)context;
+    book_progress_t saved={.file_size=bytes,.chapter=in->chapter,.byte_off=in->byte_off,.px=in->px,.pct=in->pct};
+    book_progress_t durable;
+    if(book_progress_load(path,bytes,&durable)&&!book_progress_ahead(&saved,&durable))return true;
+    return book_progress_save_mode(path,&saved,true)==ESP_OK;
+}
+bool ps_dual_book_anchor(const char* path,uint32_t bytes,book_progress_t* out){
+    dl_book_progress_t p;
+    if(!dual_session||!dl_book_anchor(dual_session,path,bytes,&p)||!p.started)return false;
+    *out=(book_progress_t){.file_size=bytes,.chapter=p.chapter,.byte_off=p.byte_off,.px=p.px,.pct=p.pct,.last_open_s=p.recent};
     return true;
 }
 static void device_id_get(uint8_t out[8]) {
@@ -426,6 +463,7 @@ static bool start(void) {
     dl_config_t cfg = { .role = settings.role, .port = DL_PORT };
     device_id_get(cfg.device_id);
     cfg.progress_get = dual_progress_get;
+    cfg.progress_set = dual_progress_set;
     snprintf(cfg.host, sizeof(cfg.host), "%s", settings.host);
     snprintf(cfg.code, sizeof(cfg.code), "%s", settings.code);
     book_store_root_t roots[2];
@@ -552,6 +590,8 @@ void ps_animation_render(uint8_t* fb) {
     ps_text(fb, x, 330, 11, "双机阅读中关闭动画可进一步降低翻页延迟。", 5);
 }
 bool ps_animation_event(const ps_event_t* e) {
+    bool next;ps_view_t v=ps_view();
+    if(ps_switch_swipe(e,v.w-86,150,66,44,&next)){ps_dual_anim_set_enabled(next);ps_dirty();return true;}
     if (!e || e->type != PS_TAP) return false;
     if (e->y >= 150 && e->y < 194) { ps_dual_anim_set_enabled(!ps_dual_anim_enabled()); ps_dirty(); return true; }
     if (e->y >= 206 && e->y < 246 && ps_dual_anim_enabled()) { ps_dual_toggle_anim_gray(); ps_dirty(); return true; }
@@ -608,7 +648,7 @@ size_t ps_dual_game_packet_recv(void* data,size_t capacity) {
     return dual_session ? dl_game_packet_take(dual_session, data, capacity) : 0;
 }
 bool ps_dual_peer_reading(void) {
-    return status.peer_reading;
+    return status.connected&&status.synced&&status.peer_reading;
 }
 void ps_dual_set_local_away(bool away) {
     if (away && dual_session) (void)dl_remote_open_take(dual_session);
@@ -720,9 +760,17 @@ bool ps_dual_activate(const char* path) {
     local_away = false;
     return dl_activate_path(dual_session, path);
 }
+static void control_send(void) {
+    if (!dual_session || !pico_dual_ble_can_send()) return;
+    uint8_t packet[DL_CONTROL_MAX];
+    size_t n = dl_control_take(dual_session, packet, sizeof(packet));
+    if (!n) n = ps_home_pga_share_take(packet, sizeof(packet));
+    if (n) (void)pico_dual_ble_send(packet, n);
+}
 bool ps_dual_turn(int direction) {
     if (!ps_dual_enabled()) return false;
     bool accepted = dual_session && dl_turn(dual_session, direction);
+    if (accepted) control_send();
     if (!accepted) ps_toast("另一台尚未就绪，请稍后再翻页");
     return accepted;
 }
@@ -746,23 +794,38 @@ bool ps_dual_resume(void) {
     dl_status_t current; dl_status(dual_session, &current);
     if (!current.connected || !current.synced || (settings.role == 2 && !current.left_ready) ||
         !dl_reading_path(dual_session) || !dl_font_path(dual_session)) return false;
+    local_away = false;
     applied = presented = 0;
     return true;
+}
+void ps_dual_layout_ready(uint32_t page) {
+    if (dual_session && page == status.reading.spread + 1 &&
+        dl_release(dual_session, applied)) control_send();
+}
+bool ps_dual_wait_peer(void) {
+    // UI tick 已读取最新控制状态；这里只读缓存，不重复复制整份目录状态。/ The UI tick refreshed control state; read its cache without recopying catalog status.
+    return status.connected && status.synced && status.peer_reading && !status.peer_presented && !status.relay_ready;
+}
+void ps_dual_relay_ready(uint32_t page) {
+    if (dual_session && page == status.reading.spread + (settings.role == 2 ? 2u : 1u) &&
+        dl_relay_ready(dual_session, applied)) control_send();
 }
 void ps_dual_presented(uint32_t page) {
     if (!dual_session) return;
     dl_status_t current; dl_status(dual_session, &current);
     // 主机单读时 revision 由本地翻页直接生成，不经过远端 apply；成功推屏后仍需释放 left_ready。
     // A primary solo turn creates the revision locally without remote apply; successful paint still releases left_ready.
-    if (settings.role == 1 && !current.peer_reading && page == current.reading.spread + 1 &&
+    if (settings.role == 1 && !current.peer_reading && (page == current.reading.spread + 1 || page == current.reading.spread + 2) &&
         !current.reading.reflow_pending && dl_presented(dual_session, current.reading.revision)) {
         applied = presented = current.reading.revision;
+        control_send();
         return;
     }
     if (!applied) return;
     if (current.reading.reflow_pending || current.reading.revision != applied || page != current.reading.spread + (settings.role == 2 ? 2u : 1u)) return;
-    if (settings.role == 1) (void)dl_presented(dual_session, applied);
+    (void)dl_presented(dual_session, applied);
     presented = applied;
+    control_send();
 }
 void ps_dual_total(uint32_t total) {
     if (dual_session) dl_total(dual_session, total);
@@ -783,9 +846,11 @@ static bool idle_reading_route(void) {
 }
 bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw) {
     if (!ps_dual_enabled()) {
+        uint8_t empty_owner[8]={0};ps_home_pga_share_tick(0,false,empty_owner,ctx->now_ms,app==&app_book);
         if (pair_scanning) pair_scan_update();
         return false;
     }
+    ps_home_pga_share_context(settings.role,app==&app_book);
     bool safe = !ps_storage_busy() && !ps_usb_busy() && !ps_usb_held() && !ps_content_held() &&
                 !ps_transfer_prepared() && !ps_power_pending();
     if (!safe) {
@@ -850,7 +915,11 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     dl_tick(dual_session, ctx->now_ms, online && data_available);
     (void)dl_face(dual_session, contact_face());
     bool active = app == &app_book && app_book_dual_engaged();
-    if (active && (!reading_known || !reading_active)) {
+    if(!reading_known){
+        reading_known=true;reading_active=active;
+        (void)dl_reading_active(dual_session,active);
+    }
+    if (active && !reading_active) {
         reading_known = true;
         reading_active = true;
         local_away = false;
@@ -866,16 +935,20 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     }
     last_work = ctx->now_ms;
     uint8_t packet[DL_CONTROL_MAX];
-    for (unsigned i = 0; i < 4; ++i) {
+    for (unsigned i = 0; i < 8; ++i) {
         size_t n = pico_dual_ble_receive(packet, sizeof(packet));
         if (!n) break;
-        (void)dl_control_receive(dual_session, packet, n);
+        if(!ps_home_pga_share_receive(packet,n))(void)dl_control_receive(dual_session, packet, n);
     }
-    if (pico_dual_ble_can_send()) {
-        size_t n = dl_control_take(dual_session, packet, sizeof(packet));
-        if (n) (void)pico_dual_ble_send(packet, n);
-    }
+    uint8_t home_owner[8]={0};if(settings.role==1)device_id_get(home_owner);else memcpy(home_owner,status.peer_device_id,8);
+    ps_home_pga_share_tick(settings.role,ble.connected&&status.peer_id_valid,home_owner,ctx->now_ms,app==&app_book);
+    control_send();
     dl_status(dual_session, &status);
+    if(!before.connected&&status.connected){progress_rejoin=true;rejoin_revision=status.reading.revision;dl_prepare_open_reset(dual_session);}
+    // 首个重连状态可能已是主机合并后的版本；主机布局就绪即可应用，不能再空等下一个版本。
+    // The first reconnect state may already be reconciled; apply once primary layout is ready instead of waiting for another revision.
+    if(settings.role==2&&progress_rejoin&&
+       (status.reading.revision!=rejoin_revision||status.left_ready))progress_rejoin=false;
     (void)peer_cache_update(&status);
     if (settings.role == 2 && status.host[0] && strcmp(settings.host, status.host)) {
         snprintf(settings.host, sizeof(settings.host), "%s", status.host);
@@ -900,7 +973,8 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
             auto_shelf_at = ctx->now_ms + 1200;
         ps_dirty();
     }
-    if (auto_shelf_at && ctx->now_ms >= auto_shelf_at &&
+    if(app==&app_book)auto_shelf_at=0;
+    if (auto_shelf_at && app->product_shell && ctx->now_ms >= auto_shelf_at &&
         ps_route() == PS_DUAL && !primary_step && !pair_editing) {
         auto_shelf_at = 0;
         ps_navigate(PS_SHELF);
@@ -908,7 +982,6 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
     bool explicit_remote_open = dl_remote_open_pending(dual_session) &&
         (ps_background_io_blockers() & ~512u) == 0;
     if (explicit_remote_open) {
-        (void)dl_remote_open_take(dual_session);
         local_away = false;
     }
     if (settings.role == 1 && status.calibration_request) {
@@ -963,18 +1036,24 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
          (status.expected && (uint64_t)before.received * 20 / status.expected !=
                                  (uint64_t)status.received * 20 / status.expected)))
         ps_dirty();
-    if (settings.role == 1 && !status.reading.reflow_pending && status.reading.revision != stored && dl_reading_path(dual_session)) {
-        if (ps_store("dualreading2", &status.reading, sizeof(status.reading)))
-            stored = status.reading.revision;
-    }
+    reading_checkpoint(!active, ctx->now_ms);
     const char *path = dl_reading_path(dual_session), *font = dl_font_path(dual_session);
     app_book_dual_status_t book_state = {0};
     if (app == &app_book) app_book_dual_status(&book_state);
+    if(settings.role==1&&progress_rejoin&&status.synced&&path){
+        if(!active)progress_rejoin=false;
+        else{
+            if(!dl_prepare_open(dual_session,path))return false;
+            if(!app_book_dual_reconcile(path))return false;
+            progress_rejoin=false;
+            return false;
+        }
+    }
     bool local_solo = app == &app_book && book_state.solo && !status.peer_reading;
     bool automatic_route = app == &app_book ||
         (app->product_shell && idle_reading_route() && ps_route() != PS_DUAL);
     bool explicit_idle = explicit_remote_open;
-    if ((ui_idle || explicit_idle) && !local_solo && status.connected && status.synced && !local_away &&
+    if ((ui_idle || explicit_idle) && !(settings.role==2&&progress_rejoin&&status.peer_reading&&!explicit_remote_open) && (!local_solo||explicit_remote_open||settings.role==1) && status.connected && status.synced && !local_away &&
         (settings.role == 1 || status.left_ready) &&
         path && font && status.reading.revision != applied &&
         (explicit_remote_open || automatic_route)) {
@@ -982,6 +1061,7 @@ bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw
         if (app_book_dual_apply(path, font, status.reading.spread + (settings.role == 2 ? 2 : 1),
                 status.reading.font_px, status.reading.reflow_pending, status.reading.revision)) {
             applied = status.reading.revision;
+            if(explicit_remote_open)(void)dl_remote_open_take(dual_session);
             ps_power_activity(ctx->now_ms);
             if (app != &app_book) ps_open_legacy(ctx, &app_book);
         }
@@ -1338,9 +1418,8 @@ static void pair_scan_update(void) {
         snprintf(pair_ip, sizeof(pair_ip), "%s", ble.ip);
         snprintf(pair_ap_ssid, sizeof(pair_ap_ssid), "%s", ble.ap_ssid);
         pair_code[0] = 0;
-        pair_found = true; pair_scanning = false;
-        pico_dual_ble_scan_stop();
-        if (pair_sock >= 0) { close(pair_sock); pair_sock = -1; }
+        pair_found = true;
+        pair_stop();
         if (pair_editing) {
             snprintf(draft_host, sizeof(draft_host), "%s", pair_ip);
             snprintf(draft_ap_ssid, sizeof(draft_ap_ssid), "%s", pair_ap_ssid);
@@ -1367,7 +1446,9 @@ static void pair_scan_update(void) {
             snprintf(pair_ap_ssid, sizeof(pair_ap_ssid), "%s", strcmp(ap, "-") ? ap : "");
             pair_code[0] = 0;
             pair_found = true;
-            pair_scanning = false;
+            // 局域网先发现也须退出 BLE 仅搜索模式，否则确认配对后仍无法连接。
+            // UDP-first discovery must also leave BLE scan-only mode before pairing can connect.
+            pair_stop();
             if (pair_editing) {
                 snprintf(draft_host, sizeof(draft_host), "%s", pair_ip);
                 snprintf(draft_ap_ssid, sizeof(draft_ap_ssid), "%s", pair_ap_ssid);
@@ -1466,6 +1547,17 @@ static void secondary_code(const char* input) {
     }
 }
 bool ps_dual_event(const ps_event_t* e) {
+    if(!primary_step&&!pair_editing&&settings.role&&(e->type==PS_SWIPE_L||e->type==PS_SWIPE_R)){
+        for(int i=0;i<4;i++){
+            EpdRect r=dual_control_rect(i/2,i%2);bool next;
+            bool on=i==0?orientation.primary_flip:i==1?orientation.secondary_flip:i==2?ps_touch_guard_enabled():ps_dual_rotation_locked();
+            if(ps_switch_swipe(e,r.x+r.width-54,r.y,54,r.height,&next)){
+                if(next==on)return true;
+                ps_event_t tap=*e;tap.type=PS_TAP;tap.x=r.x+r.width/2;tap.y=r.y+r.height/2;
+                return ps_dual_event(&tap);
+            }
+        }
+    }
     if (e->type != PS_TAP) return false;
     ps_view_t v = ps_view();
     int x = 20, w = v.w - 40;
@@ -1619,7 +1711,8 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     bool guard = !strncmp(line, "RPICO DUAL GUARD ", 17);
     bool calibrate = !strcmp(line, "RPICO DUAL CALIBRATE");
     bool font = !strncmp(line, "RPICO DUAL FONT ", 16);
-    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !guard && !calibrate && !font && strcmp(line, "RPICO DUAL STATUS")) return false;
+    bool radio = !strcmp(line, "RPICO DUAL RADIO");
+    if (!primary && !item && !open && !next && !previous && !shelf && !rescan && !rotate && !lock && !guard && !calibrate && !font && !radio && strcmp(line, "RPICO DUAL STATUS")) return false;
     load();
     bool accepted = true;
     if (item || open) {
@@ -1695,6 +1788,11 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
     ps_dual_status(&state);
     pico_dual_ble_status_t ble;
     pico_dual_ble_status(&ble);
+    if (radio) {
+        snprintf(out,capacity,"{\"radio\":true,\"connected\":%s,\"generation\":%u,\"error\":%d,\"rx_dropped\":%u,\"tx_retries\":%u}",
+            ble.connected?"true":"false",(unsigned)ble.generation,ble.error,(unsigned)ble.rx_dropped,(unsigned)ble.tx_retries);
+        return true;
+    }
     app_book_dual_status_t book; app_book_dual_status(&book);
     char book_id[65];
     for (unsigned i=0; i<32; ++i) snprintf(book_id+2*i,3,"%02x",state.reading.book[i]);
@@ -1724,3 +1822,8 @@ bool ps_dual_usb_command(const char* line, char* out, size_t capacity) {
         book.blank?"true":"false",(unsigned)book.chapter,(unsigned)book.start,(unsigned)book.end,book_id);
     return true;
 }
+
+bool ps_dual_prepare_open(const char* path){return dl_prepare_open(dual_session,path);}
+void ps_dual_prepare_open_reset(void){dl_prepare_open_reset(dual_session);}
+
+bool ps_dual_reconcile_at(uint32_t page){return dl_reconcile_at(dual_session,page);}

@@ -1,3 +1,56 @@
+## 0.40.0-dual107 · 本地候选 / Local candidate
+
+- 双屏后启动端在前屏扫描预计剩余约500毫秒时开始接力，下一页右→左、上一页左→右，两端发起一致。保持原扫描相位、波形及电源稳定等待；允许动画部分重叠，实际提前量取决于扫描估计、绘制和通信耗时。/ Start the trailing screen with about 500 ms of estimated lead scanning left, right→left for next and left→right for previous from either initiator. Retain scan phases, waveform and rail settling; actual overlap depends on scan estimates, rendering and transport.
+- 提前接力与真实推屏完成分别确认；旧修订、丢包或早到确认不能放行新页组，仍需两端真正完成才接受下一次翻页。控制协议v11，需两台一起升级。/ Acknowledge early relay separately from actual completion; stale revisions, loss or early ACKs cannot release a newer spread, and both displays must finish before another turn. Require protocol v11 on both devices.
+
+- 修复重连时首个状态已是合并后的修订、从机却仍等待另一个修订的卡点；主机布局就绪后应用当前版本，实际推屏成功再确认，避免同页恢复后下一次翻页一直等待。/ Apply an already-reconciled first reconnect state once primary layout is ready instead of waiting for another revision; confirm only after successful presentation so same-page recovery cannot strand the next turn.
+
+## 0.40.0-dual106 · 本地候选 / Local candidate
+
+- 双机上一页和下一页均在前屏动画期间准备后屏；后屏预先绘制并完成电源启动，仍在前屏实际完成后推屏，不改变波形、扫描时序或电源稳定等待。/ Prepare the trailing screen in both directions during the lead animation, including rendering and rail startup; gate presentation on actual lead completion without changing waveforms, scan timing or rail settling.
+- 翻页控制包入队即唤醒现有 BLE 发送循环，减少20毫秒轮询等待；预绘线程保留原核、优先级与12KiB栈，栈改用PSRAM，分配失败仍同步回退。/ Wake the existing BLE loop on enqueue instead of waiting up to20ms; retain prefetch core, priority and12KiB stack, allocate the stack in PSRAM and keep synchronous fallback.
+- 控制协议 v10，避免旧版从机把提前准备信号误作立即推屏；两台需同时升级。保留原分区、阅读进度及缓存数量。/ Require control protocol v10 on both devices so older peers cannot mistake preparation for permission to present; retain partitions, progress and buffer counts.
+
+## 0.40.0-dual105 · 本地候选 / Local candidate
+
+- 双机翻页按实际动画完成接力：下一页右屏先完整刷新、左屏后开始；上一页左屏先、右屏后，两端发起一致。移除固定120毫秒让行，右屏动画期间复用现有单帧缓存准备左屏。/ Relay by actual completion: right then left for next, left then right for previous, from either initiator; remove the fixed 120 ms lead and stage the left screen in the existing single-frame cache during the right animation.
+- 布局放行与推屏完成分离；完成通知携带当前修订号并可靠重发，失败推屏不放行后屏，旧通知不推进新页组，断连可结束本机等待。双方完成后才接收下一次翻页。/ Separate layout release from display completion; retry revision-bound completion, retain failure guards, reject stale release, finish local waiting on disconnect, and admit a new turn only after both displays complete.
+- 控制协议 v9，需两台同时升级；保留原分区、波形与硬件时序，沿用原线程和帧缓存。/ Both peers require control protocol v9; retain partitions, waveforms, hardware timing, existing workers and frame buffers.
+
+## 0.40.0-dual104 · 本地候选 / Local candidate
+
+- 修复真实书架“双设备打开”绕过历史记录、换书从第1／2页开始的问题；统一先交换并合并正文锚点再恢复共享双页。/ Restore saved source anchors through the actual paired shelf entry before opening a shared spread.
+- 双机预绘改为下一组的两页步幅；自推屏动画后在空闲补齐预绘，沿用单帧缓存与已有工作线程。预绘页眉使用目标页码。/ Prefetch the next paired spread using the existing single frame and worker, rewarm after self-presented turns, and draw the target page number.
+- 共享会话存档改为停翻1.5秒或退出时保存，避免逐页同步写卡阻塞起手；保存失败仍保留重试。/ Defer session checkpoints until 1.5 seconds of idle or exit, retaining failed writes for retry.
+
+## 0.40.0-dual103 · 本地候选 / Local candidate
+
+- 翻页请求与页面就绪状态立即交给 BLE 线程，新增版本优先于后台共享；重复状态与方向消息仍公平调度。双机翻页的 TF 进度写入移到停翻或退出时。/ Enqueue turn requests and ready snapshots before blocking display work, prioritize new revisions with fair repeat/orientation scheduling, and checkpoint paired progress on idle or exit.
+- BLE 接收溢出不再主动断联，对端写入背压保留队首延后重试；仅认证失败执行地址退避，重新配置清除旧退避。增加只读队列压力诊断。/ Retain authenticated connections on notification overflow, retry peer write backpressure, restrict address backoff to authentication failures, reset backoff on reconfiguration and expose read-only pressure counters.
+- 进度在页面就绪后发送，以保存成功的确认结束传输；丢包或丢确认重发同一序号，旧确认不丢弃新记录。任一设备阅读时暂停全书库进度遍历。控制协议 v8，需两台同时升级。/ Send resolved anchors reliably with durable-save acknowledgements, retry lost packets/ACKs without accepting stale acknowledgements, and pause full-library progress enumeration while either reader is active. Both readers require protocol v8.
+
+## 0.40.0-dual102 · 本地候选 / Local candidate
+
+- 修复局域网先发现主机后蓝牙仍停留在仅搜索模式、双端等待连接的问题；两种发现路径统一停止搜索并释放套接字，再进入配对确认。/ Stop scan-only BLE and release the discovery socket on both UDP-first and BLE-first discovery before pairing confirmation, fixing LAN pairs stuck waiting for control connectivity.
+
+## 0.40.0-dual101 · 测试频道 / Test channel
+
+- 统一镜像、系统界面与更新比较的版本来源，修复 dual100 仍显示 dual99。/ Share one version source across image metadata, system UI and update comparison.
+- 修复主机重开书未唤回从机和进度帧长度错误；开书前交换该书正文锚点，断联重连先合并较远位置再显示双页。/ Repair explicit peer opens and truncated progress frames; exchange text anchors before opens and reconcile furthest positions before reconnect presentation.
+- TF 分别保留单机/双机及最远进度；保留旧 NVS 进度源迁移，统一书架进度条，批注和草稿保存失败保留内容。/ Persist solo/paired/furthest records on TF with source-preserving NVS migration, consistent shelf bars and retained edits on failed annotation/draft saves.
+
+## 0.40.0-dual100 · 本地候选 / Local candidate
+
+- 系统与 Home Link 的二态开关统一为灰阶滑块，左关右开；Home Link 松手只提交一次，不把滑动交给卡片翻页或排序。/ Share grayscale switches across system and Home Link; commit once on release without paging or reordering.
+- 电池与百分比按文字实际宽度紧邻排列，状态栏与样式预览共用间距。/ Keep the battery and percentage together using measured text width in both live status and previews.
+
+## 0.40.0-dual99 · 本地候选 / Local candidate
+
+- 双机恢复直接采用主机最新全书双页与修订；家庭页只暂停本机显示，书架点击恢复；四种票根外观共用。/ Resume the primary's current book-wide spread and revision; Home pauses local display and shelf resumes explicitly using any of the four card styles.
+- 状态栏保留墨线极简与书页索引；样式弹窗内提供电量百分比独立开关，旧第三主题自动迁移；Wi-Fi 采用带迟滞的三档图标，当前双机角色加深。/ Keep two status themes with a shared percentage toggle inside the style picker, migrate the legacy theme, add hysteretic signal tiers and emphasize the local role.
+- 家庭目录每批24项，常态最多96个选中实体；保留旧隐藏与顺序。认证双机BLE分块同步主机权威配置、选择与排序，副机离线编辑保留草稿，冲突采用主机。/ Page the catalog by 24 and retain at most 96 selected entities, migrating visibility/order; authenticated BLE shares primary-authoritative settings with durable secondary drafts and primary-wins conflicts.
+- 灯光卡片增加松手单次提交的亮度滑杆；空调模式弹窗只列支持值；控制失败不重放。阅读时暂停家庭轮询和低优先级共享。/ Add release-only brightness and supported HVAC modes without command replay; pause polling and bulk sharing during reading.
+
 ## 0.40.0-dual98 · 测试频道 / Test channel
 
 - 应用目录与包地址随更新频道切换，测试包与稳定设备隔离；切换后清除旧目录选择，下载或安装期间禁止切换。/ Isolate test app feeds/packages, discard stale channel selections and reject channel changes during downloads/installation.

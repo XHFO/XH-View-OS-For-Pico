@@ -34,16 +34,16 @@ int main(int argc,char **argv){
         catalog.busy=0;catalog.result=2;catalog.revision++;app->tick();
         int y=landscape?138:184;
         assert(tap(app,40,y));assert(tap(app,landscape?350:40,y+(landscape?0:46)));
-        assert(tap(app,viewport.w-60,viewport.h-32));assert(!room_writes&&!syncs&&strstr(last_toast,"64"));
-        assert(tap(app,landscape?350:40,y+(landscape?0:46)));
-        assert(tap(app,40,y+(landscape?46:92)));
         room_fail=true;assert(tap(app,viewport.w-60,viewport.h-32));assert(room_writes==1&&!syncs);paint_rooms(app,"选择同步房间");
-        room_fail=false;assert(tap(app,viewport.w-60,viewport.h-32));assert(room_writes==2&&syncs==1&&committed_selection==5);
+        room_fail=false;assert(tap(app,viewport.w-60,viewport.h-32));assert(room_writes==2&&syncs==1&&committed_selection==3);
         paint_rooms(app,"添加与管理设备");
         assert(tap(app,viewport.w/2,viewport.h-32));paint_rooms(app,"选择同步房间");
         catalog.busy=0;catalog.result=2;catalog.revision++;app->tick();
-        assert(tap(app,40,y));assert(tap(app,40,viewport.h-32));assert(committed_selection==5&&syncs==1);paint_rooms(app,"添加与管理设备");
+        assert(tap(app,landscape?350:40,y+(landscape?0:46)));assert(tap(app,40,y+(landscape?46:92)));
+        assert(tap(app,viewport.w-60,viewport.h-32));assert(committed_selection==5&&syncs==2);
+        assert(tap(app,viewport.w/2,viewport.h-32));catalog.busy=0;catalog.result=2;catalog.revision++;app->tick();
+        assert(tap(app,40,y));assert(tap(app,40,viewport.h-32));assert(committed_selection==5&&syncs==2);paint_rooms(app,"添加与管理设备");
         app->stop();
     }
-    dlclose(lib);puts("PASS: real room-first UI, count limit, unassigned selection, failed-save draft/retry, cancel and pure portrait/landscape rendering");
+    dlclose(lib);puts("PASS: real room-first UI, large rooms without 64-item gate, unassigned selection, failed-save draft/retry, cancel and pure portrait/landscape rendering");
 }

@@ -9,6 +9,7 @@
 #include "pico_system.h"
 #include "pico_navigation.h"
 #include "pico_theme.h"
+#include "pico_app_switch.h"
 #include "pico_icons_data.h"
 #include "ttf_font.h"
 #include "ui_kit.h"
@@ -281,12 +282,16 @@ void ps_modal_background(uint8_t *fb) {
 }
 void ps_toggle(uint8_t *fb,int x,int y,int w,int h,const char *label,bool on,bool enabled) {
     ps_surface(fb,x,y,w,h,false);
-    bool compact=w<180;int size=compact?11:14,pill=compact?26:42;
-    ps_wrap(fb,x+(compact?8:12),y+(h-ui_size(size))/2,w-(compact?48:74),size,1,label,enabled?PS_THEME_INK:PS_THEME_DISABLED);
-    int sx=x+w-pill-(compact?6:12),sy=y+(h-24)/2;
-    ps_box(fb,sx,sy,pill,24,12,PS_THEME_INSET,true);
-    ps_center(fb,sx+pill/2,sy+5,10,on?"开":"关",enabled?PS_THEME_INK:PS_THEME_DISABLED);
-    if(on)ps_line(fb,sx+6,sy+20,sx+pill-6,sy+20,PS_THEME_INK);
+    bool compact=w<180;int size=compact?11:14,sw=compact?38:48,sh=compact?22:26,pad=compact?8:12;
+    ps_wrap(fb,x+pad,y+(h-ui_size(size))/2,w-sw-3*pad,size,1,label,enabled?PS_THEME_INK:PS_THEME_DISABLED);
+    ps_switch_draw(fb,x+w-sw-pad,y+(h-sh)/2,sw,sh,on,enabled);
+}
+void ps_switch_draw(uint8_t *fb,int x,int y,int w,int h,bool on,bool enabled){
+    pico_switch_draw(fb,x,y,w,h,on,enabled,ps_box);
+}
+bool ps_switch_swipe(const ps_event_t *e,int x,int y,int w,int h,bool *on){
+    if(!e||!on||(e->type!=PS_SWIPE_L&&e->type!=PS_SWIPE_R)||!ps_hit(e->x0,e->y0,x,y,w,h))return false;
+    *on=e->type==PS_SWIPE_R;return true;
 }
 void ps_button(uint8_t* fb, int x, int y, int w, int h, const char* label, bool selected) {
     if (w <= 0 || h <= 0) return;
@@ -319,7 +324,7 @@ static uint16_t icon_segment_mask(int ax,int ay,int bx,int by,int radius,int x,i
 static int icon_coordinate(int origin,int coordinate,int size) {
     return origin+(coordinate*size+12)/24;
 }
-void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
+static void icon_draw(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray,unsigned bands) {
     if(!fb||size<=0||size>1024)return;
     if((unsigned)icon>=PI_COUNT)icon=PI_MORE;
     ps_icon_shape_t shape=ps_icon_shapes[icon];if(!shape.count)return;
@@ -331,6 +336,7 @@ void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
     int left=width,right=0,top=height,bottom=0;
     for(unsigned i=0;i<shape.count;i++) {
         ps_icon_segment_t s=ps_icon_segments[shape.first+i];
+        if(icon==PI_WIFI&&((bands<3&&(s.ay<80||s.by<80))||(bands<2&&(s.ay<120||s.by<120))))continue;
         int ax=icon_coordinate(ox,s.ax,native_size),ay=icon_coordinate(oy,s.ay,native_size);
         int bx=icon_coordinate(ox,s.bx,native_size),by=icon_coordinate(oy,s.by,native_size);
         int low=(ax<bx?ax:bx)-radius,high=(ax>bx?ax:bx)+radius;
@@ -349,6 +355,7 @@ void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
         memset(row+left,0,(size_t)(right-left)*sizeof(*row));
         for(unsigned i=0;i<shape.count;i++) {
             ps_icon_segment_t s=ps_icon_segments[shape.first+i];
+        if(icon==PI_WIFI&&((bands<3&&(s.ay<80||s.by<80))||(bands<2&&(s.ay<120||s.by<120))))continue;
             int ax=icon_coordinate(ox,s.ax,native_size),ay=icon_coordinate(oy,s.ay,native_size);
             int bx=icon_coordinate(ox,s.bx,native_size),by=icon_coordinate(oy,s.by,native_size);
             int low_y=py*8+1-radius,high_y=py*8+7+radius;
@@ -370,6 +377,9 @@ void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
             coverage_pixel(fb,px,py,gray,__builtin_popcount((unsigned)row[px]));
     }
 }
+void ps_icon(uint8_t *fb,int x,int y,int size,ps_icon_t icon,int gray){icon_draw(fb,x,y,size,icon,gray,3);}
+// 使用原矢量路径按完整弧线分档，不擦除局部笔画。/ Select whole arcs from the existing vector without erasing partial strokes.
+void ps_wifi_signal(uint8_t *fb,int x,int y,int size,unsigned level,int gray){icon_draw(fb,x,y,size,PI_WIFI,gray,level);}
 void ps_corner_controls(uint8_t *fb) {
     ps_view_t v=ps_view();
     // 透明线段贴合屏幕圆角，镜像绘制且不擦除正文。/ Transparent mirrored segments follow screen corners without clearing content.

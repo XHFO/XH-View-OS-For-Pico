@@ -34,3 +34,13 @@ bool ps_home_pga_portal_commit(const rp_home_config_t *config, bool *queued);
 void ps_home_pga_portal_set_owner(bool portal_owns_writes);
 
 bool ps_home_pga_discover(bool start, rp_home_discovery_t *out, bool *busy, bool *failed);
+
+bool ps_home_pga_catalog(uint32_t command,pico_app_home_catalog_t *out);
+bool ps_home_pga_selection(uint32_t command,pico_app_home_selection_t *out);
+
+/// 认证BLE通道上的低优先级家庭共享；回调只缓存，持久化由工作器提交。/ Low-priority home sharing on authenticated BLE; callbacks buffer, the worker commits.
+void ps_home_pga_share_tick(int role,bool connected,const uint8_t owner[8],int64_t now,bool reading);
+bool ps_home_pga_share_receive(const uint8_t *packet,size_t bytes);
+size_t ps_home_pga_share_take(uint8_t *packet,size_t capacity);
+
+void ps_home_pga_share_context(int role,bool reading);

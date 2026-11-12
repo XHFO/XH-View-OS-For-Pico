@@ -58,7 +58,7 @@ enum { PGA_HOME_STATUS, PGA_HOME_SYNC, PGA_HOME_OPEN_SETUP, PGA_HOME_ENTRY };
 enum { PGA_HOME_CONFIG_GET, PGA_HOME_CONFIG_SET };
 enum { PGA_HOME_INPUT_OPEN, PGA_HOME_INPUT_TAKE, PGA_HOME_INPUT_CANCEL };
 enum { PGA_HOME_CFG=1u, PGA_HOME_WIFI=2u, PGA_HOME_BUSY=4u, PGA_HOME_EXTERNAL=8u, PGA_HOME_CF=16u,
-       PGA_HOME_ENTRY_OK=32u, PGA_HOME_PORTAL=64u, PGA_HOME_MANAGE=128u };
+       PGA_HOME_ENTRY_OK=32u, PGA_HOME_PORTAL=64u, PGA_HOME_MANAGE=128u, PGA_HOME_PENDING=256u };
 /* PGA_HOME_ENTRY result, valid only with PGA_HOME_ENTRY_OK: 0 monitor, 1 connection setup, 2 printers. */
 typedef struct {
     uint32_t bytes,flags,revision,entity_count,entity_total,printer_count;
@@ -79,7 +79,9 @@ typedef struct {
     char id[96],name[64],state[48],unit[12],room[32];
     uint8_t kind,available,on;
     float number;
+    uint8_t brightness,dimmable,hvac_modes;
 } pico_app_home_entity_t;
+#define PICO_HOME_ENTITY_V1_BYTES offsetof(pico_app_home_entity_t,brightness)
 typedef struct {
     uint32_t bytes,slot;
     char name[48],state[40],task[96];
@@ -103,6 +105,19 @@ typedef struct {
     char error[96];
     pico_app_home_area_t items[32];
 } pico_app_home_rooms_t;
+enum { PGA_CATALOG_GET, PGA_CATALOG_SCAN };
+enum { PGA_SELECTION_GET, PGA_SELECTION_SET };
+typedef struct {
+    uint32_t bytes,revision,offset,count,total;
+    uint8_t busy,result;
+    char error[64];
+    pico_app_home_entity_t items[24];
+} pico_app_home_catalog_t;
+typedef struct {
+    uint32_t bytes,revision,count;
+    uint8_t configured,pending;
+    char error[64],ids[96][96];
+} pico_app_home_selection_t;
 typedef struct {
     uint32_t abi,bytes;
     pico_app_view_t (*view)(void);
@@ -175,6 +190,9 @@ typedef struct {
     bool (*home_rooms)(uint32_t command,pico_app_home_rooms_t *rooms);
     /// 有界HA打印状态实体发现，不泄露凭据。/ Bounded HA printer-status discovery without credentials.
     bool (*printer_candidate)(uint32_t index,pico_app_printer_config_t *out);
+    /// 编辑目录与持久选中ID，能力追加不改变ABI1前缀。/ Optional editing catalog and selected IDs preserve the ABI1 prefix.
+    bool (*home_catalog)(uint32_t command,pico_app_home_catalog_t *out);
+    bool (*home_selection)(uint32_t command,pico_app_home_selection_t *out);
 } pico_app_host_t;
 
 /// 旧八款应用所需的原始宿主前缀；追加能力不得改变ABI1。/ Original host prefix for the eight existing apps; optional additions preserve ABI1.

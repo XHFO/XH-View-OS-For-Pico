@@ -81,6 +81,7 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
         h->body=package;h->size=sizeof(package);if(fail_download)h->status=500;}
     return h;
 }
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t h,const char* name,const char* value){(void)h;assert(!strcmp(name,"Cache-Control")||!strcmp(name,"Pragma"));assert(strstr(value,"no-cache"));return ESP_OK;}
 esp_err_t esp_http_client_open(esp_http_client_handle_t h,int n){(void)h;(void)n;return ESP_OK;}
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h){return h->size;}
 int esp_http_client_get_status_code(esp_http_client_handle_t h){return h->status;}

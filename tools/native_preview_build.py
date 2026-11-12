@@ -153,6 +153,7 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
     bound.add(ROOT/'components/epdiy/src/epdiy.c')
     bound.add(ROOT/'main/display.c')
     bound.add(ROOT/'main/system/pico_home_link_ui.inc')
+    bound.add(ROOT/'main/system/pico_home_share.inc')
     bound.add(ROOT/'main/system/pico_ime_dictionary.inc')
     bound.add(ROOT/'assets/tf-pack/readpico/ime/pinyin-v1.bin')
     bound.add(ROOT/'components/continuous_du/include/continuous_du.h')
@@ -178,7 +179,8 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
     bound.add(ROOT/'components/read_pico_transfer/manage.html')
     bound.add(ROOT/'components/read_pico_transfer/include/read_pico_management.h')
     bound.update(ROOT/'main/assets'/f'{name}.ttf' for name in ['builtin','serif','kai'])
-    version=re.search(r'#define PS_VERSION "([^"]+)"',(ROOT/'main/system/pico_system.c').read_text()).group(1)
+    version=re.search(r'#define PICO_FIRMWARE_VERSION "([^"]+)"',(ROOT/'main/system/pico_version.h').read_text()).group(1)
+    bound.add(ROOT/'main/system/pico_version.h')
     manifest={'schema':1,'kind':'native-host-preview','source_root':str(ROOT.resolve()),'version':version,'binary':str(binary),'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'game_packages':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(game_packages.glob('*.pga'))},'game_package_mode':'native-only' if game_report['native_only'] else 'device-and-native','game_execution':'independent-native-payloads-from-private-tf','sources':{str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(bound)},'hardware_access':False}
     manifest['tool_packages']={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(tool_packages.glob('*.pga'))}
     manifest['tool_package_mode']='device-and-native' if tool_report['device_ready'] else 'native-only'

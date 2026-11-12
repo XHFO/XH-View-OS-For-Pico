@@ -154,12 +154,14 @@ void ps_sound_render(uint8_t *fb) {
     ps_wrap(fb,24,top+4*(rh+gap)+4,v.w-48,11,2,"关闭总开关即静音。锁屏和休眠期间不发提示音。",5);
 }
 bool ps_sound_event(const ps_event_t *event) {
-    if(!event||event->type!=PS_TAP)return false;
+    if(!event)return false;
     ps_view_t v=ps_view();int top=112,rh=v.landscape?40:56,gap=v.landscape?6:12;
     uint8_t flags=ps_sound_options();
-    for(unsigned i=0;i<4;i++)if(ps_hit(event->x,event->y,20,top+i*(rh+gap),v.w-40,rh)) {
+    for(unsigned i=0;i<4;i++){
+        bool next=!(flags&(1u<<i));int y=top+i*(rh+gap);
+        if(!((event->type==PS_TAP&&ps_hit(event->x,event->y,20,y,v.w-40,rh))||ps_switch_swipe(event,v.w-86,y,66,rh,&next)))continue;
         if(i&&!(flags&PS_SOUND_ENABLED)){ps_toast("请先开启提示音");return true;}
-        flags^=1u<<i;
+        if(next)flags|=1u<<i;else flags&=~(1u<<i);
         if(!ps_sound_configure(flags&PS_SOUND_ENABLED,flags&PS_SOUND_TOUCH,flags&PS_SOUND_CHARGING,flags&PS_SOUND_ERROR)) {
             ps_toast("提示音设置保存失败");ps_sound_error();
         }

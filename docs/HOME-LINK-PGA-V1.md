@@ -1,6 +1,6 @@
 # Home Link TF 工具包 / TF package
 
-当前集成固件 `0.39.1-dev69` 默认 `PICO_HOME_LINK_FULL=OFF`。工具包位置 `/sdcard/apps/tools/home-link.pga`，kind **130**、ABI **1**、当前版本 **10106**。完整字段、鉴权与兼容边界见 [HOME-LINK-CONTRACT.md](HOME-LINK-CONTRACT.md)。
+当前本地候选固件 `0.40.0-dual99` 默认 `PICO_HOME_LINK_FULL=OFF`。工具包位置 `/sdcard/apps/tools/home-link.pga`，kind **130**、ABI **1**、当前版本 **10110**。完整字段、鉴权与兼容边界见 [HOME-LINK-CONTRACT.md](HOME-LINK-CONTRACT.md)。
 
 The default thin host uses the optional TF package above. See the shared contract for authentication, field definitions and compatibility.
 
@@ -51,3 +51,17 @@ Host tests cover the actual module, portal fields/page and wrapper lifecycle/aut
 新配置不存在时，只读校验旧 `pico_home_link/settings`，保留旧文件；显式保存才写新命名空间。新配置已存在（包括明确清空）或读取失败时，不回退旧凭据。界面绘制不发起同步或消费输入，控制请求在后台执行；暂停先阻止新工作，未完成请求不回写休眠后或新配置的快照。
 
 Read legacy `pico_home_link/settings` only when the new configuration is absent, preserving the old store. Explicit saves use the new namespace. Existing cleared settings and read failures never revive old credentials. Painting is side-effect-free; controls run in the worker, and suspension rejects new work and stale result publication.
+
+## 选择与双机共享 / Selection and paired sharing
+
+SDK在宿主尾部追加 `home_catalog` 和 `home_selection`，调用前检查 `host.bytes`。目录每批24项、选择最多96项，选择修订不匹配时拒绝保存。实体的亮度、调光能力和空调模式位图追加到原结构尾部；宿主按调用方长度拷贝，旧包仍读取原前缀。旧64项隐藏/顺序记录在首次有效快照迁移，不在绘制时写入。
+
+The appended catalog/selection functions require host-length checks. Entity capabilities are optional trailing fields; the host copies only the caller's capacity, retaining old-package prefix compatibility. Legacy preferences migrate from the first valid snapshot outside rendering.
+
+`pico_home_duo/settings` 是压缩且完整校验的单条NVS事务，保存主机所有者、版本、HA配置、房间范围、选择与顺序；不改变旧v3凭据布局。仅在新记录不存在时迁移旧配置，损坏或明确清空不复活旧凭据。副机草稿存于 `pico_home_draft`，主机成功保存后才生效；冲突草稿持久保留但不自动重提。打印机配置和Wi-Fi密码不传输。连接已有认证加密BLE通道后，使用有界分块、校验、确认和90秒超时；摘要相同跳过配置传输。中断不提交半份配置。
+
+A compressed, checked single NVS record owns paired configuration; secondary drafts become active only after a primary commit. Conflicts stay durable without automatic resubmission. Existing encrypted/authenticated BLE carries bounded acknowledged chunks; matching digests skip transfer, interruption never publishes partial state, and printer settings/Wi-Fi passwords stay local.
+
+联动时主机按30秒周期获取状态，副机接收快照；副机断开后可凭已保存配置独立联网。任一端阅读时暂停普通轮询及大块共享。手动控制在操作端执行一次，失败或超时不重试重放；调光拖动只预览，松手提交；空调模式必须出现在HA支持列表。控制结果由后续状态确认。
+
+The primary polls every 30 seconds while linked; a detached secondary can connect independently. Reading pauses ordinary polling/bulk transfer. Explicit controls execute once at the operating device, brightness submits on release, supported HVAC modes are validated, and later snapshots confirm state without replaying commands.

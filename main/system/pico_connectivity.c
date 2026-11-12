@@ -381,7 +381,12 @@ void ps_connectivity_render(uint8_t *fb){
         bool on=(c->id==CC_WIFI_TOGGLE&&cc_status.wifi_enabled)||(c->id==CC_NEARBY&&!cc_tab)||
             (c->id==CC_SAVED&&cc_tab)||(c->id==CC_QR_JOIN&&!cc_qr_url)||(c->id==CC_QR_URL&&cc_qr_url)||
             c->id==CC_CONFIRM_YES||c->id==CC_TRANSFER_STA||c->id==CC_BOOKS;
-        ps_button(fb,c->x,c->y,c->w,c->h,c->label,on);
+        if(c->id==CC_WIFI_TOGGLE)ps_switch_draw(fb,c->x+(c->w-48)/2,c->y+(c->h-26)/2,48,26,on,true);
+        else if(c->id==CC_AUTO_JOIN){
+            int at=cc_saved_index(cc_selected.ssid);
+            ps_toggle(fb,c->x,c->y,c->w,c->h,"自动连接",at>=0&&cc_status.saved[at].auto_join,true);
+        }
+        else ps_button(fb,c->x,c->y,c->w,c->h,c->label,on);
     }
 }
 
@@ -569,6 +574,17 @@ static void cc_action(int id,bool details){
 
 static ps_scroll_track_t cc_list_scroll;
 bool ps_connectivity_event(const ps_event_t *event){
+    if(event->type!=PS_TAP){
+        cc_control_t controls[24];int n=cc_controls(controls);bool next;
+        for(int i=0;i<n;i++){
+            cc_control_t *c=&controls[i];if(c->id!=CC_WIFI_TOGGLE&&c->id!=CC_AUTO_JOIN)continue;
+            if(!ps_hit(event->x0,event->y0,c->x+c->w-66,c->y,66,c->h))continue;
+            if(!ps_switch_swipe(event,c->x+c->w-66,c->y,66,c->h,&next))return true;
+            int at=cc_saved_index(cc_selected.ssid);bool on=c->id==CC_WIFI_TOGGLE?cc_status.wifi_enabled:at>=0&&cc_status.saved[at].auto_join;
+            if(next!=on)cc_action(c->id,false);
+            return true;
+        }
+    }
     // 列表在拖动越过阈值时就翻一页，松手合成的滑动不再翻第二次。确认框和详情不抢手势。
     // The list turns one page once the drag crosses the threshold; the synthesized lift swipe does not turn again. Confirms and details do not take the gesture.
     if(!cc_confirm&&cc_page==PS_WIFI&&cc_view==CC_LIST){

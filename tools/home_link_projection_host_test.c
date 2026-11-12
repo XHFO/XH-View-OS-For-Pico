@@ -42,17 +42,36 @@ static rp_home_result_t fixture(void *unused, const rp_home_http_request_t *r, c
     if (*used >= n) return RP_HOME_TOO_LARGE;
     memcpy(out, reply, *used); return RP_HOME_OK;
 }
+static char control_url[288],control_body[192];
+static rp_home_result_t control_fixture(void *ctx,const rp_home_http_request_t *r,char *out,size_t n,size_t *used,int *status){
+    (void)ctx;(void)out;(void)n;calls++;snprintf(control_url,sizeof(control_url),"%s",r->url);snprintf(control_body,sizeof(control_body),"%s",r->body);
+    *used=0;*status=response_status;return response_status==0?RP_HOME_HTTP:RP_HOME_OK;
+}
+static void controls_contract(void){
+    rp_home_transport_t t={control_fixture,NULL,NULL};int status=0;
+    rp_home_entity_t e={.kind=RP_HOME_LIGHT,.available=1,.dimmable=1};strcpy(e.id,"light.room");
+    for(int pct=0;pct<=100;pct+=50){assert(rp_home_control(&config,&e,"set_brightness",pct,&t,true,&status)==RP_HOME_OK);assert(strstr(control_url,"/light/turn_on"));char expected[32];snprintf(expected,sizeof(expected),"\"brightness_pct\":%d",pct);assert(strstr(control_body,expected));}
+    unsigned count=calls;
+    for(unsigned i=0;i<4;i++){float invalid[]={-1,101,NAN,INFINITY};assert(rp_home_control(&config,&e,"set_brightness",invalid[i],&t,true,&status)==RP_HOME_INVALID);}
+    e.dimmable=0;assert(rp_home_control(&config,&e,"set_brightness",50,&t,true,&status)==RP_HOME_INVALID);assert(calls==count);
+    e.kind=RP_HOME_CLIMATE;e.hvac_modes=(1<<2)|(1<<4);strcpy(e.id,"climate.room");
+    assert(rp_home_control(&config,&e,"set_hvac_mode",2,&t,true,&status)==RP_HOME_OK&&strstr(control_body,"\"cool\""));
+    count=calls;float bad[]={0,1,3,5,6,7,2.5f,NAN};for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);i++)assert(rp_home_control(&config,&e,"set_hvac_mode",bad[i],&t,true,&status)==RP_HOME_INVALID);assert(calls==count);
+    response_status=0;assert(rp_home_control(&config,&e,"set_hvac_mode",4,&t,true,&status)==RP_HOME_HTTP&&calls==count+1);
+    puts("PASS: brightness boundaries/capability, only supported HVAC enums, timeout executes once without retry");
+}
 int main(int argc, char **argv) {
     cJSON_Hooks hooks = {tracked_malloc, tracked_free}; cJSON_InitHooks(&hooks);
     config.version=RP_HOME_CONFIG_VERSION; config.enabled=1;
     strcpy(config.local,"http://ha.fixture:8123"); strcpy(config.ha_token,"fixture-only");
     config.printers[0].source=RP_HOME_HA; strcpy(config.printers[0].serial,"sensor.selected");
+    if(argc==2&&!strcmp(argv[1],"controls")){controls_contract();return 0;}
     if (argc == 2 && !strcmp(argv[1], "template")) {
-        char *body=states_body(&config); assert(body); puts(body); tracked_free(body); assert(!live); return 0;
+        char *body=projection_body(&config,NULL,NULL,0,RP_HOME_ENTITIES,false); assert(body); puts(body); tracked_free(body); assert(!live); return 0;
     }
     if(argc==2&&!strcmp(argv[1],"scoped-template")){
         rp_home_area_scope_t scope={.version=1,.count=1};strcpy(scope.ids[0],"office");
-        char *body=states_body_scoped(&config,&scope);assert(body);puts(body);tracked_free(body);assert(!live);return 0;
+        char *body=projection_body(&config,&scope,NULL,0,RP_HOME_DEVICE_LIMIT,false);assert(body);puts(body);tracked_free(body);assert(!live);return 0;
     }
     if(argc==2&&!strcmp(argv[1],"areas-template")){puts(ha_areas_template);return 0;}
     assert(argc == 4);
@@ -63,14 +82,16 @@ int main(int argc, char **argv) {
     assert(snapshot.entity_count==expected && snapshot.entity_total==total && snapshot.rooms_synced);
     assert((total>expected) == (snapshot.truncated != 0));
     if(expected) {
-        assert(!strcmp(snapshot.entities[0].id,"light.first"));
-        assert(!strcmp(snapshot.entities[0].room,"书房"));
-        assert(snapshot.entities[0].available && snapshot.entities[0].on);
+        unsigned first=0;while(first<snapshot.entity_count&&strcmp(snapshot.entities[first].id,"light.first"))first++;
+        assert(first<snapshot.entity_count&&!strcmp(snapshot.entities[first].room,"书房"));
+        assert(snapshot.entities[first].available&&snapshot.entities[first].on);
         assert(snapshot.printers[0].has_data && snapshot.printers[0].percent==73);
         assert(!strcmp(snapshot.printers[0].task,"Keep this task"));
         if (expected == 6) {
-            for (unsigned i = 0; i < 6; i++) assert(snapshot.entities[i].kind == i);
-            assert(snapshot.entities[2].number == 26.5f && !snapshot.entities[3].available);
+            unsigned kinds=0;for(unsigned i=0;i<6;i++){rp_home_entity_t *e=&snapshot.entities[i];kinds|=1u<<e->kind;
+                if(e->kind==RP_HOME_CLIMATE)assert(e->number==26.5f);
+                if(e->kind==RP_HOME_FAN)assert(!e->available);}
+            assert(kinds==63);
         }
     }
     previous=snapshot;

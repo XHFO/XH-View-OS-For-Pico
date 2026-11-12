@@ -5,7 +5,9 @@ option(PICO_OTA_UPDATER "Build the small ota_1 TF updater" OFF)
 if(PICO_OTA_UPDATER)
     set(PROJECT_VER "ota-updater-1")
 else()
-    set(PROJECT_VER "0.40.0-dual98")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/main/system/pico_version.h")
+    file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/main/system/pico_version.h" pico_version REGEX "^#define PICO_FIRMWARE_VERSION")
+    string(REGEX REPLACE "^#define PICO_FIRMWARE_VERSION \"([^\"]+)\".*" "\\1" PROJECT_VER "${pico_version}")
 endif()
 # OFF：家庭 HA/打印机静态栈改为 TF tools/home-link.pga；固件仅薄宿主空状态。
 # OFF: Home HA/printer static stack moves to TF tools/home-link.pga; firmware keeps thin empty host.

@@ -192,7 +192,10 @@ static reader_book_t rb[BOOK_COUNT];
 static reader_prefs_t rp;
 static bool reader_checkpoint_clean;
 static bool reader_store(const char *key,const void *data,size_t bytes){
-    bool ok=ps_store(key,data,bytes);
+    char current[160],other[160];bool sd=false;
+    bool record=!strncmp(key,"reader-r3-",10)||!strcmp(key,"reader-draft-v2")||!strcmp(key,"reader-real-d2");
+    bool ok=record ? ps_storage_record_roots(current,other,sizeof(current),&sd)&&sd&&ps_store_at(current,key,data,bytes) : ps_store(key,data,bytes);
+    if(record&&!ok)ps_toast("TF 卡不可写，阅读记录暂留本次会话");
     if(!ok)reader_checkpoint_clean=false;
     return ok;
 }
@@ -1985,13 +1988,11 @@ static void shelf_open_choice_execute(bool dual){
     char path[BOOK_STORE_PATH_MAX];
     ri_copy(path,sizeof(path),shelf_open_choice_path);
     shelf_open_choice_close();
-    if(dual){
-        (void)ps_dual_open(path);
-        return;
-    }
     ps_dual_set_local_away(true);
     app_book_dual_pause();
-    if(app_book_open_path_single(path))ps_legacy(&app_book);
+    // 双机选择同样读取并合并历史锚点，不能经低层开书接口重置为第一页。
+    // Paired selections also restore and merge history instead of resetting through the raw open API.
+    if(dual?app_book_open_path(path):app_book_open_path_single(path))ps_legacy(&app_book);
     else ps_toast("无法在本机打开这本书，请刷新书库后重试");
 }
 static void shelf_file_open(int index){
@@ -2005,7 +2006,10 @@ static void shelf_file_open(int index){
         shelf_open_choice_begin(&shelf_files[index]);
         return;
     }
-    if(ps_dual_enabled()){ps_dual_open(shelf_files[index].path);return;}
+    if(ps_dual_enabled()){
+        ps_dual_set_local_away(true);
+        app_book_dual_pause();
+    }
     if(app_book_open_path(shelf_files[index].path))ps_legacy(&app_book);
     else ps_toast("无法打开这本书，请刷新后重试");
 }
@@ -2394,20 +2398,21 @@ static void shelf_open_right(uint8_t *fb,int x,int cy,int radius){
     shelf_hairarc(fb,x,cy,radius,-1,-1);
     shelf_hairarc(fb,x,cy,radius,-1,1);
 }
-static void shelf_card_meta(uint8_t *fb,int x,int y,bool landscape,reader_file_t *book){
-    const char *format=book?(book->epub?"EPUB":"TXT"):"BOOK";
-    const char *location=book?(book->is_flash?"内置存储":"TF 卡"):"等待传入图书";
+static void shelf_card_meta(uint8_t *fb,int x,int y,bool landscape,reader_file_t *book,bool dual){
+    const char *format=dual?"双机":book?(book->epub?"EPUB":"TXT"):"BOOK";
+    const char *location=dual?"点击返回当前双页":book?(book->is_flash?"内置存储":"TF 卡"):"等待传入图书";
     int tag_w=landscape?27:31;
     ps_box(fb,x,y,tag_w,17,5,PS_THEME_BORDER,true);
     ps_center(fb,x+tag_w/2,y+3,8,format,PS_THEME_INK);
     ps_text_fixed(fb,x+tag_w+8,y+4,9,location,PS_THEME_SECONDARY);
 }
 static void shelf_continue_card(uint8_t *fb,int x,int y,int width,int height,bool landscape,
-                                const char *title,const char *position,reader_file_t *book){
+                                const char *title,const char *position,reader_file_t *book,bool dual){
     uint8_t style=ps_shelf_card_style();
     int bottom=y+height-3;
     char pct[12];
-    if(book)snprintf(pct,sizeof(pct),"%u%%",book->pct);
+    if(dual){dl_status_t current;ps_dual_status(&current);snprintf(pct,sizeof(pct),"%u/%u",(unsigned)current.reading.spread+1,(unsigned)current.reading.spread+2);}
+    else if(book)snprintf(pct,sizeof(pct),"%u%%",book->pct);
     else ri_copy(pct,sizeof(pct),"--");
     if(style==PS_SHELF_CARD_DEFAULT){
         const int tab=24,split=x+width-70,stub_center=split+35;
@@ -2422,10 +2427,10 @@ static void shelf_continue_card(uint8_t *fb,int x,int y,int width,int height,boo
         shelf_ticket_dash(fb,split,y+7,bottom-y-12);
         for(int row=0;row<14;row++)ps_fill(fb,x+6,y+height/2-7+row,row<=6?row+1:14-row,1,PS_THEME_SURFACE);
         shelf_name_text(fb,x+tab+12,y+(landscape?8:12),split-x-tab-22,landscape?20:24,title,PS_THEME_INK);
-        shelf_card_meta(fb,x+tab+12,y+(landscape?32:42),landscape,book);
+        shelf_card_meta(fb,x+tab+12,y+(landscape?32:42),landscape,book,dual);
         int bx=x+tab+12,by=bottom-(landscape?24:29),bw=split-bx-12;
         if(bw>8){ps_box(fb,bx,by,bw,5,2,PS_THEME_BORDER,true);if(book&&book->pct)ps_box(fb,bx,by,bw*book->pct/100,5,2,PS_THEME_INK,true);}
-        ps_text_fixed(fb,bx,bottom-(landscape?16:20),9,book?"已读进度 · 点击继续":"点击继续",PS_THEME_SECONDARY);
+        ps_text_fixed(fb,bx,bottom-(landscape?16:20),9,dual?"双机当前双页 · 点击恢复":book?"已读进度 · 点击继续":"点击继续",PS_THEME_SECONDARY);
         ps_center(fb,stub_center,y+7,9,"进度",PS_THEME_SECONDARY);
         ps_center(fb,stub_center,y+(landscape?31:37),landscape?16:19,pct,PS_THEME_INK);
         ps_center(fb,stub_center,bottom-14,8,"续读",PS_THEME_SECONDARY);
@@ -2440,8 +2445,8 @@ static void shelf_continue_card(uint8_t *fb,int x,int y,int width,int height,boo
         shelf_open_left(fb,x,split,5);shelf_open_right(fb,x+width,split,5);
         shelf_ticket_dash_horizontal(fb,x+7,x+width-7,split);
         shelf_name_text(fb,x+12,y+(landscape?8:12),width-24,landscape?20:26,title,PS_THEME_INK);
-        shelf_card_meta(fb,x+12,y+(landscape?31:44),landscape,book);
-        ps_text_fixed(fb,x+12,split+7,9,"已读进度 · 点击继续",PS_THEME_SECONDARY);
+        shelf_card_meta(fb,x+12,y+(landscape?31:44),landscape,book,dual);
+        ps_text_fixed(fb,x+12,split+7,9,dual?"双机当前双页":"已读进度 · 点击继续",PS_THEME_SECONDARY);
         ps_center(fb,x+width-35,split+5,landscape?12:14,pct,PS_THEME_INK);
         return;
     }
@@ -2463,9 +2468,9 @@ static void shelf_continue_card(uint8_t *fb,int x,int y,int width,int height,boo
         shelf_open_top(fb,split,y,5);shelf_open_bottom(fb,split,bottom,5);
     }
     shelf_ticket_dash(fb,split,y+7,bottom-y-12);
-    const char *route="按上次位置继续阅读",*stub="进度";
+    const char *route=dual?"主机左页 · 从机右页":"按上次位置继续阅读",*stub=dual?"双页":"进度";
     shelf_name_text(fb,x+12,y+(landscape?14:18),split-x-24,landscape?23:27,title,PS_THEME_INK);
-    shelf_card_meta(fb,x+12,y+(landscape?40:55),landscape,book);
+    shelf_card_meta(fb,x+12,y+(landscape?40:55),landscape,book,dual);
     ps_text_fixed(fb,x+12,y+(landscape?61:77),9,route,PS_THEME_SECONDARY);
     ps_center(fb,stub_center,y+7,9,stub,PS_THEME_SECONDARY);
     if(style==PS_SHELF_CARD_CINEMA){
@@ -2505,11 +2510,12 @@ static void shelf_render(uint8_t *fb){
         ps_button(fb,l.banner_x+10,l.banner_y+l.banner_h-46,bw,38,rp.sort?"按书名排序":"按最近阅读",false);
         ps_button(fb,l.banner_x+20+bw,l.banner_y+l.banner_h-46,bw,38,"完成",false);
     }else if(dual_return&&!shelf_cover_grid_more()){
-        ps_box(fb,cx,l.continue_y+2,cw,l.continue_h-2,12,PS_THEME_SELECTED,true);
-        ps_box(fb,cx,l.continue_y,cw,l.continue_h-3,12,PS_THEME_SURFACE,true);
-        ps_text(fb,cx+14,l.continue_y+9,10,"双机阅读",PS_THEME_SECONDARY);
-        shelf_name_text(fb,cx+14,l.continue_y+31,cw-28,v.landscape?20:24,"返回两台设备的当前双页",PS_THEME_INK);
-        ps_text(fb,cx+14,l.continue_y+l.continue_h-24,10,"主设备左页 · 从设备右页 · 点击继续",PS_THEME_SECONDARY);
+        const char *path=ps_dual_path();reader_file_t *book=NULL;
+        for(int i=0;path&&i<shelf_file_count;i++)if(!strcmp(shelf_files[i].path,path)){book=&shelf_files[i];break;}
+        const char *name=book?book->name:path?strrchr(path,'/'):NULL;
+        if(name&&*name=='/')name++;
+        shelf_continue_card(fb,cx,l.continue_y,cw,l.continue_h,v.landscape,
+                            name?name:"返回两台设备的当前双页","",book,true);
     }else if(!dual_return&&!shelf_cover_grid_more()){
         if(continued>=0){
             reader_file_t *book=&shelf_files[continued];ri_copy(title,sizeof(title),book->name);
@@ -2519,7 +2525,7 @@ static void shelf_render(uint8_t *fb){
             ri_copy(position,sizeof(position),"TF 卡 / Wi-Fi / USB 传书");
         }
         shelf_continue_card(fb,cx,l.continue_y,cw,l.continue_h,v.landscape,title,position,
-                            continued>=0?&shelf_files[continued]:NULL);
+                            continued>=0?&shelf_files[continued]:NULL,false);
     }
     const char *labels[]={"全部","在读","收藏"};const int filters[]={0,2,1};int tw=l.tabs_w/3;
     ps_box(fb,l.tabs_x,l.tabs_y,l.tabs_w-4,34,9,PS_THEME_INSET,true);
@@ -2596,7 +2602,7 @@ static void shelf_render(uint8_t *fb){
                 shelf_file_cover(fb,book,x,y,w,l.cover_h);
                 shelf_name_text(fb,x,y+l.cover_h+7,w,12,name,PS_THEME_INK);
                 ps_text(fb,x,y+l.cover_h+36,9,label,PS_THEME_SECONDARY);
-                if(dual_progress){
+                if(book->started){
                     int bar_w=w-16,bar_y=y+l.cover_h+51;
                     ps_box(fb,x+8,bar_y,bar_w,4,2,PS_THEME_BORDER,true);
                     if(book->started&&book->pct)

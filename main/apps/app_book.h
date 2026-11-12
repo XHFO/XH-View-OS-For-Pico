@@ -56,3 +56,10 @@ bool app_book_dual_engaged(void);
 bool app_book_dual_annotation(uint8_t type, uint32_t chapter, uint32_t start, uint32_t end, const char* text);
 void app_book_dual_pause(void);
 extern const app_desc_t app_book;
+
+/// 重连后按最远正文锚点重新定位全书页组。/ Resolve the furthest text anchor to a whole-book spread after reconnect.
+bool app_book_dual_reconcile(const char* path);
+
+struct book_progress;
+/// 只读尚未批量落盘的正文锚点。/ Read the live text anchor before a batched checkpoint.
+bool app_book_progress_snapshot(const char*,uint32_t,struct book_progress*);

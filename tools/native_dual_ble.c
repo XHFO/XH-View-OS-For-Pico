@@ -16,6 +16,7 @@ static int role,listener=-1,fd=-1;
 static char code[7];
 static bool radio=true,connecting,ready;
 static unsigned tx_at,tx_n,rx_n,hello_at,hello_n;
+static unsigned received_frames;
 static uint8_t tx[97],rx[97],hello[10];
 static pico_dual_ble_status_t status={.simulated=true};
 static pico_dual_ble_peer_info_t peer;
@@ -70,4 +71,12 @@ void pico_dual_ble_request_restart(void){}
 void pico_dual_ble_status(pico_dual_ble_status_t* out){pump();*out=status;}
 bool pico_dual_ble_can_send(void){pump();return ready&&!tx_n;}
 bool pico_dual_ble_send(const uint8_t* p,size_t n){if(!p||!n||n>96||!pico_dual_ble_can_send())return false;tx[0]=(uint8_t)n;memcpy(tx+1,p,n);tx_n=(unsigned)n+1;tx_at=0;pump();return true;}
-size_t pico_dual_ble_receive(uint8_t* p,size_t cap){pump();if(!p||!ready||rx_n<2||rx_n!=1u+rx[0]||cap<rx[0])return 0;size_t n=rx[0];memcpy(p,rx+1,n);rx_n=0;return n;}
+size_t pico_dual_ble_receive(uint8_t* p,size_t cap){
+ pump();if(!p||!ready||rx_n<2||rx_n!=1u+rx[0]||cap<rx[0])return 0;
+ size_t n=rx[0];memcpy(p,rx+1,n);rx_n=0;
+ // 测试可丢弃控制帧，覆盖通知/确认丢失；不改变真实设备固件。
+ // Optional host-only loss injection covers lost controls/ACKs without changing device firmware.
+ const char* env=getenv("PICO_DUAL_TEST_DROP_RX_EVERY");unsigned every=env?(unsigned)strtoul(env,NULL,10):0;
+ if(every>1&&++received_frames%every==0){++status.rx_dropped;return 0;}
+ return n;
+}

@@ -311,6 +311,10 @@ static void worker(void *argument) {
         .disable_auto_redirect = true,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
+    if(client){
+        esp_http_client_set_header(client,"Cache-Control","no-cache, no-store");
+        esp_http_client_set_header(client,"Pragma","no-cache");
+    }
     if (client && esp_http_client_open(client, 0) == ESP_OK &&
         esp_http_client_fetch_headers(client) >= -1 && esp_http_client_get_status_code(client) == 200) {
         int n;

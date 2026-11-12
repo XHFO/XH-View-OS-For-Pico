@@ -408,6 +408,11 @@ void ps_power_render(uint8_t *fb) {
     if(!v.landscape)ps_wrap(fb,18,554,v.w-36,11,3,ps_tr("settings.power.hint"),5);
 }
 bool ps_power_event(const ps_event_t *e) {
+    ps_view_t sv=ps_view();int scol=settings_column(sv),sx=sv.landscape?32+scol:16;bool next;
+    if(!quick_menu&&confirmation<0){
+        if(ps_switch_swipe(e,sx+scol-66,sv.landscape?76:332,66,sv.landscape?36:44,&next)){ps_power_set_doubletap(next);return true;}
+        if(ps_switch_swipe(e,sx+scol-66,appearance_y(sv)+52,66,40,&next)){ps_rotation_lock(next);return true;}
+    }
     if(e->type!=PS_TAP)return false;
     ps_view_t v=ps_view();
     if(!quick_menu&&confirmation<0&&ps_i18n_chip_hit(e->x,e->y,v.w-16-PS_I18N_CHIP_W,32))return true;

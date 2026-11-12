@@ -11,7 +11,7 @@ static uint64_t bank_hash(blob_t *bank,const char *prefix){
     return hash;
 }
 static void records_test_reset(void){
-    mock_filesystem=false;mock_current_is_source=false;editor_note=editor_real_note=editor_dirty=false;route=PS_SHELF;depth=0;
+    mock_filesystem=false;mock_current_is_source=false;mock_record_on_flash=false;editor_note=editor_real_note=editor_dirty=false;route=PS_SHELF;depth=0;
     blobs_clear(blobs);blobs_clear(source_blobs);reload_reader_no_writes();
     assert(rr&&!rr->count&&!records_read_failed);max_record_allocation=0;
 }
@@ -57,6 +57,13 @@ static void test_records_new_target(void){
     uint32_t old_ids[2]={rr->item[0]->object_id,rr->item[1]->object_id},old_next=records_next_id,old_sequence=records_sequence;
     reader_real_draft_t kept_draft=real_draft;char kept_editor[3072];strcpy(kept_editor,editor_text);uint64_t source_hash=mock_fs_hash(mock_fs_roots[0],"");
     mock_current_is_source=true;
+    // A newly selected internal root must not receive reading records or drafts.
+    mock_record_on_flash=true;
+    assert(!ps_reader_storage_save());
+    assert(rr->item[0]->object_id==old_ids[0]&&records_next_id==old_next&&mock_fs_hash(mock_fs_roots[0],"")==source_hash);
+    bool absent=false;assert(mock_fs_exists(mock_fs_roots[1],"reader-r3-index",&absent)&&!absent);
+    // Continue the existing transactional migration cases as a replacement TF card.
+    mock_record_on_flash=false;
     for(int stage=0;stage<3;stage++){
         char key[40];snprintf(key,sizeof(key),"reader-r3-o-%u",old_next+(stage==1));fail_store_key=stage<2?key:"reader-r3-index";
         assert(!ps_reader_storage_save());fail_store_key=NULL;

@@ -10,7 +10,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 STUBS = {
     "read_pico_connectivity.h": "#pragma once\n#include <stdbool.h>\ntypedef struct { bool online; char ssid[33]; } read_pico_connectivity_link_t;\nvoid read_pico_connectivity_get_link(read_pico_connectivity_link_t *);\n",
-    "pico_system.h": "#pragma once\nint ps_wifi_connected_index(void);\nconst char *ps_wifi_name(int);\n",
+    "pico_system.h": "#pragma once\nvoid ps_toast(const char *);\nint ps_wifi_connected_index(void);\nconst char *ps_wifi_name(int);\n",
     "pico_datetime.h": """
 #pragma once
 #include <stdint.h>
@@ -100,7 +100,7 @@ esp_err_t esp_http_client_cleanup(esp_http_client_handle_t);
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=ROOT / "main/system/pico_home_pga.c")
-    parser.add_argument("--case", choices=("all", "pga", "portal", "invalid", "migration", "worker", "network", "discovery", "printer", "rooms"), default="all")
+    parser.add_argument("--case", choices=("all", "pga", "portal", "invalid", "migration", "worker", "network", "discovery", "printer", "rooms", "share"), default="all")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     report = {"source": str(args.source.resolve()), "case": args.case,
@@ -114,6 +114,7 @@ def main() -> None:
         # Keep the production bytes untouched; isolate only platform includes in the temporary directory.
         (temp / "pico_home_pga_under_test.c").write_bytes(args.source.read_bytes())
         (temp / "pico_home_pga.h").write_bytes((ROOT / "main/system/pico_home_pga.h").read_bytes())
+        (temp / "pico_home_share.inc").write_bytes((ROOT / "main/system/pico_home_share.inc").read_bytes())
         binary = temp / "home-pga-transaction"
         component = ROOT / "components/read_pico_home_link"
         command = [os.environ.get("CC", "cc"), "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",

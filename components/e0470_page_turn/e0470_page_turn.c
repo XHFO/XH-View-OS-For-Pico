@@ -46,6 +46,8 @@ static int8_t s_line_phase[TURN_LINE_MAX] DRAM_ATTR;
 static const EpdWaveformPhases* s_lut_src;
 static int s_lut_n;
 static int s_tick_us = E0470_TURN_DEFAULT_TICK_US;
+static void (*s_relay)(void);
+void e0470_page_turn_set_relay(void (*callback)(void)) { s_relay = callback; }
 
 void e0470_page_turn_release(void) {
     heap_caps_free(s_lut);
@@ -268,6 +270,7 @@ static void copy_front_to_back(EpdiyHighlevelState* hl, EpdRect phys) {
 
 static enum EpdDrawError page_turn_run(EpdiyHighlevelState* hl, EpdRect area,
     e0470_turn_dir_t dir, const EpdWaveform* waveform, unsigned band_count, bool compact) {
+    void (*relay)(void) = s_relay; s_relay = NULL;
     if (hl == NULL) return EPD_DRAW_NO_PHASES_AVAILABLE;
     if (band_count < (compact ? 1u : 2u) || band_count > TURN_BANDS_MAX) return EPD_DRAW_INVALID_CROP;
     if (dir > E0470_TURN_BTT) dir = E0470_TURN_RTL;
@@ -317,14 +320,20 @@ static enum EpdDrawError page_turn_run(EpdiyHighlevelState* hl, EpdRect area,
     if (!build_luts(gl)) return EPD_DRAW_NO_PHASES_AVAILABLE;
     epd_poweron();
 
+    // 关闭统计日志时不采集仅供日志使用的扫描计时。/ Skip log-only timing reads when statistics are disabled.
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
     const int64_t t_all = esp_timer_get_time();
     const int64_t t_gen = esp_timer_get_time();
+#endif
     epd_difference_image_cropped(
         hl->front_fb, hl->back_fb, phys, hl->difference_fb, hl->dirty_lines, hl->dirty_columns
     );
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
     const int64_t gen_us = esp_timer_get_time() - t_gen;
 
     int64_t draw_us = 0;
+#endif
+    const int64_t scan_start = esp_timer_get_time();
     enum EpdDrawError err = EPD_DRAW_SUCCESS;
     for (int tick = 0; tick < ticks; tick++) {
         const int64_t t_tick = esp_timer_get_time();
@@ -363,7 +372,9 @@ static enum EpdDrawError page_turn_run(EpdiyHighlevelState* hl, EpdRect area,
             epd_set_col_phase_luts(s_lut_ptr, s_band0, s_band1, s_band_phase, bands);
         }
 
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
         const int64_t t_draw = esp_timer_get_time();
+#endif
         err = epd_draw_base(
             epd_full_screen(),
             hl->difference_fb,
@@ -375,17 +386,25 @@ static enum EpdDrawError page_turn_run(EpdiyHighlevelState* hl, EpdRect area,
             &E0470_APPLY_WAVEFORM
         );
         epd_clear_phase_luts();
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
         draw_us += esp_timer_get_time() - t_draw;
+#endif
         if (err != EPD_DRAW_SUCCESS) break;
         const int64_t used = esp_timer_get_time() - t_tick;
         if (s_tick_us > 0 && used < s_tick_us) {
             esp_rom_delay_us((uint32_t)(s_tick_us - used));
+        }
+        // 按已完成扫描估计余时；至少扫过一拍才通知，失败不伪造完成。
+        // Estimate remaining time from completed scans; notify only after a successful tick, never fabricate completion on failure.
+        if (relay && (esp_timer_get_time() - scan_start) * (ticks - tick - 1) <= 500000LL * (tick + 1)) {
+            relay(); relay = NULL;
         }
     }
 
     // 扫描失败时屏幕可能停在中间相位，保留旧帧基准给调用方恢复。
     // A failed scan may leave intermediate pixels; keep the old baseline for caller recovery.
     if (err == EPD_DRAW_SUCCESS) copy_front_to_back(hl, phys);
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
     ESP_LOGI(
         TAG,
         "dir=%s ticks=%d gen=%d ms draw=%d ms scan_avg=%d us wall=%d ms err=%d",
@@ -397,6 +416,7 @@ static enum EpdDrawError page_turn_run(EpdiyHighlevelState* hl, EpdRect area,
         (int)((esp_timer_get_time() - t_all) / 1000),
         (int)err
     );
+#endif
     return err;
 }
 

@@ -301,7 +301,7 @@ static void render_climate(uint8_t *fb) {
     snprintf(b,sizeof(b),"%d°C",hc.climate_temp[r]); ps_center(fb,v.w/2,133,48,b,BLACK);
     ps_button(fb,v.w/2-110,204,64,42,"−",false);
     ps_button(fb,v.w/2+46,204,64,42,"＋",false);
-    ps_button(fb,v.w/2-42,204,84,42,(hc.on&(1u<<climate_entity))?"关闭":"开启",(hc.on&(1u<<climate_entity))!=0);
+    ps_switch_draw(fb,v.w/2-24,212,48,26,(hc.on&(1u<<climate_entity))!=0,true);
     int y=v.landscape?256:280;
     for (int i=0;i<4;i++) ps_button(fb,16+i*(v.w-32)/4,y,(v.w-32)/4-4,32,modes[i],hc.climate_mode[r]==i);
     if (!v.landscape) ps_wrap(fb,24,346,v.w-48,12,3,"长按空调卡片打开温度和运行模式；轻触卡片快速开关。",MUTED);

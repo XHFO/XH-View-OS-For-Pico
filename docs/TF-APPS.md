@@ -1,8 +1,10 @@
 # TF 卡应用包规范（PGA1 / ABI v1）
 
-家庭连接首次同步或「管理设备 → 选择房间」时，先获取房间名称和数量，再勾选并保存同步范围。HA 服务端只投影选中范围的六类设备字段，不下载全量实体后再隐藏。每次最多64项；超额要求减少房间，不静默保存。未分配房间独立列出；空选择表示不同步家庭设备。房间目录最多32项，超额明确提示。范围独立存于 NVS，绑定 HA 地址与认证；更换服务需重新选择。取消或保存失败保留已生效范围。设备后续增长超过上限时显示总数与截断提示。
+二态开关统一使用 `pico_app_switch.h` 的圆角轨道与左右滑块：左关右开，用灰阶和位置同时表达状态。系统设置使用 `ps_toggle`；独立应用复用 `pico_switch_draw`，不增加宿主 ABI。Home Link 开关捕获自身手势，松手只提交一次，等待 HA 确认后显示新状态；不连续驱动屏幕动画。多选目录仍使用复选框，操作按钮与多项样式选择保留各自语义。
 
-Room discovery returns names/counts before any home-entity sync. Server-side projection includes only selected areas and the supported six entity types, capped at 64. Unassigned devices form a separate area; an empty selection syncs no home devices. The 32-area catalog reports overflow. Scope is persisted separately from credential layout and bound to HA identity. Cancel and failed saves retain the active scope.
+家庭连接先选择房间范围，再以每批24项浏览完整目录并选择最多96个控制卡片。房间内实体总量不受64项限制；跨页保留勾选，第97项明确提示。日常只从HA投影选中实体的必要字段。取消或保存失败保留原选择；旧隐藏与排序记录迁移。范围与选择使用独立版本化记录，保留v3凭据布局。打印机配置不参与家庭双机共享。
+
+Select rooms, then page the complete catalog in batches of 24 and choose up to 96 cards. Room totals have no 64-item gate; selections survive paging, and the 97th item is rejected explicitly. Daily requests project selected fields only. Cancel/failure retains active selections, legacy visibility/order migrates, and printer settings are excluded from home sharing.
 
 打印机「添加 → 通过 Home Assistant 查找」列出未添加的打印状态实体，选择后自动推导实体前缀，再由用户确认名称并保存。只匹配 `_print_status` 或 `_printing_state`，不会将 SD 卡状态误识别为打印状态。手动添加作为高级入口保留；本机最多3台，发现列表最多8台。Bambu MQTT/云与 Formlabs 直接连接尚未迁入，既有凭据仍保留。
 

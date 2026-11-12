@@ -13,6 +13,7 @@ typedef struct {
     bool active, connected, simulated;
     uint32_t generation;
     int error;
+    uint32_t rx_dropped, tx_retries;
 } pico_dual_ble_status_t;
 typedef struct {
     bool found;

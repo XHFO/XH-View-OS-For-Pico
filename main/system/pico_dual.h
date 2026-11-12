@@ -82,6 +82,10 @@ bool ps_dual_reflow_resolved(uint32_t revision, uint32_t spread);
 bool ps_dual_reflow_failed(uint32_t revision);
 /// 恢复本端共享正文，不发开书请求或改变双机位置。/ Resume this device's shared reader without reopening or changing the paired position.
 bool ps_dual_resume(void);
+/// 主机目标页布局就绪后允许对端准备；不等于实际推屏完成。/ Release peer preparation after primary layout, without claiming physical presentation.
+void ps_dual_layout_ready(uint32_t page);
+bool ps_dual_wait_peer(void);
+void ps_dual_relay_ready(uint32_t page);
 /// 仅在双机正文目标页实际推屏成功后调用。/ Call only after successful physical presentation of the paired target page.
 void ps_dual_presented(uint32_t page);
 void ps_dual_total(uint32_t total);

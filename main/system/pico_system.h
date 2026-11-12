@@ -23,7 +23,6 @@ typedef struct { int w,h; bool landscape; } ps_view_t;
 typedef enum {
     PS_STATUS_STYLE_LINE = 0,
     PS_STATUS_STYLE_BOOK = 1,
-    PS_STATUS_STYLE_LINE_PERCENT = 2,
     PS_STATUS_STYLE_COUNT
 } ps_status_style_t;
 typedef enum {
@@ -199,6 +198,8 @@ int ps_reader_cover_sources(char paths[][288],int capacity);
 int ps_battery_percent(void);
 /// 当前顶部状态栏图标外观；默认墨线极简。 / Current top status icon style, defaulting to line-minimal.
 uint8_t ps_status_style(void);
+bool ps_status_percent(void);
+bool ps_status_percent_set(bool enabled);
 /// 持久切换状态栏图标外观；写入失败时保留原值。 / Persist the status icon style, retaining the old value on failure.
 bool ps_status_style_set(uint8_t style);
 /// 书架“上次读到”卡片外观；默认简洁续读卡。/ Shelf continue-reading card style, defaulting to the simple card.
@@ -219,6 +220,10 @@ void ps_box(uint8_t *fb,int x,int y,int w,int h,int radius,int gray,bool filled)
 void ps_text(uint8_t *fb,int x,int y,int size,const char *text,int gray);
 /// 带明确文字状态的轻量开关行。/ Lightweight toggle row with an explicit text state.
 void ps_toggle(uint8_t *fb,int x,int y,int w,int h,const char *label,bool on,bool enabled);
+/// Common binary control, left off/right on; shared with independently loaded apps.
+void ps_switch_draw(uint8_t *fb,int x,int y,int w,int h,bool on,bool enabled);
+/// Horizontal gestures must start in this control; right explicitly enables, left disables.
+bool ps_switch_swipe(const ps_event_t *event,int x,int y,int w,int h,bool *on);
 /// 当前 UI 字号的逻辑宽度。/ Logical width at the effective UI text size.
 int ps_text_width(int size,const char *s);
 /// 静态遮盖背景，避免弹层露出标题碎片。/ Static modal backdrop without title fragments.
@@ -231,6 +236,7 @@ void ps_body_text(uint8_t *fb,int x,int y,int size,const char *text,int gray);
 void ps_center(uint8_t *fb,int x,int y,int size,const char *text,int gray);
 void ps_wrap(uint8_t *fb,int x,int y,int w,int size,int lines,const char *text,int gray);
 void ps_icon(uint8_t *fb,int x,int y,int size,ps_icon_t icon,int gray);
+void ps_wifi_signal(uint8_t *fb,int x,int y,int size,unsigned level,int gray);
 void ps_button(uint8_t *fb,int x,int y,int w,int h,const char *label,bool selected);
 void ps_heading(uint8_t *fb,const char *title,const char *subtitle);
 void ps_tabs(uint8_t *fb,int selected);
@@ -321,3 +327,9 @@ bool ps_games_key(int key);
 bool ps_games_tick(void);
 
 extern const app_desc_t app_pico_system;
+
+struct book_progress;
+bool ps_dual_book_anchor(const char*,uint32_t,struct book_progress*);
+bool ps_dual_prepare_open(const char*);
+void ps_dual_prepare_open_reset(void);
+bool ps_dual_reconcile_at(uint32_t);
