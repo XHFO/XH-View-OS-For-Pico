@@ -34,6 +34,9 @@ int main(void) {
     assert(ui_wifi_qr_prepare_url("http://192.168.50.123/manage#key=0123456789abcdef0123456789abcdef&view=weread"));
     ui_wifi_qr_draw(image,(EpdRect){0,0,SIDE,SIDE});
     save("build/wifi-qr-url-weread.pgm");
+    assert(ui_wifi_qr_prepare_url("http://192.168.50.123/manage#key=0123456789abcdef0123456789abcdef&view=traffic"));
+    ui_wifi_qr_draw(image,(EpdRect){0,0,SIDE,SIDE});
+    save("build/wifi-qr-url-traffic.pgm");
     assert(ui_wifi_qr_prepare_url("http://192.168.50.123/h#t=0123456789abcdef0123456789abcdef"));
     ui_wifi_qr_draw(image,(EpdRect){0,0,SIDE,SIDE});
     save("build/wifi-qr-url-home.pgm");

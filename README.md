@@ -1,6 +1,32 @@
 # XH View OS For Pico · Duo
 
-> **Dual-reader preview · 0.40.0-dual72** — Complete firmware source for `experiment/dual-pico-reader`. Wi-Fi synchronizes books and the shared font; authenticated BLE synchronizes opening, paired pages and turns. See the [Duo guide](docs/DUAL-READER.md). This branch remains separate from the main system. The upstream hardware reference follows below.
+> **Test channel · 0.40.0-dual112** — Complete system source with paired reading and progress handoff, linked lock/wake, TF apps, a second-screen game controller and a QR-configured website dashboard. Update both readers and matching apps. See the [Duo guide](docs/DUAL-READER.md) and [TF apps](docs/TF-APPS.md).
+
+## Online installation and updates / 在线刷机
+
+**[Open the XHFO.NET web flasher →](https://xhfo.net/projects/read-pico/manage/#firmware)** · [简体中文说明](README.zh-CN.md#在线安装与更新)
+
+- Connect by USB using desktop Chrome or Edge. Choose **first installation** or **system update**, then select the **stable** or **test** channel. dual112 is a test release; keep both readers on the same version.
+- First installation rebuilds internal Flash partitions and clears internal settings. Updating this system replaces only the main APP. Neither operation writes to the external TF card.
+- On-device Wi-Fi OTA: Settings → About → System Update → Test channel.
+- [Download/update TF apps](https://xhfo.net/projects/read-pico/apps/?channel=test) · [Release notes](https://xhfo.net/projects/read-pico/updates/test/). Firmware and apps update separately; retain `apps/data`.
+
+## Interface and features
+
+Real C-rendered firmware/TF-package previews with demonstration data, not device photos or physical display tests. Bookshelf: existing dual108 UI; games/controller: dual111; dashboard: dual112.
+
+<table>
+<tr>
+<td align="center"><img src="docs/images/bookshelf.png" width="220" alt="Bookshelf and reading progress"><br>Bookshelf and reading progress</td>
+<td align="center"><img src="docs/images/2048.png" width="220" alt="2048 board sizes"><br>2048 board sizes</td>
+<td align="center"><img src="docs/images/controller.png" width="220" alt="Second-screen game controller"><br>Second-screen game controller</td>
+</tr>
+<tr>
+<td align="center"><img src="docs/images/snake.png" width="220" alt="Snake edge wrapping"><br>Snake edge wrapping</td>
+<td align="center"><img src="docs/images/dashboard.png" width="220" alt="Website dashboard"><br>Website dashboard</td>
+<td align="center"><img src="docs/images/dashboard-settings.png" width="220" alt="QR setup and appearance"><br>QR setup and appearance</td>
+</tr>
+</table>
 
 **Languages:** [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md)
 
@@ -241,7 +267,7 @@ Shenzhen MindReset Technology Co., Ltd.
 
 Enable “Clock with highlights” in Sleep & Orientation to show cached excerpt previews and sources alongside the flip clock. It defaults off and reuses the nine-item random queue, refresh interval and low-power pause. Ellipses mark long previews; complete text remains in excerpts and records. The original large clock layout remains when disabled.
 
-Games are independent `.pga` applications on the TF card at `/sdcard/apps/games/`. Rules, AI and game UI load from the package; removing a package retains saves. See the [TF app package specification](docs/TF-APPS.md) for the ABI, builds, migration and distribution catalog.
+Games are independent `.pga` applications on the TF card at `/sdcard/apps/games/`. Rules, AI and game UI load from the package. The Apps download banner fetches missing packages from XHFO.NET, while long-press removal keeps saves. See the [TF app package specification](docs/TF-APPS.md) for the ABI, builds, migration and distribution catalog.
 
 Power actions, four lock faces and offline date/time setup are described in [Power, lock and time](docs/POWER-AND-TIME.md).
 

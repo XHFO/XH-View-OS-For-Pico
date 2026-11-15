@@ -54,9 +54,12 @@ try:
     assert not a.state['panel']
     until(lambda:a.state.get('active_app')==b.state.get('active_app')=='book' and a.state.get('dual_page')==1 and b.state.get('dual_page')==2 and a.state.get('dual_target')==b.state.get('dual_target')==0,'slow-sync open')
     assert a.state['page_end']==b.state['page_start']
-    b.cmd('powerkey')
+    until(lambda:a.state['dual_left_ready'] and b.state['dual_left_ready'],'slow-sync pair ready')
+    b.cmd('key 2 short')
+    pump(10)
+    if (a.state.get('dual_page'),b.state.get('dual_page'))==(1,2):b.cmd('key 2 short')
     until(lambda:a.state.get('dual_page')==3 and b.state.get('dual_page')==4,'slow-sync next')
-    a.cmd('powerkey')
+    a.cmd('key 0 short')
     until(lambda:a.state.get('dual_page')==1 and b.state.get('dual_page')==2,'slow-sync previous')
     # 暂停会销毁链路会话，但必须保留双机方向配置。/ Suspending destroys the link session while preserving paired orientation settings.
     a.cmd('flip')

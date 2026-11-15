@@ -49,7 +49,9 @@ static bool records_equal(const reader_record_t *a,const reader_record_t *b){
         (a->book!=REAL_BOOK||(a->file_bytes==b->file_bytes&&a->chapter==b->chapter&&!strcmp(a->path,b->path)&&!strcmp(a->title,b->title)));
 }
 static bool records_blob_load(const char *root,const char *key,void *out,size_t bytes){
-    return root?ps_load_at(root,key,out,bytes):ps_load(key,out,bytes);
+    char current[160],other[160];bool sd;
+    if(!root){if(!ps_storage_record_roots(current,other,sizeof(current),&sd))return false;root=current;}
+    return ps_load_at(root,key,out,bytes);
 }
 static bool records_exists(const char *root,const char *key,bool *exists){
     char current[160],other[160];bool sd;
@@ -241,10 +243,10 @@ PICO_READER_COLD bool ps_reader_records_export(const char *source_root,const cha
 }
 static void drafts_load(void){
     memset(&draft,0,sizeof(draft));memset(&real_draft,0,sizeof(real_draft));
-    bool exists=false,loaded=ps_load("reader-draft-v2",&draft,sizeof(draft));
+    bool exists=false,loaded=records_blob_load(NULL,"reader-draft-v2",&draft,sizeof(draft));
     if(!loaded&&records_exists(NULL,"reader-draft-v2",&exists)&&!exists){
         reader_draft_v1_t *old=heap_caps_calloc(1,sizeof(*old),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-        if(old&&ps_load("reader-draft-v1",old,sizeof(*old))&&memchr(old->text,0,sizeof(old->text))){
+        if(old&&records_blob_load(NULL,"reader-draft-v1",old,sizeof(*old))&&memchr(old->text,0,sizeof(old->text))){
             draft.version=old->version;draft.offset=old->offset;draft.end=old->end;draft.book=old->book;draft.ink_count=old->ink_count;
             memcpy(draft.quote,old->quote,sizeof(draft.quote));memcpy(draft.ink,old->ink,sizeof(draft.ink));ri_copy(draft.text,sizeof(draft.text),old->text);
         }
@@ -253,10 +255,10 @@ static void drafts_load(void){
     if(draft.version!=1||draft.book>=BOOK_COUNT||draft.ink_count>INK_MAX||!memchr(draft.text,0,sizeof(draft.text))||!memchr(draft.quote,0,sizeof(draft.quote))||
        (rb[draft.book].comic?(draft.offset>=8||draft.end!=draft.offset):(draft.end>rb[draft.book].bytes||draft.offset>draft.end))||!u8valid(draft.text,strlen(draft.text))){memset(&draft,0,sizeof(draft));draft.version=1;}
     for(uint32_t i=0;i<draft.ink_count;i++)if((draft.ink[i].x&0x7fff)>1023||draft.ink[i].y>1023){memset(&draft,0,sizeof(draft));draft.version=1;break;}
-    loaded=ps_load("reader-real-d2",&real_draft,sizeof(real_draft));exists=false;
+    loaded=records_blob_load(NULL,"reader-real-d2",&real_draft,sizeof(real_draft));exists=false;
     if(!loaded&&records_exists(NULL,"reader-real-d2",&exists)&&!exists){
         reader_real_draft_v1_t *old=heap_caps_calloc(1,sizeof(*old),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-        if(old&&ps_load("reader-real-d1",old,sizeof(*old))&&memchr(old->text,0,sizeof(old->text))){
+        if(old&&records_blob_load(NULL,"reader-real-d1",old,sizeof(*old))&&memchr(old->text,0,sizeof(old->text))){
             real_draft.version=old->version;real_draft.anchor=old->anchor;real_draft.ink_count=old->ink_count;
             memcpy(real_draft.ink,old->ink,sizeof(real_draft.ink));ri_copy(real_draft.text,sizeof(real_draft.text),old->text);
         }

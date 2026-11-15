@@ -30,6 +30,12 @@ static bool s_active;
 static char s_token[33];
 static char s_ip[48];
 static char s_url[160];
+void ps_home_portal_set_printers(bool printers) {
+    if(!s_lock||xSemaphoreTake(s_lock,portMAX_DELAY)!=pdTRUE)return;
+    char *mode=strstr(s_url,"&p=");if(mode)*mode=0;
+    if(printers&&s_url[0]&&strlen(s_url)+4<sizeof(s_url))strcat(s_url,"&p=1");
+    xSemaphoreGive(s_lock);
+}
 static char s_error[64];
 static int64_t s_expires;
 static int64_t s_next_check;

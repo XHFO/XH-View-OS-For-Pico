@@ -38,6 +38,7 @@ bool ps_power_configure(unsigned minutes,bool doubletap);
 /// 返回true时调用方不得再分发页面输入或tick。/ A true return suppresses page input and ticks.
 bool ps_power_run(app_ctx_t *ctx,const app_desc_t *current);
 void ps_power_wake(void);
+void ps_power_remote(bool locked);
 int ps_power_state(void);
 void ps_power_enter(void);
 /// 仅关闭最内层关机/重启确认；true时保留当前页面且不提交电源操作。/ Dismiss only shutdown/restart confirmation; true retains this page without requesting power actions.

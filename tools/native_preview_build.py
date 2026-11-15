@@ -53,7 +53,7 @@ def prepare(output, device_packages=False, native_only=False):
     (stubs/'epdiy.h').write_text(epd_stub)
     with (stubs/'epdiy.h').open('a') as f:f.write('''\n#include <stdbool.h>
 enum EpdRotation {EPD_ROT_LANDSCAPE=0,EPD_ROT_PORTRAIT=1,EPD_ROT_INVERTED_LANDSCAPE=2,EPD_ROT_INVERTED_PORTRAIT=3};
-enum EpdDrawError {EPD_DRAW_SUCCESS=0};
+enum EpdDrawError {EPD_DRAW_SUCCESS=0,EPD_DRAW_NO_PHASES_AVAILABLE=3};
 enum EpdDrawMode {MODE_INIT=0,MODE_DU=1,MODE_GC16=2,MODE_GL16=5};
 typedef struct {uint8_t *front_fb,*back_fb;} EpdiyHighlevelState;
 typedef struct {int unused;} EpdWaveform;
@@ -103,7 +103,7 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
     # English: Compile the production changed-area function; the browser replaces only display I/O.
     display_region=output/'native-display-region.c'
     display_region.write_text('#include "display.h"\n#include "e0470_epaper_waveform.h"\n#include <string.h>\n'+extract_function((ROOT/'main/display.c').read_text(),'update_display_changed_mode')+'\n')
-    flags=['-DPICO_NATIVE_PREVIEW=1','-DPICO_HOME_LINK_FULL=0','-DpdTRUE=1','-DpdFALSE=0','-std=gnu11','-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-Wno-unused-function','-Wno-unused-variable','-I',str(stubs),'-I',str(output),'-I',str(ROOT/'tools'),'-I',str(ROOT/'main/system'),'-I',str(ROOT/'main/book'),'-I',str(ROOT/'main/font'),'-I',str(ROOT/'main/ui'),'-I',str(ROOT/'components/read_pico_apps/include'),'-DPICO_NATIVE_GAME_PACKAGES='+json.dumps(str(game_packages)),'-include',str(ROOT/'tools/native_preview_hal.h')]
+    flags=['-DPICO_NATIVE_PREVIEW=1','-DPICO_HOME_LINK_FULL=0','-DpdTRUE=1','-DpdFALSE=0','-std=gnu11','-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-Wno-unused-function','-Wno-unused-variable','-I',str(stubs),'-I',str(output),'-I',str(ROOT/'tools'),'-I',str(ROOT/'main/system'),'-I',str(ROOT/'main/book'),'-I',str(ROOT/'main/font'),'-I',str(ROOT/'main/ui'),'-I',str(ROOT/'components/read_pico_apps/include'),'-I',str(ROOT/'components/e0470_page_turn/include'),'-DPICO_NATIVE_GAME_PACKAGES='+json.dumps(str(game_packages)),'-include',str(ROOT/'tools/native_preview_hal.h')]
     flags+=['-DPICO_NATIVE_IME_PACKAGE='+json.dumps(str(ROOT/'assets/tf-pack/readpico/ime/pinyin-v1.bin'))]
     flags+=['-DPICO_NATIVE_TOOL_PACKAGES='+json.dumps(str(tool_packages))]
     sources=[ROOT/'tools/native_preview_runtime.c',ROOT/'tools/native_preview_framebuffer.c',ROOT/'main/system/pico_draw.c',ROOT/'main/apps/app_font_pick.c',ROOT/'main/apps/app_transfer.c',ROOT/'main/system/pico_reader.c',ROOT/'main/system/pico_home.c',ROOT/'main/system/pico_games.c',ROOT/'main/font/ttf_font.c',ROOT/'main/ui/ui_kit.c',ROOT/'main/ui/ui_menu.c',ROOT/'main/ui/datamatrix.c',ROOT/'main/ui/ui_gesture.c',output/'native-geometry.c',output/'fonts.S']
@@ -123,8 +123,8 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
         if (ROOT/'tools'/extra).exists():sources.append(ROOT/'tools'/extra)
     for name in ['pico_connectivity.c','pico_storage.c','pico_usb.c','pico_bluetooth.c','pico_datetime.c','pico_power.c','pico_sound.c','pico_navigation.c','pico_lock_covers.c','pico_ink.c','pico_desktop.c','pico_launcher.c','pico_weread.c']:sources.append(ROOT/'main/system'/name)
     sources.append(ROOT/'main/system/pico_weread_cover.c')
-    sources += [ROOT/'main/system/dual_link.c',ROOT/'main/system/pico_dual.c']
-    sources += [ROOT/'main/system/pico_board_data.c',ROOT/'main/system/pico_board_render.c',ROOT/'tools/native_board_sha256.c']
+    sources += [ROOT/'main/system/dual_link.c',ROOT/'main/system/pico_dual.c',ROOT/'main/system/pico_updates.c']
+    sources += [ROOT/'main/system/pico_board_data.c',ROOT/'main/system/pico_board_host.c',ROOT/'tools/native_board_sha256.c']
     # Optional book adapter contributes source files and generated HAL declarations.
     additions=ROOT/'tools/native_preview_book_build.py'
     if additions.exists():
@@ -153,6 +153,7 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
     bound.add(ROOT/'components/epdiy/src/epdiy.c')
     bound.add(ROOT/'main/display.c')
     bound.add(ROOT/'main/system/pico_home_link_ui.inc')
+    bound.add(ROOT/'main/system/pico_home_share.inc')
     bound.add(ROOT/'main/system/pico_ime_dictionary.inc')
     bound.add(ROOT/'assets/tf-pack/readpico/ime/pinyin-v1.bin')
     bound.add(ROOT/'components/continuous_du/include/continuous_du.h')
@@ -178,7 +179,8 @@ void epd_poweron(void);void epd_fill_triangle(int,int,int,int,int,int,uint8_t,ui
     bound.add(ROOT/'components/read_pico_transfer/manage.html')
     bound.add(ROOT/'components/read_pico_transfer/include/read_pico_management.h')
     bound.update(ROOT/'main/assets'/f'{name}.ttf' for name in ['builtin','serif','kai'])
-    version=re.search(r'#define PS_VERSION "([^"]+)"',(ROOT/'main/system/pico_system.c').read_text()).group(1)
+    version=re.search(r'#define PICO_FIRMWARE_VERSION "([^"]+)"',(ROOT/'main/system/pico_version.h').read_text()).group(1)
+    bound.add(ROOT/'main/system/pico_version.h')
     manifest={'schema':1,'kind':'native-host-preview','source_root':str(ROOT.resolve()),'version':version,'binary':str(binary),'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'game_packages':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(game_packages.glob('*.pga'))},'game_package_mode':'native-only' if game_report['native_only'] else 'device-and-native','game_execution':'independent-native-payloads-from-private-tf','sources':{str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(bound)},'hardware_access':False}
     manifest['tool_packages']={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(tool_packages.glob('*.pga'))}
     manifest['tool_package_mode']='device-and-native' if tool_report['device_ready'] else 'native-only'

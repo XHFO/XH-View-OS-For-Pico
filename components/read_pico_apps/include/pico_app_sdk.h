@@ -12,13 +12,13 @@
 #define PICO_APP_MAX_STATE 65536u
 #define PICO_APP_WORKER_STACK 20480u
 
-enum { PGA_GOMOKU, PGA_GO, PGA_XIANGQI, PGA_CHESS, PGA_2048, PGA_SNAKE };
-enum { PGA_DRAWING=128, PGA_WEREAD_KIND=129, PGA_HOME_LINK=130 };
+enum { PGA_GOMOKU, PGA_GO, PGA_XIANGQI, PGA_CHESS, PGA_2048, PGA_SNAKE, PGA_TETRIS, PGA_PACMAN };
+enum { PGA_DRAWING=128, PGA_WEREAD_KIND=129, PGA_HOME_LINK=130, PGA_PRINTER_LINK=131, PGA_LINGXI_BOARD=132, PGA_WEBSITE_TRAFFIC=133 };
 enum { PGA_PAGE_LAUNCHER, PGA_PAGE_BOARD, PGA_PAGE_ARCADE, PGA_PAGE_APP };
 enum { PGA_PRESS, PGA_MOVE, PGA_RELEASE, PGA_TAP, PGA_LONG, PGA_SWIPE_L,
        PGA_SWIPE_R, PGA_SWIPE_U, PGA_SWIPE_D, PGA_CANCEL };
 enum { PGA_STATUS_ARCADE=1u, PGA_STATUS_SNAKE=2u, PGA_STATUS_PAUSED=4u,
-       PGA_STATUS_BUSY=8u, PGA_STATUS_UNSAVED=16u, PGA_STATUS_INK=32u };
+       PGA_STATUS_BUSY=8u, PGA_STATUS_UNSAVED=16u, PGA_STATUS_INK=32u, PGA_STATUS_REALTIME=64u };
 /// 双机游戏角色 / Dual-game role
 typedef enum { PGA_DUO_NONE, PGA_DUO_SCREEN, PGA_DUO_CONTROLLER } pico_app_duo_role_t;
 /// 方向 0..3；4 暂停；5 速度；6 重开 / Directions 0..3; 4 pause; 5 speed; 6 restart
@@ -58,7 +58,7 @@ enum { PGA_HOME_STATUS, PGA_HOME_SYNC, PGA_HOME_OPEN_SETUP, PGA_HOME_ENTRY };
 enum { PGA_HOME_CONFIG_GET, PGA_HOME_CONFIG_SET };
 enum { PGA_HOME_INPUT_OPEN, PGA_HOME_INPUT_TAKE, PGA_HOME_INPUT_CANCEL };
 enum { PGA_HOME_CFG=1u, PGA_HOME_WIFI=2u, PGA_HOME_BUSY=4u, PGA_HOME_EXTERNAL=8u, PGA_HOME_CF=16u,
-       PGA_HOME_ENTRY_OK=32u, PGA_HOME_PORTAL=64u, PGA_HOME_MANAGE=128u };
+       PGA_HOME_ENTRY_OK=32u, PGA_HOME_PORTAL=64u, PGA_HOME_MANAGE=128u, PGA_HOME_PENDING=256u };
 /* PGA_HOME_ENTRY result, valid only with PGA_HOME_ENTRY_OK: 0 monitor, 1 connection setup, 2 printers. */
 typedef struct {
     uint32_t bytes,flags,revision,entity_count,entity_total,printer_count;
@@ -79,7 +79,9 @@ typedef struct {
     char id[96],name[64],state[48],unit[12],room[32];
     uint8_t kind,available,on;
     float number;
+    uint8_t brightness,dimmable,hvac_modes;
 } pico_app_home_entity_t;
+#define PICO_HOME_ENTITY_V1_BYTES offsetof(pico_app_home_entity_t,brightness)
 typedef struct {
     uint32_t bytes,slot;
     char name[48],state[40],task[96];
@@ -87,6 +89,35 @@ typedef struct {
     uint8_t source,connected,has_data,result;
     int http_status;
 } pico_app_home_printer_t;
+/// 打印机应用的脱敏槽位事务；修订号防止过期编辑覆盖手机填写。/ Redacted printer transactions; revisions reject stale edits after phone changes.
+enum { PGA_PRINTER_GET, PGA_PRINTER_SET, PGA_PRINTER_REMOVE };
+typedef struct {
+    uint32_t bytes,revision,slot;
+    uint8_t source;
+    char name[48],serial[64],error[64];
+} pico_app_printer_config_t;
+/// 房间目录与选择共用修订号；只同步勾选范围，最多64项设备。/ Revision-bound room selection projects at most 64 device entities.
+enum { PGA_ROOMS_GET, PGA_ROOMS_SCAN, PGA_ROOMS_SET };
+typedef struct { char id[64],name[64]; uint32_t devices; } pico_app_home_area_t;
+typedef struct {
+    uint32_t bytes,revision,count,total,selected;
+    uint8_t configured,busy,truncated,result;
+    char error[96];
+    pico_app_home_area_t items[32];
+} pico_app_home_rooms_t;
+enum { PGA_CATALOG_GET, PGA_CATALOG_SCAN };
+enum { PGA_SELECTION_GET, PGA_SELECTION_SET };
+typedef struct {
+    uint32_t bytes,revision,offset,count,total;
+    uint8_t busy,result;
+    char error[64];
+    pico_app_home_entity_t items[24];
+} pico_app_home_catalog_t;
+typedef struct {
+    uint32_t bytes,revision,count;
+    uint8_t configured,pending;
+    char error[64],ids[96][96];
+} pico_app_home_selection_t;
 typedef struct {
     uint32_t abi,bytes;
     pico_app_view_t (*view)(void);
@@ -150,6 +181,33 @@ typedef struct {
     /// Small dual-game state packet (up to 32 bytes), primary to secondary.
     bool (*duo_packet_send)(const void *data, size_t bytes);
     int32_t (*duo_packet_recv)(void *data, size_t capacity);
+    /// 独立打印机应用尾部；仅状态/刷新/门户及单槽位事务，不提供打印控制。/ Independent printer tail: status/refresh/portal and slot transactions, never print control.
+    bool (*printer_link)(uint32_t command,pico_app_home_status_t *status);
+    bool (*printer_item)(uint32_t slot,pico_app_home_printer_t *out);
+    bool (*printer_config)(uint32_t command,pico_app_printer_config_t *config);
+    bool (*printer_input)(uint32_t command,char *value,size_t capacity);
+    /// 仅家庭连接应用可读写房间范围；绘制只消费缓存。/ Home Link alone edits room scope; rendering consumes cached data only.
+    bool (*home_rooms)(uint32_t command,pico_app_home_rooms_t *rooms);
+    /// 有界HA打印状态实体发现，不泄露凭据。/ Bounded HA printer-status discovery without credentials.
+    bool (*printer_candidate)(uint32_t index,pico_app_printer_config_t *out);
+    /// 编辑目录与持久选中ID，能力追加不改变ABI1前缀。/ Optional editing catalog and selected IDs preserve the ABI1 prefix.
+    bool (*home_catalog)(uint32_t command,pico_app_home_catalog_t *out);
+    bool (*home_selection)(uint32_t command,pico_app_home_selection_t *out);
+    /// 可选家庭双页联动；页码从0开始，filter返回最高位为已联动；action -1离开、0轮询、1/2下一/上一组、3筛选。先检查bytes。
+    /// Optional Home spread: zero-based page, output filter high bit signals pairing; action -1 leaves, 0 polls, 1/2 next/previous, 3 filters. Check bytes first.
+    int32_t (*home_spread)(int32_t page,int32_t pages,uint32_t *filter,int32_t action);
+
+    /// 可选语义看板服务，展示入口不读写凭据。/ Optional board service, never exposes credentials.
+    bool (*board_time)(double epoch,bool clock,char *out,size_t bytes);
+    uint32_t board_model_abi;
+
+    /// 固定Cloudflare只读GraphQL；仅工作任务调用，返回HTTP状态或负错误码。/ Fixed read-only Cloudflare GraphQL; worker-only, returns HTTP status or negative errors.
+    int (*traffic_fetch)(const char *query,const char *token,char *out,size_t capacity);
+    /// 显式扫码窗口；关闭时撤销本次密钥，不改变Wi-Fi。/ Explicit QR window; closing revokes its key without changing Wi-Fi.
+    bool (*traffic_portal)(bool open);
+    int64_t (*utc_seconds)(void);
+    /// NULL准备电脑快照；非NULL仅绘制，返回是否有快照，不切换路由。/ NULL prepares a desktop snapshot; otherwise paint only; returns availability without navigation.
+    bool (*traffic_snapshot)(uint8_t *fb);
 } pico_app_host_t;
 
 /// 旧八款应用所需的原始宿主前缀；追加能力不得改变ABI1。/ Original host prefix for the eight existing apps; optional additions preserve ABI1.
@@ -172,6 +230,10 @@ typedef struct {
     /// 可选v1尾部；-1需整帧，0无变化，1..4个设计坐标损伤区域；仅画待定新笔迹，不做文件IO。
     /// Optional v1 tail: -1 needs a full frame, 0 unchanged, or 1..4 design-coordinate damage boxes; draw pending ink without file IO.
     int32_t (*ink)(uint8_t *framebuffer,int32_t rects[4][4]);
+    /// 可选纯绘制引擎；模型与painter布局见pico_app_board.h。/ Optional pure renderer, layouts in pico_app_board.h.
+    void (*board_paint)(const void *model,const void *painter);
+    /// 已鉴权手机请求在UI线程串行执行；不得联网或阻塞等待。/ Authorized phone requests run serially on the UI thread; never network or block.
+    int (*manage)(const char *method,const char *path,const void *body,size_t bytes,char *out,size_t capacity);
 } pico_app_exports_t;
 
 /// 六旧游戏包仅包含此前缀；可选尾部必须检查bytes后读取。/ The six legacy game packages expose this prefix; check bytes before optional-tail reads.

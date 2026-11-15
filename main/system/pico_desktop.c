@@ -234,6 +234,7 @@ static bool prepare_app_owned(bool app){
     image_app=app;image_revision=atomic_load(app_revision(app));return true;
 }
 bool ps_desktop_prepare_app(bool app){
+    if(!ps_board_renderer_prepare(app))return false;
     if(image&&image_app==app&&image_revision==atomic_load(app_revision(app)))return true;
     bool expected=false;if(!atomic_compare_exchange_strong(&receiving,&expected,true))return false;
     bool loaded=prepare_app_owned(app);atomic_store(&receiving,false);return loaded;
@@ -261,7 +262,6 @@ int ps_desktop_image_read(const char *path,uint8_t **data,size_t *bytes){
     }
     atomic_store(&receiving,false);return status;
 }
-static void launch(uint16_t id){if(id==512){ps_navigate(PS_CLOUDFLARE);return;}if(!ps_desktop_prepare()){ps_toast("尚无灵犀画板，请先从多屏灵犀推送");return;}ps_navigate(PS_CANVAS);}
 void ps_desktop_init(void){
     power_sample();usb_scan=true;
     ps_home_portal_register();
@@ -271,10 +271,6 @@ void ps_desktop_init(void){
     ps_lock_image_release();
     atomic_store(&lock_style_snapshot,(unsigned)ps_sleep_style());
     atomic_store(&cover_layout_snapshot,(unsigned)ps_power_cover_layout());
-    const ps_navigation_entry_t entry={.id=511,.route=PS_CANVAS,.icon=PI_LAYOUT,.label="灵犀画板",.launch=launch};
-    ps_navigation_register(&entry);
-    const ps_navigation_entry_t cloudflare={.id=512,.route=PS_CLOUDFLARE,.icon=PI_LINK,.label="网站流量",.launch=launch};
-    ps_navigation_register(&cloudflare);
     atomic_store(&power_snapshot,ps_power_auto_minutes()|(ps_power_doubletap()?256u:0u));
 }
 // 中文：配置整数字段共用边界与精确整数验证，失败使用不可接受的哨兵值。
@@ -287,6 +283,7 @@ static int error_reply(char *out,size_t capacity,const char *error,int status){
     snprintf(out,capacity,"{\"ok\":false,\"error\":\"%s\"}",error);return status;
 }
 int ps_desktop_handle(const char *method,const char *path,const char *type,const void *body,size_t bytes,char *out,size_t capacity){
+    if(!strncmp(path,"/api/manage/pico/traffic/",25))return ps_apps_manage(method,path,body,bytes,out,capacity);
     if(!strncmp(path,"/api/manage/pico/weread/",24))return ps_weread_handle(method,path,type,body,bytes,out,capacity);
     if(!strcmp(path,"/api/manage/pico/home-link"))return ps_home_portal_mac_handle(method,out,capacity);
     if(!strcmp(path,"/api/manage/pico/status")&&!strcmp(method,"GET")){
@@ -457,6 +454,7 @@ bool ps_desktop_tick(void){
     power_sample();ps_desktop_usb_direct_tick();
     if(!ps_background_io_allowed())return false;
     usb_receive();
+    if(app_visible(false)||app_visible(true))(void)ps_board_renderer_prepare(ps_route()==PS_CLOUDFLARE);
     bool changed=false;unsigned options=atomic_load(&power_request);
     if(options&&options!=0x80000000u&&atomic_compare_exchange_strong(&power_request,&options,0x80000000u)){
         int next=(int)((options>>10)&7u),previous=ps_sleep_style(),previous_cover=ps_power_cover_layout();
@@ -511,6 +509,7 @@ bool ps_desktop_tick(void){
 }
 void ps_desktop_presented(bool success){
     if(!image||!app_visible(image_app)||image_revision!=atomic_load(app_revision(image_app)))return;
+    if(board_model&&!ps_board_renderer_available(image_app)){atomic_store(app_state(image_app),4);return;}
     atomic_store(app_state(image_app),success?2:3);
     if(usb_app==image_app&&usb_revision==image_revision){usb_state=success?2:3;usb_pending=false;}
 }

@@ -1,3 +1,11 @@
+if(PICO_OTA_UPDATER)
+    idf_component_register(
+        SRCS "updater_main.c"
+        REQUIRES read_pico app_update fatfs mbedtls esp_partition
+        INCLUDE_DIRS ".")
+    return()
+endif()
+
 set(main_requires
     espressif__cmake_utilities
     espressif__tinyusb
@@ -7,6 +15,7 @@ set(main_requires
     read_pico_ble_pager
     read_pico_home_link
     read_pico_apps
+    app_update
     esp_http_client
     esp-tls
     read_pico_search
@@ -41,6 +50,7 @@ idf_component_register(
         "system/pico_system.c"
         "system/dual_link.c"
         "system/pico_dual.c"
+        "system/pico_updates.c"
         "system/pico_connectivity.c"
         "system/pico_storage.c"
         "system/pico_usb.c"
@@ -52,7 +62,7 @@ idf_component_register(
         "system/pico_ink.c"
         "system/pico_desktop.c"
         "system/pico_board_data.c"
-        "system/pico_board_render.c"
+        "system/pico_board_host.c"
         "system/pico_weread.c"
         "system/pico_weread_cover.c"
         "system/pico_launcher.c"
@@ -162,10 +172,11 @@ set_source_files_properties(
     "system/pico_maintenance.c"
     "system/pico_desktop.c"
     "system/pico_board_data.c"
-    "system/pico_board_render.c"
+    "system/pico_board_host.c"
     "system/pico_weread.c"
     "system/pico_weread_cover.c"
     "system/pico_launcher.c"
+    "system/pico_updates.c"
     "system/pico_games.c"
     "apps/app_transfer.c"
     "apps/app_font_pick.c"
@@ -174,6 +185,10 @@ set_source_files_properties(
     "ui/ui_packed_asset.c"
     PROPERTIES COMPILE_OPTIONS "-Os"
 )
+
+# 中文：画板资料解析共享冷辅助函数以控制镜像体积；阅读、输入、排版和显示热路径仍为O2。
+# English: Share cold board-data parsing helpers to bound image size; retain O2 on reader/input/layout/display hot paths.
+set_source_files_properties("system/pico_board_data.c" PROPERTIES COMPILE_OPTIONS "-Os;-fno-inline")
 
 # 中文：诊断页与应用装载只在显式操作时执行；缩小控制器以保持原4MiB APP槽，不动输入、排版、字库和面板热路径。
 # English: Diagnostic pages and module loading run on explicit actions; shrink controllers within the original 4MiB APP slot without changing input, layout, fonts or panel hot paths.

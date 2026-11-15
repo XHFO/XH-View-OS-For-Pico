@@ -59,7 +59,7 @@ if(ok&&!pico_app_package_payload(&package)){fprintf(stderr,"missing native paylo
         def validate(path, accepted):
             subprocess.run([str(validator), str(path), '1' if accepted else '0'], check=True)
         catalog = json.loads((packages / 'catalog.json').read_text())
-        assert catalog['format'] == 'PGA1' and catalog['abi'] == 1 and len(catalog['games']) == 6
+        assert catalog['format'] == 'PGA1' and catalog['abi'] == 1 and len(catalog['games']) == len(GAMES)
         digest, sources = source_digest()
         libraries = []
         native_payload = None
@@ -73,7 +73,7 @@ if(ok&&!pico_app_package_payload(&package)){fprintf(stderr,"missing native paylo
             # 发行载荷不包含本机调试或动态库输出目录。/ Release payloads contain no local debug or dylib output paths.
             assert all(private not in data for private in (b'/' + b'Users/', b'/' + b'private/var/', b'/' + b'home/'))
             assert data[:8] == b'PICOAPP1'
-            assert struct.unpack_from('<6I', data, 8) == (1, 512, len(data), 1, 10001, kind)
+            assert struct.unpack_from('<6I', data, 8) == (1, 512, len(data), 1, 10003 if kind >= 4 else 10001, kind)
             for offset, length, text in ((32, 32, game_id), (64, 64, title), (128, 96, description)):
                 encoded = text.encode()
                 assert data[offset:offset + len(encoded)] == encoded
@@ -105,7 +105,7 @@ if(ok&&!pico_app_package_payload(&package)){fprintf(stderr,"missing native paylo
                     query = library.pico_app_query
                     query.restype = ctypes.POINTER(Exports)
                     exports = query().contents
-                    assert (exports.abi, exports.version, exports.kind, exports.id.decode()) == (1, 10001, kind, game_id)
+                    assert (exports.abi, exports.version, exports.kind, exports.id.decode()) == (1, 10003 if kind >= 4 else 10001, kind, game_id)
                 elif target == 'esp32s3-xtensa':
                     elf_path = temporary / (game_id + '.elf')
                     elf_path.write_bytes(code)
@@ -143,7 +143,7 @@ if(ok&&!pico_app_package_payload(&package)){fprintf(stderr,"missing native paylo
                 raise AssertionError('Builder accepted ' + label)
         report['sources'] = sources
         if device_payloads:
-            assert len(device_payloads) == 6
+            assert len(device_payloads) == len(GAMES)
             build_report = json.loads((packages / 'build-report.json').read_text())
             manifest = build_report['device_build']
             manifest_path = temporary / 'manifest.json'

@@ -8,6 +8,7 @@ import zxingcpp
 samples = {
     "url-ap": "http://192.168.4.1",
     "url-sta": "http://192.168.123.234",
+    "url-traffic": "http://192.168.50.123/manage#key=0123456789abcdef0123456789abcdef&view=traffic",
     "url-weread": "http://192.168.50.123/manage#key=0123456789abcdef0123456789abcdef&view=weread",
     "url-home": "http://192.168.50.123/h#t=0123456789abcdef0123456789abcdef",
     "weread-reader": "https://weread.qq.com/web/reader/demoBookId",

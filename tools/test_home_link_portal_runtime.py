@@ -18,7 +18,7 @@ void *heap_caps_calloc(size_t, size_t, unsigned);
 """,
     "esp_timer.h": "#pragma once\n#include <stdint.h>\nint64_t esp_timer_get_time(void);\n",
     "esp_random.h": "#pragma once\n#include <stddef.h>\nvoid esp_fill_random(void *, size_t);\n",
-    "freertos/FreeRTOS.h": "#pragma once\n#define portMAX_DELAY 0xffffffffu\n",
+    "freertos/FreeRTOS.h": "#pragma once\n#define portMAX_DELAY 0xffffffffu\n#define pdTRUE 1\n",
     "freertos/semphr.h": r"""
 #pragma once
 typedef void *SemaphoreHandle_t;

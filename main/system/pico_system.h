@@ -20,12 +20,24 @@ typedef enum { PS_PRESS, PS_MOVE, PS_RELEASE, PS_TAP, PS_LONG, PS_SWIPE_L,
     PS_SWIPE_R, PS_SWIPE_U, PS_SWIPE_D, PS_CANCEL } ps_event_type_t;
 typedef struct { ps_event_type_t type; int x0,y0,x,y; int64_t ms; } ps_event_t;
 typedef struct { int w,h; bool landscape; } ps_view_t;
+typedef enum {
+    PS_STATUS_STYLE_LINE = 0,
+    PS_STATUS_STYLE_BOOK = 1,
+    PS_STATUS_STYLE_COUNT
+} ps_status_style_t;
+typedef enum {
+    PS_SHELF_CARD_DEFAULT = 0,
+    PS_SHELF_CARD_BOARDING = 1,
+    PS_SHELF_CARD_TRAIN = 2,
+    PS_SHELF_CARD_CINEMA = 3,
+    PS_SHELF_CARD_STYLE_COUNT
+} ps_shelf_card_style_t;
 typedef enum { PI_BOOK, PI_HOME, PI_SETTINGS, PI_BACK, PI_CLOSE, PI_SEARCH,
     PI_IMPORT, PI_NOTE, PI_MARK, PI_LAYOUT, PI_CLOCK, PI_ROTATE, PI_WIFI,
     PI_LIGHT, PI_SWITCH, PI_FAN, PI_THERMOMETER, PI_CLIMATE, PI_PRINTER,
     PI_GAME, PI_CHECK, PI_PLUS, PI_MINUS, PI_REFRESH, PI_LOCK, PI_MORE, PI_BLUETOOTH,
     PI_HIGHLIGHT, PI_LIST, PI_HEART, PI_BATTERY, PI_USB, PI_SD, PI_SLIDERS,
-    PI_PAUSE, PI_PLAY, PI_POWER, PI_GRID, PI_LINK, PI_DROPLET, PI_COUNT } ps_icon_t;
+    PI_PAUSE, PI_PLAY, PI_POWER, PI_GRID, PI_LINK, PI_DROPLET, PI_SOUND, PI_COUNT } ps_icon_t;
 
 ps_view_t ps_view(void);
 ps_route_t ps_route(void);
@@ -59,6 +71,8 @@ bool ps_touch_guard_set(bool enabled);
 void ps_book_rotation_enter(app_ctx_t* ctx);
 bool ps_book_rotation_tick(app_ctx_t* ctx, bool idle);
 void ps_toast(const char *text);
+/// 从产品书架恢复当前书或双机共享书；仅由主循环进入真实阅读页。/ Resume the current or paired book from the product shelf through the main loop.
+bool ps_global_resume_reading(void);
 /// 单行顶部提示，不弹底部气泡；用于防误触等状态。 / One-line top notice instead of a bottom toast.
 void ps_notice(const char *text);
 void ps_notice_draw(uint8_t *fb, int y);
@@ -122,6 +136,7 @@ bool ps_usb_back(void);
 void ps_maintenance_tick(void);
 /// 本机书架只读缓存快照，无文件访问。/ Read-only local shelf cache, without file access.
 void ps_reader_library_status(unsigned *count, bool *loading, bool *limited);
+bool ps_reader_shelf_choice_open(void);
 bool ps_reader_storage_save(void);
 /// 电源保存不释放当前显示所需的封面缓存。/ Persist for power states without releasing displayed cover caches.
 bool ps_reader_power_save(void);
@@ -181,6 +196,18 @@ bool ps_wall_time(struct tm *out);
 void ps_clock_set_utc(uint32_t utc);
 int ps_reader_cover_sources(char paths[][288],int capacity);
 int ps_battery_percent(void);
+/// 当前顶部状态栏图标外观；默认墨线极简。 / Current top status icon style, defaulting to line-minimal.
+uint8_t ps_status_style(void);
+/// 状态栏与阅读选项共用双设备图形；role=0使两侧高亮。/ Shared pair glyph; role=0 highlights both devices.
+void ps_status_pair_draw(uint8_t *fb,int x,int y,bool book,bool linked,int role);
+bool ps_status_percent(void);
+bool ps_status_percent_set(bool enabled);
+/// 持久切换状态栏图标外观；写入失败时保留原值。 / Persist the status icon style, retaining the old value on failure.
+bool ps_status_style_set(uint8_t style);
+/// 书架“上次读到”卡片外观；默认简洁续读卡。/ Shelf continue-reading card style, defaulting to the simple card.
+uint8_t ps_shelf_card_style(void);
+/// 持久切换续读卡外观；写入失败时保留原值。/ Persist the card style, retaining the old value on failure.
+bool ps_shelf_card_style_set(uint8_t style);
 bool ps_charging(void);
 /// PMU缓存确认外接电源，包括满电仍供电；未知/故障不视为外电。/ Cached PMU-confirmed external power, including full charge; unknown/fault never proves external power.
 bool ps_external_power(void);
@@ -190,8 +217,19 @@ EpdRect ps_rect(int x,int y,int w,int h);
 bool ps_hit(int x,int y,int rx,int ry,int rw,int rh);
 void ps_fill(uint8_t *fb,int x,int y,int w,int h,int gray);
 void ps_line(uint8_t *fb,int x0,int y0,int x1,int y1,int gray);
+void ps_line_thin(uint8_t *fb,int x0,int y0,int x1,int y1,int gray);
 void ps_box(uint8_t *fb,int x,int y,int w,int h,int radius,int gray,bool filled);
 void ps_text(uint8_t *fb,int x,int y,int size,const char *text,int gray);
+/// 带明确文字状态的轻量开关行。/ Lightweight toggle row with an explicit text state.
+void ps_toggle(uint8_t *fb,int x,int y,int w,int h,const char *label,bool on,bool enabled);
+/// Common binary control, left off/right on; shared with independently loaded apps.
+void ps_switch_draw(uint8_t *fb,int x,int y,int w,int h,bool on,bool enabled);
+/// Horizontal gestures must start in this control; right explicitly enables, left disables.
+bool ps_switch_swipe(const ps_event_t *event,int x,int y,int w,int h,bool *on);
+/// 当前 UI 字号的逻辑宽度。/ Logical width at the effective UI text size.
+int ps_text_width(int size,const char *s);
+/// 静态遮盖背景，避免弹层露出标题碎片。/ Static modal backdrop without title fragments.
+void ps_modal_background(uint8_t *fb);
 /// 固定字号的提示文字；超宽仅截短，不缩字。/ Fixed-size prompts truncate rather than resize.
 void ps_text_fixed(uint8_t *fb,int x,int y,int size,const char *text,int gray);
 /// 只画光圈轮廓，避开静态圆形按钮，不重画其底色或图标。/ Draw only a cursor outline, excluding static circular buttons.
@@ -200,10 +238,16 @@ void ps_body_text(uint8_t *fb,int x,int y,int size,const char *text,int gray);
 void ps_center(uint8_t *fb,int x,int y,int size,const char *text,int gray);
 void ps_wrap(uint8_t *fb,int x,int y,int w,int size,int lines,const char *text,int gray);
 void ps_icon(uint8_t *fb,int x,int y,int size,ps_icon_t icon,int gray);
+void ps_wifi_signal(uint8_t *fb,int x,int y,int size,unsigned level,int gray);
 void ps_button(uint8_t *fb,int x,int y,int w,int h,const char *label,bool selected);
 void ps_heading(uint8_t *fb,const char *title,const char *subtitle);
+/// 与绘制共用页头返回触区。/ Shared heading Back touch geometry.
+bool ps_heading_back_hit(int x,int y);
 void ps_tabs(uint8_t *fb,int selected);
+void ps_heart(uint8_t *fb,int x,int y,int size,bool filled);
 void ps_corner_controls(uint8_t *fb);
+/// 显示底角滑动指示，不影响手势。/ Show corner swipe guides without changing gestures.
+bool ps_corner_indicators(void);
 
 void ps_reader_media_lost(void);
 void ps_reader_init(void);
@@ -220,8 +264,11 @@ bool ps_reader_editor_ink_active(void);
 /// 保留旧全局中断调用契约。/ Preserve the legacy global-interruption call contract.
 void ps_reader_editor_ink_cancel(void);
 /// TF应用与画板局部绘制。/ TF application and drawing damage interface.
+int ps_apps_manage(const char *method,const char *path,const void *body,size_t bytes,char *out,size_t capacity);
 bool ps_apps_open(const char *id);
 void ps_apps_register_navigation(void);
+/// 将已扫描工具入口解析为稳定包 ID，不访问存储。/ Resolve a scanned tool destination to a stable package ID without I/O.
+bool ps_apps_tool_item(uint16_t navigation,const char **id,const char **title);
 bool ps_apps_ink_mode(void);
 bool ps_apps_ink_render_partial(uint8_t *fb,EpdRect areas[4],int *count);
 void ps_apps_ink_invalidate(void);
@@ -259,6 +306,17 @@ void ps_games_rescan(void);
 unsigned ps_games_count(void);
 /// 只读已扫描TF游戏目录；名称指针仅在下一次扫描前有效。/ Read the scanned TF-game catalog; labels remain valid until the next scan.
 bool ps_games_item(unsigned index,const char **id,const char **title);
+void ps_games_cover(uint8_t *fb,unsigned index,int x,int y);
+/// 当前应用排序名称；循环顺序为默认、名称、最近、安装、版本。/ Current app sort label; cycles default, name, recent, installed, version.
+const char *ps_games_sort_label(void);
+/// 循环并持久化应用排序，同时重排当前目录。/ Cycle and persist the app sort, then reorder the current catalog.
+bool ps_games_sort_cycle(void);
+/// 明确选择 TF 应用排序。/ Explicit TF app sort selection.
+unsigned ps_games_sort_mode(void);
+bool ps_games_sort_set(unsigned mode);
+/// 应用弹层优先处理返回与遮挡。/ App modals own Back and overlay visibility.
+bool ps_launcher_modal_active(void);
+bool ps_launcher_back(void);
 /// 按稳定包ID启动游戏，复用保存、介质检查与单模块载入流程。/ Open a stable game package ID through existing save, media and single-module guards.
 bool ps_games_open_id(const char *id);
 bool ps_games_install(const char *staged_path,bool replace);
@@ -269,6 +327,7 @@ bool ps_games_prepare_storage(void);
 void ps_games_action(int action);
 bool ps_games_is_arcade(void);
 bool ps_games_is_snake(void);
+bool ps_games_realtime(void);
 bool ps_games_paused(void);
 void ps_games_init(void);
 void ps_games_enter(ps_route_t route);
@@ -278,3 +337,9 @@ bool ps_games_key(int key);
 bool ps_games_tick(void);
 
 extern const app_desc_t app_pico_system;
+
+struct book_progress;
+bool ps_dual_book_anchor(const char*,uint32_t,struct book_progress*);
+bool ps_dual_prepare_open(const char*);
+void ps_dual_prepare_open_reset(void);
+bool ps_dual_reconcile_at(uint32_t);

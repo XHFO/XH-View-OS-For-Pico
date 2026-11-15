@@ -63,26 +63,29 @@ static void worker_delete(void *handle){fixture_worker_t *worker=handle;assert(w
 static void worker_suspend(void){for(;;)delay_ms(1);}
 static uint32_t stack_free(void){return 16384;}
 static void diagnostic(const char *event,int type,unsigned generation,unsigned free_bytes){(void)event;(void)type;(void)generation;(void)free_bytes;}
+static int duo_role_value,duo_sends;
+static int32_t duo_role(void){return duo_role_value;}
+static bool duo_send(uint8_t code){assert(code<=12);duo_sends++;return duo_role_value==PGA_DUO_CONTROLLER;}
 static pico_app_host_t host={
     .abi=PICO_APP_ABI,.bytes=sizeof(pico_app_host_t),.view=view,.page=get_page,.navigate=navigate,.dirty=dirty,.toast=toast,
     .load=load,.store=store,.legacy_load=legacy_load,.time_us=time_us,.random=random_value,.fill=fill,.line=line,.box=box,
     .text=text,.center=text,.wrap=wrap,.button=button,.heading=heading,.worker_create=worker_create,.worker_delete=worker_delete,
     .worker_suspend=worker_suspend,.worker_stack_free=stack_free,.delay_ms=delay_ms,.diagnostic=diagnostic,
-    .format=snprintf,.copy=memcpy,.move=memmove,.set=memset,.compare=memcmp
+    .format=snprintf,.copy=memcpy,.move=memmove,.set=memset,.compare=memcmp,.duo_role=duo_role,.duo_input_send=duo_send
 };
 static void tap(const pico_app_exports_t *app,int x,int y){pico_app_event_t event={.type=PGA_TAP,.x=x,.y=y};assert(app->event(&event));}
 static void snake_input(const pico_app_exports_t *app,int direction){
-    int x=109+(direction==3?0:direction==1?2:1)*49,y=402+(direction==0?0:49);
+    int x=180+(direction==3?-70:direction==1?26:-22),y=404+(direction==0?-22:direction==2?74:26);
     pico_app_event_t e={.type=PGA_PRESS,.x0=x+22,.y0=y+22,.x=x+22,.y=y+22};assert(app->event(&e));
     e.type=PGA_RELEASE;app->event(&e);e.type=PGA_TAP;assert(app->event(&e));
 }
-static fixture_arcade_t arcade_snapshot(const pico_app_exports_t *app){assert(app->save());fixture_arcade_t state;assert(saved_bytes==sizeof(state));memcpy(&state,saved,sizeof(state));return state;}
+static fixture_arcade_t arcade_snapshot(const pico_app_exports_t *app){assert(app->save());fixture_arcade_t state;assert(saved_bytes>=sizeof(state));memcpy(&state,saved,sizeof(state));return state;}
 static void snake_timing(const pico_app_exports_t *app){
     fixture_arcade_t state=arcade_snapshot(app);assert(state.snake[0]==208&&state.snake_moves==0);
     snake_input(app,0);snake_input(app,3);state=arcade_snapshot(app);assert(state.snake[0]==208&&state.snake_moves==0);
-    test_clock_us+=549000;assert(!app->tick());test_clock_us+=1000;assert(app->tick());
+    assert(app->tick());
     state=arcade_snapshot(app);assert(state.snake[0]==188&&state.snake_moves==1);assert(!app->tick());
-    test_clock_us+=549000;assert(!app->tick());test_clock_us+=1000;assert(app->tick());
+    test_clock_us+=299000;assert(!app->tick());test_clock_us+=1000;assert(app->tick());
     state=arcade_snapshot(app);assert(state.snake[0]==187&&state.snake_moves==2);
     // 暂停清空尚未执行的方向，恢复后从新的整步时钟继续。/ Pause drops pending input and resume waits a fresh full movement interval.
     snake_input(app,2);app->action(2);assert(app->status()&PGA_STATUS_PAUSED);
@@ -95,7 +98,7 @@ int main(int argc,char **argv)
     assert(argc==4);kind=atoi(argv[2]);legacy_mode=atoi(argv[3]);page=kind<4?PGA_PAGE_BOARD:PGA_PAGE_ARCADE;if(kind==5)test_clock_us=1000000000;
     void *library=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);if(!library){fprintf(stderr,"%s\n",dlerror());return 1;}
     pico_app_query_t query=(pico_app_query_t)dlsym(library,"pico_app_query");assert(query);
-    const pico_app_exports_t *app=query();assert(app&&app->abi==1&&app->bytes==sizeof(*app)&&app->kind==(unsigned)kind&&app->version==10001);
+    const pico_app_exports_t *app=query();assert(app&&app->abi==1&&app->bytes==sizeof(*app)&&app->kind==(unsigned)kind&&app->version==(kind>=4?10003u:10001u));
     const char *ids[]={"gomoku","go","xiangqi","chess","2048","snake"};assert(!strcmp(app->id,ids[kind]));
     pico_app_host_t bad=host;bad.abi=999;assert(!app->start(&bad));bad=host;bad.bytes--;assert(!app->start(&bad));
     assert(app->start(&host));assert(app->start(&host));assert(legacy_reads==1);assert(navs==0);
@@ -118,8 +121,8 @@ int main(int argc,char **argv)
     }else{
         assert(app->status()&PGA_STATUS_ARCADE);assert((bool)(app->status()&PGA_STATUS_SNAKE)==(kind==5));
         app->action(kind==4?1:0);assert((bool)(app->status()&PGA_STATUS_SNAKE)==(kind==5));assert(navs==0);
-        assert(app->save());assert(!strcmp(saved_key,"arcade1")&&saved_bytes==sizeof(fixture_arcade_t));fixture_arcade_t state;memcpy(&state,saved,sizeof(state));
-        if(kind==4){assert(state.initialized&&!state.snake_initialized);pico_app_event_t e={.type=PGA_SWIPE_L};assert(app->event(&e));}
+        assert(app->save());assert(!strcmp(saved_key,"arcade2")&&saved_bytes>=sizeof(fixture_arcade_t));fixture_arcade_t state;memcpy(&state,saved,sizeof(state));
+        if(kind==4){assert(state.initialized&&!state.snake_initialized);tap(app,180,530);pico_app_event_t e={.type=PGA_SWIPE_L};assert(app->event(&e));}
         else{assert(state.snake_initialized&&!state.initialized);app->action(2);assert(!(app->status()&PGA_STATUS_PAUSED));snake_timing(app);}
         fail_store=true;assert(!app->save());assert(app->status()&PGA_STATUS_UNSAVED);app->stop();if(kind==5)assert(app->status()&PGA_STATUS_PAUSED);
         fail_store=false;assert(app->save());assert(!(app->status()&PGA_STATUS_UNSAVED));
@@ -129,7 +132,18 @@ int main(int argc,char **argv)
         library=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);assert(library);query=(pico_app_query_t)dlsym(library,"pico_app_query");assert(query);app=query();assert(app->start(&host));
         assert(app->status()&PGA_STATUS_PAUSED);fixture_arcade_t state=arcade_snapshot(app);assert(state.snake[0]==186&&state.snake_moves==3&&legacy_reads==1);
         app->action(2);assert(!app->tick());test_clock_us+=550000;assert(app->tick());state=arcade_snapshot(app);assert(state.snake[0]==185&&state.snake_moves==4);
+        duo_role_value=PGA_DUO_SCREEN;app->tick();duo_role_value=PGA_DUO_NONE;app->render(&frame);app->tick();assert(app->status()&PGA_STATUS_PAUSED);
+        duo_role_value=PGA_DUO_SCREEN;app->tick();assert(app->status()&PGA_STATUS_PAUSED);
         app->stop();assert(!dlclose(library));puts("Snake actual module: early press, two queued turns, unchanged cadence, pause/resume and saved-body direction reload passed");
+    }
+    if(kind>=4){
+        library=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);assert(library);query=(pico_app_query_t)dlsym(library,"pico_app_query");app=query();duo_role_value=PGA_DUO_CONTROLLER;assert(app->start(&host));
+        fixture_arcade_t before_state=arcade_snapshot(app);test_clock_us+=10000000;app->tick();
+        pico_app_event_t e={.type=PGA_PRESS,.x=160,.y=304};app->event(&e);assert(duo_sends==1);
+        e.type=PGA_RELEASE;app->event(&e);e.type=PGA_TAP;app->event(&e);assert(duo_sends==1);
+        fixture_arcade_t after_state=arcade_snapshot(app);assert(!memcmp(&before_state,&after_state,sizeof(before_state)));
+        duo_role_value=PGA_DUO_NONE;test_clock_us+=10000000;app->tick();after_state=arcade_snapshot(app);assert(!memcmp(&before_state,&after_state,sizeof(before_state)));
+        app->stop();assert(!dlclose(library));
     }
     printf("module %s legacy=%s: ABI, kind isolation, pure render, readonly migration, failed-save preservation, join/unload passed\n",ids[kind],legacy_mode==2?"malformed":legacy_mode?"other":"own");
     return 0;

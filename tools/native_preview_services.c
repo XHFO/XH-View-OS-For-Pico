@@ -142,7 +142,7 @@ void read_pico_connectivity_get_resume_status(read_pico_connectivity_resume_stat
     np_ensure();if(out)*out=(read_pico_connectivity_resume_status_t){np_net.suspended,np_net.busy,np_net.submitted_seq,np_net.completed_seq,np_net.last_error};
 }
 bool read_pico_connectivity_online(void){NP_GUARD;np_ensure();return np_net.connected&&!np_net.suspended;}
-void read_pico_connectivity_get_link(read_pico_connectivity_link_t *out){NP_GUARD;if(!out)return;np_ensure();out->online=np_net.connected&&!np_net.suspended;snprintf(out->ssid,sizeof(out->ssid),"%s",np_net.ssid);}
+void read_pico_connectivity_get_link(read_pico_connectivity_link_t *out){NP_GUARD;if(!out)return;np_ensure();out->online=np_net.connected&&!np_net.suspended;out->rssi=out->online?np_net.rssi:0;snprintf(out->ssid,sizeof(out->ssid),"%s",np_net.ssid);}
 
 /* Legacy file-transfer page shares the same virtual backend, never an HTTP server. */
 esp_err_t read_pico_transfer_start(const read_pico_transfer_cfg_t *cfg){NP_GUARD;return read_pico_connectivity_start_transfer(cfg);}
@@ -192,6 +192,7 @@ bool native_preview_service_scenario(const char *name){NP_GUARD;
     if(!strncmp(name,"power-",6)){extern bool native_preview_power_scenario(const char*);return native_preview_power_scenario(name);}
     if(!strcmp(name,"default")){native_preview_services_init();return true;}
     if(!strcmp(name,"first-use")){native_preview_services_init();np_net.connected=np_net.wifi_enabled=false;np_resume_enabled=false;np_net.state=READ_PICO_CONNECTIVITY_DISABLED;np_net.saved_count=np_net.network_count=0;np_net.ssid[0]=np_net.ip[0]=0;return true;}
+    if(!strncmp(name,"rssi",4)){int rssi;if(sscanf(name+4,"%d",&rssi)!=1||rssi< -127||rssi>0)return false;np_net.rssi=(int8_t)rssi;np_net.connected=true;return true;}
     if(!strcmp(name,"offline")){np_job=NP_NONE;np_net.busy=np_net.connected=np_net.connecting=np_net.scanning=false;np_net.ssid[0]=np_net.ip[0]=0;np_net.state=np_net.wifi_enabled?READ_PICO_CONNECTIVITY_IDLE:READ_PICO_CONNECTIVITY_DISABLED;return true;}
     if(!strcmp(name,"scan-failed")){np_scan_fail=true;return true;}
     if(!strcmp(name,"scan-ready")){np_scan_fail=false;return true;}

@@ -91,9 +91,9 @@ bool ui_wifi_qr_prepare_url(const char* url) {
             p += 12;
         }
         for (int i = 0; i < 32; ++i) { if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) return false; ++p; }
-        // 家庭门户仅允许密钥；旧管理页只额外接受固定微信读书目标。
-        // Home portal accepts the key only; legacy management also accepts its fixed WeRead target.
-        if (*p && (home_portal || strcmp(p, "&view=weread"))) return false;
+        // 家庭门户仅允许密钥；管理页只额外接受固定微信读书或网站看板目标。
+        // Home portal accepts the key only; management also accepts its fixed WeRead or traffic target.
+        if (*p && (home_portal || (strcmp(p, "&view=weread") && strcmp(p, "&view=traffic")))) return false;
     }
     return strlen(url) < 192 && prepare_payload(url);
 }

@@ -118,12 +118,12 @@ class Runtime:
         return self.command(f'touch up {x} {y} {self.now + 60}')
 
     def swipe(self, down=False, landscape=False):
-        x, start, end = (320, 285, 225) if landscape else (180, 520, 400)
+        y, start, end = (280, 500, 380) if landscape else (520, 270, 150)
         if down:
             start, end = end, start
-        self.command(f'touch down {x} {start} {self.now + 20}')
-        self.command(f'touch move {x} {end} {self.now + 80}')
-        return self.command(f'touch up {x} {end} {self.now + 60}')
+        self.command(f'touch down {start} {y} {self.now + 20}')
+        self.command(f'touch move {end} {y} {self.now + 80}')
+        return self.command(f'touch up {end} {y} {self.now + 60}')
 
     def hold(self, x, y, target=None):
         self.command(f'touch down {x} {y} {self.now + 20}')
@@ -142,8 +142,12 @@ class Runtime:
     def style(self, mode, landscape=False):
         self.tap(530 if landscape else 230, 146 if landscape else 263)
         width, height, card_width = (640, 360, 456) if landscape else (360, 640, 328)
-        left, top, cell = (width-card_width)//2, (height-238)//2, (card_width-36)//2
-        state = self.tap(left+12+(mode % 2)*(cell+12)+cell//2, top+54+(mode//2)*56+24)
+        cols = 3 if landscape else 2
+        rows = (5 + cols - 1) // cols
+        panel_height = 54 + rows * 56 + 24 + 48 + 20
+        left, top, cell = (width-card_width)//2, (height-panel_height)//2, (card_width-24-(cols-1)*12)//cols
+        state = self.tap(left+12+(mode % cols)*(cell+12)+cell//2, top+54+(mode//cols)*56+24)
+        self.tap(2, 74)
         assert stored_style(self.session) == mode, state
         return self.settle()
 

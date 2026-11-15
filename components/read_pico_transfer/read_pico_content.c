@@ -125,7 +125,7 @@ static int list(const read_pico_content_request_t *r,const query_t *q,char *out,
 }
 static bool valid_upload(const char *path,const char *relative,const char *k){
     if(!strcmp(k,"font"))return valid_ttf(path);
-    if(!strcmp(k,"application")){pico_app_package_t package;if(!pico_app_package_read(path,&package,true,NULL,0)||(package.kind>5&&package.kind<128))return false;char expected[80];snprintf(expected,sizeof(expected),"apps/%s/%s.pga",package.kind>=128?"tools":"games",package.id);bool device=false;for(unsigned i=0;i<package.payload_count;i++)if(!strcmp(package.payloads[i].target,"esp32s3-xtensa"))device=true;return device&&!strcmp(relative,expected);}
+    if(!strcmp(k,"application")){pico_app_package_t package;if(!pico_app_package_read(path,&package,true,NULL,0)||(package.kind>7&&package.kind<128))return false;char expected[80];snprintf(expected,sizeof(expected),"apps/%s/%s.pga",package.kind>=128?"tools":"games",package.id);bool device=false;for(unsigned i=0;i<package.payload_count;i++)if(!strcmp(package.payloads[i].target,"esp32s3-xtensa"))device=true;return device&&!strcmp(relative,expected);}
     if(!strcasecmp(strrchr(relative,'.'),".epub")){unsigned char signature[4];FILE *f=fopen(path,"rb");if(!f)return false;bool ok=fread(signature,1,4,f)==4&&!memcmp(signature,"PK\003\004",4);if(fclose(f))ok=false;return ok;}
     return true;
 }

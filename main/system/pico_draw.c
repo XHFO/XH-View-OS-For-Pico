@@ -9,6 +9,7 @@
 #include "pico_system.h"
 #include "pico_navigation.h"
 #include "pico_theme.h"
+#include "pico_app_switch.h"
 #include "pico_icons_data.h"
 #include "ttf_font.h"
 #include "ui_kit.h"
@@ -87,7 +88,8 @@ static void round_rect(uint8_t *fb, EpdRect r, int radius, int gray, bool filled
     }
 }
 EpdRect ps_rect(int x, int y, int w, int h) {
-    return (EpdRect){ px(x), px(y), px(w), px(h) };
+    // 按两端坐标取整，避免缩放后左右留白相差一个物理像素。/ Round endpoints together so scaled left/right margins stay equal.
+    return (EpdRect){ px(x), px(y), px(x+w)-px(x), px(y+h)-px(y) };
 }
 bool ps_hit(int x, int y, int rx, int ry, int rw, int rh) {
     return x >= rx && y >= ry && x < rx + rw && y < ry + rh;
@@ -100,7 +102,8 @@ void ps_fill(uint8_t* fb, int x, int y, int w, int h, int gray) {
     if (x1 > x && y1 > y)
         ui_fill_rect_fast(fb, ps_rect(x, y, x1 - x, y1 - y), (uint8_t)(clamp(gray, 0, 15) * 17));
 }
-void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
+static void antialiased_line(uint8_t *fb,int x0,int y0,int x1,int y1,int gray,
+                             int radius_squared,int solid_threshold) {
     if (!fb) return;
     ps_view_t v = ps_view();
     int ax = px(x0), ay = px(y0), bx = px(x1), by = px(y1);
@@ -110,7 +113,6 @@ void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
     int maxy = clamp((ay > by ? ay : by) + 2, 0, px(v.h));
     int64_t dx = (int64_t)(bx - ax) * 8, dy = (int64_t)(by - ay) * 8;
     int64_t length = dx * dx + dy * dy;
-    const int radius_squared = PS_THEME_STROKE_PX * PS_THEME_STROKE_PX * 16;
     gray = clamp(gray, 0, 15);
     bool horizontal = (dx < 0 ? -dx : dx) >= (dy < 0 ? -dy : dy);
     int start = horizontal ? minx : miny, end = horizontal ? maxx : maxy;
@@ -136,9 +138,16 @@ void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
                     coverage += cross * cross <= radius_squared * length;
                 }
             }
+            if (solid_threshold && coverage >= solid_threshold) coverage = 16;
             coverage_pixel(fb, x, y, gray, coverage);
         }
     }
+}
+void ps_line(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
+    antialiased_line(fb,x0,y0,x1,y1,gray,PS_THEME_STROKE_PX*PS_THEME_STROKE_PX*16,0);
+}
+void ps_line_thin(uint8_t* fb, int x0, int y0, int x1, int y1, int gray) {
+    antialiased_line(fb,x0,y0,x1,y1,gray,16,6);
 }
 void ps_box(uint8_t* fb, int x, int y, int w, int h, int radius, int gray, bool filled) {
     if (w <= 0 || h <= 0) return;
@@ -213,6 +222,12 @@ void ps_text_fixed(uint8_t* fb,int x,int y,int size,const char* s,int gray) {
     // 提示只截短超宽文字，不改变字号，避免滑动过程中跳动。/ Truncate overlong prompts without resizing during motion.
     text(fb,x,y,size,s,gray,false,true,false);
 }
+int ps_text_width(int size,const char *s){
+    if(!s)return 0;
+    int old=ttf_get_weight();if(ps_route()!=PS_READ&&old<600)ttf_set_weight(600);
+    int width=(ttf_text_width_px(px(ui_size(size)),s)*10+18)/19;
+    ttf_set_weight(old);return width;
+}
 void ps_center(uint8_t* fb, int x, int y, int size, const char* s, int gray) {
     text(fb, x, y, size, s, gray, true, true, true);
 }
@@ -263,6 +278,22 @@ void ps_wrap(uint8_t* fb, int x, int y, int w, int size, int lines, const char* 
         ps_text(fb, x, y + row * (ui_size(size) + 7), size, line, gray);
     }
 }
+void ps_modal_background(uint8_t *fb) {
+    ps_view_t v=ps_view();ps_fill(fb,0,24,v.w,v.h-24,PS_THEME_CANVAS);
+}
+void ps_toggle(uint8_t *fb,int x,int y,int w,int h,const char *label,bool on,bool enabled) {
+    ps_surface(fb,x,y,w,h,false);
+    bool compact=w<180;int size=compact?11:14,sw=compact?38:48,sh=compact?22:26,pad=compact?8:12;
+    ps_wrap(fb,x+pad,y+(h-ui_size(size))/2,w-sw-3*pad,size,1,label,enabled?PS_THEME_INK:PS_THEME_DISABLED);
+    ps_switch_draw(fb,x+w-sw-pad,y+(h-sh)/2,sw,sh,on,enabled);
+}
+void ps_switch_draw(uint8_t *fb,int x,int y,int w,int h,bool on,bool enabled){
+    pico_switch_draw(fb,x,y,w,h,on,enabled,ps_box);
+}
+bool ps_switch_swipe(const ps_event_t *e,int x,int y,int w,int h,bool *on){
+    if(!e||!on||(e->type!=PS_SWIPE_L&&e->type!=PS_SWIPE_R)||!ps_hit(e->x0,e->y0,x,y,w,h))return false;
+    *on=e->type==PS_SWIPE_R;return true;
+}
 void ps_button(uint8_t* fb, int x, int y, int w, int h, const char* label, bool selected) {
     if (w <= 0 || h <= 0) return;
     int radius = PS_THEME_BUTTON_RADIUS;
@@ -294,7 +325,7 @@ static uint16_t icon_segment_mask(int ax,int ay,int bx,int by,int radius,int x,i
 static int icon_coordinate(int origin,int coordinate,int size) {
     return origin+(coordinate*size+12)/24;
 }
-void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
+static void icon_draw(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray,unsigned bands) {
     if(!fb||size<=0||size>1024)return;
     if((unsigned)icon>=PI_COUNT)icon=PI_MORE;
     ps_icon_shape_t shape=ps_icon_shapes[icon];if(!shape.count)return;
@@ -306,6 +337,7 @@ void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
     int left=width,right=0,top=height,bottom=0;
     for(unsigned i=0;i<shape.count;i++) {
         ps_icon_segment_t s=ps_icon_segments[shape.first+i];
+        if(icon==PI_WIFI&&((bands<3&&(s.ay<80||s.by<80))||(bands<2&&(s.ay<120||s.by<120))))continue;
         int ax=icon_coordinate(ox,s.ax,native_size),ay=icon_coordinate(oy,s.ay,native_size);
         int bx=icon_coordinate(ox,s.bx,native_size),by=icon_coordinate(oy,s.by,native_size);
         int low=(ax<bx?ax:bx)-radius,high=(ax>bx?ax:bx)+radius;
@@ -324,6 +356,7 @@ void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
         memset(row+left,0,(size_t)(right-left)*sizeof(*row));
         for(unsigned i=0;i<shape.count;i++) {
             ps_icon_segment_t s=ps_icon_segments[shape.first+i];
+        if(icon==PI_WIFI&&((bands<3&&(s.ay<80||s.by<80))||(bands<2&&(s.ay<120||s.by<120))))continue;
             int ax=icon_coordinate(ox,s.ax,native_size),ay=icon_coordinate(oy,s.ay,native_size);
             int bx=icon_coordinate(ox,s.bx,native_size),by=icon_coordinate(oy,s.by,native_size);
             int low_y=py*8+1-radius,high_y=py*8+7+radius;
@@ -345,7 +378,28 @@ void ps_icon(uint8_t* fb,int x,int y,int size,ps_icon_t icon,int gray) {
             coverage_pixel(fb,px,py,gray,__builtin_popcount((unsigned)row[px]));
     }
 }
+void ps_icon(uint8_t *fb,int x,int y,int size,ps_icon_t icon,int gray){icon_draw(fb,x,y,size,icon,gray,3);}
+// 收藏复用系统桃心路径，实心只填内部，外缘仍由原抗锯齿描边绘制。/ Fill the shared heart path inside its existing antialiased outline.
+void ps_heart(uint8_t *fb,int x,int y,int size,bool filled){
+    if(filled&&size>0){
+        ps_icon_shape_t shape=ps_icon_shapes[PI_HEART];int n=px(size);
+        for(int row=0;row<n;row++){
+            int sy=(row*192+96)/n,hits[4],count=0;
+            for(unsigned i=0;i<shape.count&&count<4;i++){
+                ps_icon_segment_t s=ps_icon_segments[shape.first+i];
+                if((s.ay<=sy&&s.by>sy)||(s.by<=sy&&s.ay>sy))
+                    hits[count++]=px(x)+(s.ax+(sy-s.ay)*(s.bx-s.ax)/(s.by-s.ay))*n/192;
+            }
+            for(int i=0;i<count;i++)for(int j=i+1;j<count;j++)if(hits[j]<hits[i]){int t=hits[i];hits[i]=hits[j];hits[j]=t;}
+            for(int i=0;i+1<count;i+=2)ui_fill_rect_fast(fb,(EpdRect){hits[i],px(y)+row,hits[i+1]-hits[i],1},0);
+        }
+    }
+    ps_icon(fb,x,y,size,PI_HEART,filled?PS_THEME_INK:PS_THEME_SECONDARY);
+}
+// 使用原矢量路径按完整弧线分档，不擦除局部笔画。/ Select whole arcs from the existing vector without erasing partial strokes.
+void ps_wifi_signal(uint8_t *fb,int x,int y,int size,unsigned level,int gray){icon_draw(fb,x,y,size,PI_WIFI,gray,level);}
 void ps_corner_controls(uint8_t *fb) {
+    if(!ps_corner_indicators())return;
     ps_view_t v=ps_view();
     // 透明线段贴合屏幕圆角，镜像绘制且不擦除正文。/ Transparent mirrored segments follow screen corners without clearing content.
     for(int side=0;side<2;side++) {
@@ -354,44 +408,33 @@ void ps_corner_controls(uint8_t *fb) {
         for(size_t i=1;i<sizeof(xy)/sizeof(xy[0]);i++)ps_line(fb,origin+sign*xy[i-1][0],v.h-xy[i-1][1],origin+sign*xy[i][0],v.h-xy[i][1],3);
     }
 }
-// 导航名称只在自己的格内截短，固定字号，不挤占相邻入口。/ Truncate each navigation label inside its own cell at a fixed font size.
-static void navigation_label(uint8_t *fb,int x,int y,int width,const char *label,int gray) {
-    char shortened[64];size_t n=strlen(label);
-    if(n>sizeof(shortened)-4)n=sizeof(shortened)-4;
-    while(n&&((unsigned char)label[n]&0xc0)==0x80)n--;
-    memcpy(shortened,label,n);shortened[n]=0;bool cut=label[n]!=0;
-    int old=ttf_get_weight();if(old<600)ttf_set_weight(600);
-    int size=px(ui_size(9)),max=px(width-8),dots=ttf_text_width_px(size,"...");
-    while(n&&ttf_text_width_px(size,shortened)+(cut?dots:0)>max) {
-        do{n--;}while(n&&((unsigned char)shortened[n]&0xc0)==0x80);
-        shortened[n]=0;cut=true;
-    }
-    if(cut&&ttf_text_width_px(size,shortened)+dots<=max)memcpy(shortened+n,"...",4);
-    text(fb,x+width/2,y,9,shortened,gray,true,true,false);ttf_set_weight(old);
-}
+// 导航与页面内容共用两侧留白，设置占右侧44单位。/ Share content margins and reserve 44 units for Settings.
 void ps_tabs(uint8_t *fb,int selected) {
     (void)selected;ps_view_t v=ps_view();int count=ps_navigation_count(),active=ps_navigation_index(ps_route());
-    int w=(v.w-72-(count-1)*4)/count;
+    int w=(v.w-2*PS_THEME_MARGIN-44-(count-1)*4)/count;
     ps_fill(fb,0,24,v.w,46,PS_THEME_CANVAS);
-    ps_box(fb,12,28,v.w-72,40,PS_THEME_RADIUS,PS_THEME_INSET,true);
+    ps_box(fb,PS_THEME_MARGIN,28,v.w-2*PS_THEME_MARGIN-44,40,PS_THEME_RADIUS,PS_THEME_INSET,true);
     for(int i=0;i<count;i++) {
-        const ps_navigation_entry_t *item=ps_navigation_item(i);int x=12+i*(w+4);
+        const ps_navigation_entry_t *item=ps_navigation_item(i);int x=PS_THEME_MARGIN+i*(w+4);
         if(active==i) {
             ps_box(fb,x+1,29,w-2,38,PS_THEME_BUTTON_RADIUS,PS_THEME_SURFACE,true);
             ps_box(fb,x+1,29,w-2,38,PS_THEME_BUTTON_RADIUS,PS_THEME_BORDER,false);
         }
         int gray=active==i?PS_THEME_INK:PS_THEME_SECONDARY;
-        ps_icon(fb,x+w/2-9,30,18,item->icon,gray);
-        navigation_label(fb,x,50,w,item->label,gray);
+        // 纯图标导航保持原命中范围，图标与设置共用垂直中心。/ Icon-only navigation retains hit bounds and shares the Settings centerline.
+        ps_icon(fb,x+w/2-11,37,22,item->icon,gray);
     }
     ps_box(fb,v.w-44,31,34,34,17,PS_THEME_CANVAS,true);
     ps_icon(fb,v.w-38,37,22,PI_SETTINGS,PS_THEME_INK);
 }
 void ps_heading(uint8_t* fb, const char* title, const char* subtitle) {
     ps_view_t v = ps_view();
-    ps_box(fb, 6, 30, 34, 34, 17, PS_THEME_CANVAS, true);
-    ps_icon(fb, 12, 36, 22, PI_BACK, PS_THEME_INK);
-    ps_text(fb, 46, 35, 20, title, PS_THEME_INK);
-    ps_line(fb, 12, 68, v.w - 12, 68, PS_THEME_INSET);
+    ps_box(fb, PS_THEME_MARGIN, 28, 38, 38, 8, PS_THEME_BORDER, true);
+    ps_box(fb, PS_THEME_MARGIN+1, 29, 36, 36, 7, PS_THEME_SURFACE, true);
+    ps_icon(fb, PS_THEME_MARGIN+8, 36, 22, PI_BACK, PS_THEME_INK);
+    ps_text(fb, PS_THEME_MARGIN+50, 35, 20, title, PS_THEME_INK);
+    ps_line(fb, PS_THEME_MARGIN, 68, v.w-PS_THEME_MARGIN, 68, PS_THEME_INSET);
     if (subtitle) ps_wrap(fb, 16, 81, v.w - 32, 12, 2, subtitle, PS_THEME_SECONDARY);
 }
+
+bool ps_heading_back_hit(int x,int y){return ps_hit(x,y,PS_THEME_MARGIN-4,24,46,48);}

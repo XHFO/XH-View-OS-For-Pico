@@ -1,8 +1,12 @@
 # XH View OS For Pico · Duo
 
-> **デュアルリーダー先行プレビュー · 0.40.0-dual72** — `experiment/dual-pico-reader` の完全なファームウェアソースです。Wi-Fi で書籍と共有フォント、BLE で読書位置とページ操作を同期します。[Duo ガイド](docs/DUAL-READER.md)を参照してください。メインシステムとは独立したブランチです。以下に上流のハードウェア資料を残します。
+> **テストチャンネル · 0.40.0-dual112** — デュアル読書、連動ロック、TF アプリ、2画面ゲームコントローラー、QR 設定できるウェブサイト統計。両端と対応アプリを更新してください。
 
-> 独立実験ブランチ：2台の Read Pico でWi-Fi で書庫、BLE で見開きページを同期します。[双機読書ガイド](docs/DUAL-READER.md)。メインシステムには統合しません。実機検証の範囲は別途確認してください。
+**[XHFO.NET オンライン書き込み →](https://xhfo.net/projects/read-pico/manage/#firmware)**
+
+デスクトップ Chrome / Edge で USB 接続し、初回インストールまたはシステム更新、安定版またはテスト版を選択できます。初回インストールは内部設定を消去します。外部 TF カードは変更しません。
+
+[画面プレビュー](README.md#interface-and-features) · [TF アプリ](https://xhfo.net/projects/read-pico/apps/?channel=test) · [更新内容](https://xhfo.net/projects/read-pico/updates/test/)
 
 **言語:** [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja-JP.md)
 
@@ -234,7 +238,7 @@ AP と既存 WiFi の両モードで転送ページの QR コードを表示し�
 
 Shenzhen MindReset Technology Co., Ltd.
 
-ゲームは `/sdcard/apps/games/` の独立した `.pga` アプリとして配置します。ルール・AI・画面をカードから読み込み、削除してもセーブデータは保持します。ABI・構築・移行・配布は [TF アプリ仕様](docs/TF-APPS.md) を参照してください。
+ゲームは `/sdcard/apps/games/` の独立した `.pga` アプリとして配置します。ルール・AI・画面をカードから読み込みます。「アプリ」上部のダウンロード欄から XHFO.NET の不足パッケージを選択して取得でき、長押し削除でもセーブデータは保持します。ABI・構築・移行・配布は [TF アプリ仕様](docs/TF-APPS.md) を参照してください。
 
 HA・Bambu Lab・Formlabs Dashboard の詳細設定は端末内の Web ページで行います。Wi-Fi 接続後に「スマートフォン設定」を開き、同じネットワークのスマートフォンで QR コードを読み取り、保存して接続を確認します。同じページで標準 HA エンティティの表示・部屋設定・操作も可能です。管理画面には有効期限があり、端末側で閉じると停止します。認証情報は TF カードに保存しません。[接続設定](docs/HOME-LINK.md)と[管理 API](docs/HOME-LINK-WEB.md)を参照してください。
 

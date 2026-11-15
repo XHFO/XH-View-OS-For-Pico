@@ -18,11 +18,25 @@
 #define DL_FONT_STEP 4
 typedef struct dual_link dual_link_t;
 typedef struct {
+    bool started; ///< 是否已有阅读进度。/ Whether reading progress exists.
+    uint8_t pct; ///< 全书百分比。/ Whole-book percentage.
+    uint32_t recent; ///< 阅读顺序。/ Reading order.
+    uint16_t chapter;
+    uint32_t byte_off;
+    uint8_t px;
+} dl_book_progress_t;
+typedef bool (*dl_progress_get_t)(const char* path, uint32_t bytes, dl_book_progress_t* out, void* context);
+typedef bool (*dl_progress_set_t)(const char*,uint32_t,const dl_book_progress_t*,void*);
+typedef struct {
     int role;  ///< 1主机，2从机。/ 1 primary, 2 secondary.
+    uint8_t device_id[8]; ///< 本机稳定身份；用于证明重连仍是同一设备。/ Stable local identity for same-peer fast validation.
     char host[48], code[7];
     unsigned port;
     char roots[3][DL_PATH], destination[DL_PATH], font[DL_PATH];
     unsigned root_count;
+    dl_progress_get_t progress_get; ///< 双端读取本机最远正文锚点。/ Both peers read local furthest text anchors.
+    dl_progress_set_t progress_set; ///< 合并并保存已验证同书进度。/ Merge and persist verified same-book progress.
+    void* progress_context; ///< 回调查询上下文。/ Progress lookup context.
 } dl_config_t;
 typedef struct {
     uint8_t book[32], font[32];
@@ -36,7 +50,15 @@ typedef struct {
 } dl_orientation_t;
 typedef struct {
     bool connected, data_connected, scanning, synced, busy;
-    bool left_ready; ///< 主机已完成此版本的左页推屏，从机才能显示。/ Primary presented this revision's left page; secondary may now display.
+    bool peer_id_valid; ///< 已收到对端稳定设备身份。/ Peer stable identity received.
+    bool fast_verified; ///< 仅凭BLE身份与目录摘要完成校验，未进入TCP清单交换。/ Verified from BLE identity and catalog without TCP manifest exchange.
+    uint8_t peer_device_id[8]; ///< 对端稳定身份。/ Peer stable identity.
+    uint8_t catalog[32]; ///< 双方一致时的书库目录摘要。/ Matching library catalog digest.
+    bool request_pending; ///< 从机请求已排队。/ Secondary request is queued.
+    char host[48]; ///< 已确认的数据通道端点。/ Confirmed data-plane endpoint.
+    bool left_ready; ///< 已允许从机显示当前版本，区别于左屏实际完成。/ Secondary may present this revision; distinct from left-screen completion.
+    bool relay_ready; ///< 前屏进入最后约500ms，可启动后屏；不是完成确认。/ Lead reached its final approximately500ms; permit trailing start, not a completion ACK.
+    bool peer_presented, turn_ready; ///< 对端完成当前推屏；双方完成后才接受新翻页。/ Peer finished this revision; admit another turn only after both finish.
     unsigned books, peer_books, imported;
     uint32_t received, expected, content_revision;
     uint32_t sent;
@@ -62,11 +84,17 @@ typedef struct {
 dual_link_t* dl_create(const dl_config_t* config);
 void dl_destroy(dual_link_t* link);
 void dl_tick(dual_link_t* link, int64_t now_ms, bool available);
+/// 锁屏只更新控制时钟并停数据连接，不扫描、不定位或推进阅读。/ Locked control clock and data pause without scanning, seeking or advancing reading.
+void dl_control_clock(dual_link_t* link,int64_t now_ms);
+void dl_data_pause(dual_link_t* link);
 void dl_status(const dual_link_t* link, dl_status_t* out);
 /// 明确开书会重新发布版本；同书保留页组，允许重试失败推屏。/ Explicit opening republishes a revision; reopening retains its spread and can retry failed presentation.
 bool dl_open_path(dual_link_t* link, const char* path);
 /// 原子打开目标书的目标页组；同书等同跳页。/ Atomically open a book at its target spread; the same book seeks instead.
 bool dl_open_at(dual_link_t* link, const char* path, uint32_t page);
+/// 显式请求对端进入当前共享书；同书也发送 OPEN，而非仅发页码。
+/// Explicitly ask the peer to enter the current shared book; a same-book request sends OPEN rather than only a page seek.
+bool dl_activate_path(dual_link_t* link, const char* path);
 bool dl_turn(dual_link_t* link, int direction);
 /// 请求包含目标页的双页组；两端均须连接，页码从 1 开始。/ Request the spread containing a one-based page; both devices must be connected.
 bool dl_seek(dual_link_t* link, uint32_t page);
@@ -76,8 +104,12 @@ bool dl_resize(dual_link_t* link, uint8_t font_px);
 bool dl_reflow_resolved(dual_link_t* link, uint32_t revision, uint32_t spread);
 /// 主机重排失败，恢复旧字号与页组，仍须重新推屏。/ Failed primary reflow restores its old size/spread and requires presentation again.
 bool dl_reflow_failed(dual_link_t* link, uint32_t revision);
-/// UI 确认主机该版本实际推屏成功，旧版本确认不会放行。/ Confirm successful primary presentation; stale revisions cannot release the secondary.
+/// 主机布局就绪，两个方向均可准备右屏；上一页仍须等待主机实际完成。/ Primary layout ready in both directions; previous-page presentation still waits for primary completion.
+bool dl_release(dual_link_t* link, uint32_t revision);
+/// 两端只在实际推屏成功后确认，旧版本不放行。/ Both peers confirm only actual successful presentation; ignore stale revisions.
 bool dl_presented(dual_link_t* link, uint32_t revision);
+/// 当前版本的提前接力通知，不推进进度或完成状态。/ Early relay for the current revision without advancing progress or completion.
+bool dl_relay_ready(dual_link_t* link, uint32_t revision);
 void dl_total(dual_link_t* link, uint32_t total);
 const char* dl_reading_path(const dual_link_t* link);
 const char* dl_font_path(const dual_link_t* link);
@@ -87,6 +119,18 @@ const char* dl_entry(const dual_link_t* link, unsigned index, uint8_t id[32], ui
 /// Reuse unchanged verified entries only within one trusted storage session; destroy before media/USB/external writes.
 void dl_rescan(dual_link_t* link);
 void dl_restore(dual_link_t* link, const dl_reading_t* reading);
+/// 读取双方按正文锚点合并并落盘的进度。
+/// Read progress merged by text anchor and persisted on both peers.
+bool dl_book_progress(const dual_link_t* link, const char* path, uint32_t bytes, dl_book_progress_t* out);
+/// 主设备进度表更新序号，用于书架按需重绘。/ Primary progress-table revision for on-demand shelf redraws.
+uint32_t dl_progress_revision(const dual_link_t* link);
+/// 取一次远端显式开书请求，用来解除本机“已离开阅读”锁存。
+/// Take a one-shot peer explicit-open request to clear this device's local-away latch.
+bool dl_remote_open_take(dual_link_t* link);
+bool dl_remote_open_pending(const dual_link_t* link);
+/// 主设备发布新的 IPv4 数据端点；从设备收到后自动重连 TCP。
+/// Primary publishes a new IPv4 data endpoint; the secondary reconnects TCP automatically.
+void dl_endpoint(dual_link_t* link, const char* host);
 /// 恢复独立于阅读页码的方向偏好；默认倒置竖屏且两端均不翻转。
 /// Restore orientation independently of reading; default inverted portrait with neither device flipped.
 void dl_orientation_restore(dual_link_t* link, const dl_orientation_t* orientation);
@@ -117,7 +161,7 @@ bool dl_annotation(dual_link_t* link, uint8_t type, uint32_t chapter, uint32_t s
 /// Dual-game controller input: controller submits, screen consumes; carried by BLE control.
 bool dl_game_input(dual_link_t* link, uint8_t input);
 bool dl_game_take(dual_link_t* link, uint8_t* input);
-/// 主机请求从机同步打开同一游戏。 / Primary asks the secondary to open the same game.
+/// 任一端请求对端打开同一游戏，主机运行、副机手柄。 / Either side requests the same game; primary runs it, secondary controls.
 bool dl_game_open(dual_link_t* link, uint8_t kind);
 bool dl_game_open_take(dual_link_t* link, uint8_t* kind);
 /// 棋类吃子状态小包；主发从收。 / Captured-state packet; primary to secondary.
@@ -132,3 +176,13 @@ bool dl_game_close_take(dual_link_t* link);
 void dl_control_connected(dual_link_t* link, bool connected);
 size_t dl_control_take(dual_link_t* link, uint8_t* packet, size_t capacity);
 bool dl_control_receive(dual_link_t* link, const uint8_t* packet, size_t bytes);
+
+/// 读取双端已合并的正文锚点。/ Read the merged text anchor from either peer.
+bool dl_book_anchor(const dual_link_t*,const char*,uint32_t,dl_book_progress_t*);
+
+/// 显式开书前先交换该书正文锚点；未连接时允许本地打开。/ Exchange one book's anchor before explicit open; disconnected opens stay local.
+bool dl_prepare_open(dual_link_t*,const char*);
+void dl_prepare_open_reset(dual_link_t*);
+
+/// 重连锚点定位后发布新页组，不唤回已离架设备。/ Publish a reconciled spread without pulling away peers back to reading.
+bool dl_reconcile_at(dual_link_t*,uint32_t);

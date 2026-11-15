@@ -2,10 +2,19 @@
 
 点按电源键锁屏并进入低功耗等待，再次点按电源键恢复。按下再松开只计一次，不需要双击或长按，也没有唤醒后的两秒按键忽略。长按电源键（由 PMU 已有 KEY_LONG 事件判定，默认约 1.5 秒）打开关机、重启、锁屏、取消菜单；锁屏中长按会先恢复再打开菜单。也可在“系统设置 → 电源与锁屏”选择状态。阅读正文和系统页面共用同一个入口；锁定期间不继续分发翻页、快捷菜单或游戏输入。
 
+
+双机已配对且认证连接时，任一端点按电源键锁屏，另一端跟随；任一端电源键或已启用的屏幕双击唤醒，双方恢复。普通锁屏保留 BLE 及阅读实例，暂停 Wi-Fi 数据通道、家庭轮询和游戏，不清空正文位置；无需进入连接设置重连。两台都需升级到支持联动锁屏的固件。电源键不再承担上一组/下一组翻页，原有触摸、方向键和双屏动画接力保持原行为。
+
+When both paired readers have an authenticated link, either power-key click locks both and either key/double-tap wake restores both. Ordinary locks retain BLE and reader instances, parking Wi-Fi data, Home polling and games without resetting source anchors. Upgrade both devices; page turns remain on touch/direction keys with the accepted relay timing.
+
+深度休眠使用独立电源入口：停止 BLE 后进入 ESP 深睡，电源键唤醒会重新启动并沿用已保存配对。深睡期间无法由对端蓝牙唤醒；普通联动锁屏才支持对端唤醒。真实续航、待机电流和无线恢复速度需两台实机确认。
+
+The separate deep-sleep action stops BLE and enters ESP deep sleep. A power-key wake reboots with saved pairing; BLE cannot wake a deeply sleeping ESP. Peer wake applies to ordinary linked locks. Current draw and real radio recovery require hardware acceptance.
+
 | 状态 | 行为 | 恢复方式 |
 | --- | --- | --- |
 | 锁屏 | 保存内容、暂停游戏与联网任务，保留当前应用和画面，进入可用的低功耗等待 | 电源键单次点按，或已开启的屏幕双击 |
-| 休眠 | 同样保留应用，屏幕触摸不解除休眠 | 电源键 |
+| 深度休眠 | 保存内容并停止 BLE，进入 ESP 深睡；不保留 RAM 中的应用实例 | 电源键重新启动，自动恢复已保存配对 |
 | 重启 | 保存内容后重启系统；操作前确认 | 等待重新启动 |
 | 关机 | 保存内容后先强刷用户选择的锁屏画面，底部注明“已关机 · 长按电源键开机”，再通过 PMU 关机；刷新失败会取消关机 | 长按电源键开机 |
 

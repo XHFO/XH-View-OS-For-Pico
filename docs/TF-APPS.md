@@ -1,17 +1,62 @@
 # TF 卡应用包规范（PGA1 / ABI v1）
 
+二态开关统一使用 `pico_app_switch.h` 的圆角轨道与左右滑块：左关右开，用灰阶和位置同时表达状态。系统设置使用 `ps_toggle`；独立应用复用 `pico_switch_draw`，不增加宿主 ABI。Home Link 开关捕获自身手势，松手只提交一次，等待 HA 确认后显示新状态；不连续驱动屏幕动画。多选目录仍使用复选框，操作按钮与多项样式选择保留各自语义。
+
+家庭连接先选择房间范围，再以每批24项浏览完整目录并选择最多96个控制卡片。房间内实体总量不受64项限制；跨页保留勾选，第97项明确提示。日常只从HA投影选中实体的必要字段。取消或保存失败保留原选择；旧隐藏与排序记录迁移。范围与选择使用独立版本化记录，保留v3凭据布局。打印机配置不参与家庭双机共享。
+
+Select rooms, then page the complete catalog in batches of 24 and choose up to 96 cards. Room totals have no 64-item gate; selections survive paging, and the 97th item is rejected explicitly. Daily requests project selected fields only. Cancel/failure retains active selections, legacy visibility/order migrates, and printer settings are excluded from home sharing.
+
+打印机「添加 → 通过 Home Assistant 查找」列出未添加的打印状态实体，选择后自动推导实体前缀，再由用户确认名称并保存。只匹配 `_print_status` 或 `_printing_state`，不会将 SD 卡状态误识别为打印状态。手动添加作为高级入口保留；本机最多3台，发现列表最多8台。Bambu MQTT/云与 Formlabs 直接连接尚未迁入，既有凭据仍保留。
+
+Printer setup selects a source, discovers complete `_print_status`/`_printing_state` entities, derives their prefixes and asks for confirmation before saving. Manual prefixes remain available. There are three saved slots and at most eight discovery candidates; direct Bambu/Formlabs protocols remain unavailable with existing credentials retained.
+
+家庭与打印机分别由 `tools/home-link.pga`（kind 130）和 `tools/printer-link.pga`（kind 131）提供。家庭连接同步 HA 支持的实体，可保存本机显示选择与排序；隐藏不删除 HA 实体。打印机提供三槽位的 HA 实体前缀添加、改名与移除，不依赖家庭连接包安装。两者复用宿主 HA 服务、凭据与持久化事务，手机填写按入口分别保存。首次使用 HA 需先在设置的家庭连接页面配置服务。旧 Bambu LAN/云端及 Formlabs 直连配置保留；薄宿主目前尚未迁入直连协议，应用明确提示不可用，不伪造已连接状态。
+
+Home and Printers use separate `tools/home-link.pga` (kind 130) and `tools/printer-link.pga` (kind 131) packages. Home supports local entity visibility and ordering without deleting HA entities. Printers supports three HA entity-prefix slots with rename/removal, independently of installing Home Link. Both share host HA credentials and persistence transactions; phone forms save separately by entry. Configure HA once through Home settings. Existing Bambu LAN/cloud and Formlabs direct credentials remain preserved; direct protocols are not yet available in the thin host and are explicitly marked unavailable.
+
 本规范定义小纸 Pico 的可安装应用。六个首批游戏为五子棋、围棋、象棋、国际象棋、2048 和贪吃蛇；工具应用另有画板笔记。**游戏规则、AI、游戏页面以及画板编辑实现均编译进独立应用包，不静态链接进固件。** 固件仅包含启动器、包校验、加载器及公共绘图、输入、存档与任务接口。
 
 The six first-party games are independent executable packages. Rules, AI and game UI live in the packages; firmware contains only the launcher, validator, loader and host services.
+
+
+新增独立 `lingxi-board.pga`（kind132）与 `website-traffic.pga`（kind133），最低要求 dual109。语义卡片排版代码在 TF 包中，宿主只保留认证、严格模型校验、事务存储、绘图桥和锁屏基础服务。两者分别安装，不占用画板笔记实例；移除或更新保留看板快照、笔迹和自定义锁屏数据。未安装时从“应用集 → 应用下载”获取，应用集的“管理”可移除 TF 包。
+
+Lingxi Board and Website Traffic are separate executable TF renderer packages requiring dual109. The host retains authentication, validation, transactional storage, drawing bridges and basic lock services. They do not replace the drawing-notes instance; removal/update preserves snapshots and user data.
+
+### 网站访问看板 / Website Dashboard
+
+`website-traffic.pga` 1.1.0需要dual112，保留kind133和原ID。设置中可扫码填写Cloudflare名称、区域ID和只读令牌，选择直连或电脑快照，以及概览/趋势/极简样式。仅前台应用按5/15/30/60分钟刷新；最近成功配置及UTC七日数据保存在隔离的864字节版本化TF记录。新配置异步验证并事务保存后生效，失败保留旧配置。清除同时覆盖主档和备份；卸载保留数据。令牌仅写入TF，不由管理接口返回，需妥善保管存储卡。
+
+SDK1保持前缀兼容，只追加可选尾部`traffic_fetch`、`traffic_portal`、`utc_seconds`和`traffic_snapshot`；新包检查bytes和所有回调。宿主只提供固定Cloudflare HTTPS端点、32KiB响应上限、证书校验和临时鉴权扫码桥。JSON解析、手机页面、外观与配置在TF包内。新增可选exports.manage同样检查长度/代码地址，HTTP通过有界邮箱交给UI串行调用，回调不得阻塞或联网；停止模块前等工作任务退出，不能卸载仍在运行的代码。website TLS worker使用20KiB内部栈，其他应用栈策略不变。
+
+Website Dashboard 1.1.0 keeps ID/kind133 and requires dual112. Configure through its QR window, validate asynchronously before transactionally replacing isolated TF credentials/cache, and poll only while open. The bounded host bridge supplies TLS/time/portal/snapshot capabilities through optional ABI1 tails; parsing, phone UI and layout remain in the package. Check callback sizes and code addresses, serialize manage callbacks on the UI through a bounded mailbox, and wait for workers before unloading. Status never returns tokens; uninstall preserves data.
+
+游戏新增 `tetris.pga`（kind6）和 `pacman.pga`（kind7），为墨水屏设计的单机方块与原创迷宫玩法，支持暂停、存档、最高分、卸载后重装续玩。仅在退出、锁屏或显式保存时写卡，不逐帧保存；不会补跑休眠期间的计时，也不加入旧双机游戏控制。目录与更新选择上限16项，当前发布包8游戏加6工具，可逐个选择下载。
+
+The two new games support pause, save, best score and resume after reinstall. Bounded timers never catch up suspended frames or write every tick. They remain solo and do not change the old dual-game controls. Update selection supports 16 entries, currently eight games and six tools.
+
+dual110 配套的 2048、贪吃蛇、俄罗斯方块和吃豆人游戏包为 1.0.2。新游戏操作键在底角手势区上方，方向按下或棋盘滑动越阈值即执行；暂停和重开仍由松手确认。2048 快速反馈后在约900毫秒停顿恢复灰阶。2048/贪吃蛇约5秒合并存档，暂停、退出或锁屏强制保存；突然断电可能丢失最近5秒游戏变化，旧存档结构兼容。两款新游戏继续只在退出/锁屏/显式保存时写卡。
+
+The dual110 arcade packages are version 1.0.2. Direction controls respond on press above corner gestures; thresholded board swipes do not wait for lift. Pause/restart confirm on lift. 2048 settles grayscale after about 900 ms. 2048/Snake batch saves around five seconds and force-save on pause/exit/lock; abrupt power loss may lose recent play. Existing save layouts remain compatible; the two new games retain exit/lock/explicit-save storage.
+
+### 动作游戏设置与双屏手柄 / Arcade options and dual controller
+
+配套 dual111 固件的四款动作游戏包版本为1.0.3。2048每次进入先显示3×3、4×4（默认）、5×5选择页；继续当前对局不更换棋盘，开始新局才应用选择，已有步数时需再次确认。最高分跨格数保留。贪吃蛇可选经典边界或无限穿墙；穿墙仅连接对边，自撞仍结束。旧arcade1记录只读迁移，新增arcade2记录事务保存；更新和卸载均保留TF存档。
+
+The dual111 arcade packages are version 1.0.3. 2048 opens with 3×3, default 4×4 and 5×5 choices; continue retains the current grid, while starting a new game applies the selection after confirmation when moves exist. Best scores survive grid changes. Snake offers classic walls or edge wrapping, retaining self-collision. Migrate arcade1 read-only into transactional arcade2 saves; package replacement/removal preserves TF data.
+
+联动时任意一端打开2048、贪吃蛇、俄罗斯方块或吃豆人，均由主机运行并保存当前对局，副机显示掌机式手柄：十字键控制方向；START暂停/继续；SELECT进入设置。A/B根据游戏显示确认/取消、旋转/落下或暂停/速度。只传按键和20字节低频状态，不传逐帧画面。主机本地触摸和副机手柄操作同一局；副机不运行独立计时。断连自动暂停，重新连接后按START继续；原有未执行按键清空。退出联动游戏返回原系统入口，阅读控制与接力参数不变。
+
+Either reader can launch 2048, Snake, falling blocks or the pellet maze. The primary runs and saves the active game; the peer presents a handheld controller with directions, START pause/resume, SELECT options and game-specific A/B labels. Only inputs and low-rate 20-byte status cross the link, never framebuffers. Local touches and peer controls operate one game; the controller has no independent game timer. Link loss pauses, START explicitly resumes after reconnection, and stale inputs are discarded. Existing reader controls and relay timing remain unchanged.
 
 ## 1. 用户安装与移除
 
 - 安装目录固定为 `/sdcard/apps/games/<id>.pga`。可通过 USB 磁盘复制到此目录；安全弹出并结束设备 USB 传输后，在小游戏页刷新。
 - 工具应用使用 `/sdcard/apps/tools/<id>.pga`；画板笔记为 `drawing-notes.pga`。刷新应用或重新开机后，在“设置 → 首页导航 → 添加入口”选择“画板笔记”，不用进入小游戏。隐藏首页入口不删除应用；删除包保留原稿，重装同 ID 后可继续。游戏与工具目录不允许同 ID 同时存在。
 - 一包一游戏；有效包的文件名必须与内部 ID 一致。例如 `chess.pga` 的 ID 为 `chess`。四种棋各有本游戏的三档难度、自动进阶、开始新局、继续与规则页，不再进入另一层六游戏大厅。
-- 小游戏页只显示已安装且支持当前平台的包。长按卡片并确认可移除应用，**保留独立存档、最高分及难度成绩**。重新安装同 ID 包可继续。
+- 小游戏页只显示已安装且支持当前平台的包。进入“设置 → 应用与服务 → 应用集”，长按 TF 应用卡片并确认可移除应用，**保留独立存档、最高分及难度成绩**。重新安装同 ID 包可继续。
 - 无卡、未挂载、包损坏、ABI 不兼容或缺少当前平台代码时，不回退到固件内置游戏。刷新/打开失败会提示原因；不兼容文件计入不可用数量。
-- 卡可容纳更多包，首版目录最多显示 24 个应用，每页 6 个；上下滑或页码按钮翻页，左右滑仍切换书架、家庭与小游戏主页面。
+- 卡可容纳更多包，首版目录最多显示 24 个应用，每页 6 个；左右滑或页码按钮翻页，顶部图标切换书架、家庭与小游戏主页面。
 - 电脑原生预览另有“导入应用包”，使用同一 C 校验及安装事务，兼容原六款游戏与画板等工具。网页侧栏提供包下载、添加及工具移除；工具首页入口仍由用户在“首页导航”中选择。其 TF 是本机会话目录，和实体卡相互独立。新的私有 TF 可安装明确标记的开发样本包；重启既有会话不会自动补回用户移除的包。
 
 USB exports the whole card. Copy packages while the device has relinquished local ownership, safely eject, end USB mode and rescan. Uninstall removes code only, retaining saves.
@@ -28,7 +73,7 @@ USB exports the whole card. Copy packages while the device has relinquished loca
 | 16 | 4 | package_bytes | 整个文件精确长度，512 B–4 MiB |
 | 20 | 4 | abi | `1`，对应 `pico_app_sdk.h` |
 | 24 | 4 | app_version | `major*10000 + minor*100 + patch`；六游戏 `10001`（1.0.1），画板 `10002`（1.0.2） |
-| 28 | 4 | kind | 游戏0–5；工具128–255，画板128；类型不能替代稳定ID |
+| 28 | 4 | kind | 游戏0–7；工具128–255，画板128；类型不能替代稳定ID |
 | 32 | 32 | id | 1–31 个小写 ASCII 字母、数字或 `-`；不以 `-` 开始/结束；NUL 结尾 |
 | 64 | 64 | title | NUL 结尾 UTF-8，最多 63 字节 |
 | 128 | 96 | description | NUL 结尾 UTF-8，最多 95 字节 |
@@ -70,9 +115,14 @@ payload 紧接 512 字节头，按目录顺序连续排列，无间隙、重叠�
 | `status` | 休闲、蛇、暂停、忙碌和未保存等能力/状态位 |
 | `save` | 提交当前应用状态，成功才报告 true |
 | `stop` | 暂停实时逻辑、取消 AI 并等待任务停止，返回前配对回收任务；保留静态局面直到卸载 |
+| `board_paint(model, painter)`（可选尾部） | 看板专用纯绘制；先校验 `board_model_abi` 和导出表长度，宿主提供已校验快照和绘图桥 |
 | `ink(framebuffer, rects)`（可选尾部） | 绘制待显示的新笔迹，不访问文件、不推屏；返回-1要求完整帧、0无变化，或1–4个360×640/640×360设计坐标损伤区域 |
 
 ABI v1 采用可选尾部扩展。旧六游戏的导出表仍按 `PICO_APP_EXPORTS_V1_BYTES` 最小前缀读取；宿主检查 `bytes` 后才可访问 `ink`，因此无需强制重装旧游戏包。画板编辑时置 `PGA_STATUS_INK`；列表或确认弹窗不置此位。整帧绘制建立快照，撤销、清空、旋转、菜单覆盖恢复和丢失显示参考时重建；移动手指只提交新增笔迹，连续DU由固件统一管理。
+
+宿主 `home_spread` 是 ABI v1 的可选尾部：应用须先检查 `host->bytes` 与函数指针，旧宿主继续独立分页。输入家庭页数、当前页与筛选，action 为 -1 离开、0 查询、1 下一组、2 上一组、3 修改筛选；返回实际零起页码，筛选输出最高位表示当前双页联动，保存筛选前必须清除此位。左上返回沿用宿主导航，不绘制重复入口。
+
+The optional ABI v1 host tail `home_spread` requires a `host->bytes` and pointer check; older hosts retain independent pagination. Actions are -1 leave, 0 query, 1 next spread, 2 previous spread and 3 filter change. The result is a zero-based page; the output filter’s high bit indicates pairing and must be masked before persistence. Reuse host Back navigation.
 
 宿主仅提供：360×640/640×360 逻辑绘图、固定宽度事件、重绘和提示、导航请求、命名空间存档、单调时钟、随机数、受管理工作任务及少量 C 字符串/格式化接口。不提供任意文件读写、网络、板级、显示时序、电源校准和固件内部结构访问。
 
@@ -80,7 +130,7 @@ ABI v1 采用可选尾部扩展。旧六游戏的导出表仍按 `PICO_APP_EXPOR
 
 ## 4. 生命周期与资源上限
 
-一次只载入一个应用。常规目录列举读取有界包头，不执行代码；恢复 `.pga.bak` 时额外流式校验完整包。打开时完整校验包和选中代码，再将代码载入内存。游戏运行不依赖持续打开的 TF 文件。
+一次只载入一个交互应用；另有一个独立看板渲染句柄，两个看板频道互斥复用。看板不会覆盖未保存的笔记实例；失卡、USB/存储接管、更新或卸载释放渲染句柄。常规目录列举读取有界包头，不执行代码；恢复 `.pga.bak` 时额外流式校验完整包。打开时完整校验包和选中代码，再将代码载入内存。游戏运行不依赖持续打开的 TF 文件。
 
 宿主完成一次模块调用后才执行返回/卸载请求，不允许模块正在 `event()` 中时因导航而卸载自身。普通离页、游戏切换、USB 接管、存储维护和包更新共用停止流程：
 

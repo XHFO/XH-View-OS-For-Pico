@@ -6,6 +6,17 @@
 #include "pico_system.h"
 bool ps_dual_enabled(void);
 int ps_dual_role(void);
+bool ps_dual_connected(void);
+bool ps_dual_synced(void);
+/// 从机连接后保留正常书架样式并隐藏本机最近阅读入口。
+/// A connected secondary keeps its normal shelf style while omitting the local recent-reading entry.
+bool ps_dual_secondary_shelf(void);
+/// 两端存在可恢复的双机图书时显示统一返回入口。/ Show the shared return entry on either role when a paired book is resumable.
+bool ps_dual_has_reading(void);
+/// 读取主设备发布的书籍进度；不修改从设备本地 NVS。
+/// Read primary-published book progress without changing secondary-local NVS.
+bool ps_dual_book_progress(const char* path, uint32_t bytes, bool* started, uint8_t* pct, uint32_t* recent);
+uint32_t ps_dual_progress_revision(void);
 /// 主机自动方向加各角色独立翻转，不覆盖系统设置。/ Primary auto orientation plus role offsets, without overwriting system settings.
 int ps_dual_base_rotation(void);
 int ps_dual_rotation(void);
@@ -61,6 +72,8 @@ bool ps_dual_event(const ps_event_t* event);
 bool ps_dual_service(app_ctx_t* ctx, const app_desc_t* app, app_redraw_t* redraw);
 bool ps_dual_open(const char* path);
 bool ps_dual_open_at(const char* path, uint32_t page);
+/// 从书架返回显式唤醒暂离的对端进入当前共享书。/ Wake an away peer into the current shared book from a shelf return.
+bool ps_dual_activate(const char* path);
 /// 仅返回本次请求是否被接收；失败不代表已翻页。/ Report admission of this request, never success for a rejected turn.
 bool ps_dual_turn(int direction);
 bool ps_dual_seek(uint32_t page);
@@ -69,17 +82,33 @@ bool ps_dual_reflow_resolved(uint32_t revision, uint32_t spread);
 bool ps_dual_reflow_failed(uint32_t revision);
 /// 恢复本端共享正文，不发开书请求或改变双机位置。/ Resume this device's shared reader without reopening or changing the paired position.
 bool ps_dual_resume(void);
+/// 主机目标页布局就绪后允许对端准备；不等于实际推屏完成。/ Release peer preparation after primary layout, without claiming physical presentation.
+void ps_dual_layout_ready(uint32_t page);
+bool ps_dual_wait_peer(void);
+void ps_dual_relay_ready(uint32_t page);
 /// 仅在双机正文目标页实际推屏成功后调用。/ Call only after successful physical presentation of the paired target page.
 void ps_dual_presented(uint32_t page);
 void ps_dual_total(uint32_t total);
 const char* ps_dual_font(void);
 const char* ps_dual_path(void);
 void ps_dual_suspend(void);
+/// 锁屏保留认证BLE与阅读实例；仅深睡/关机销毁会话。/ Lock retains authenticated BLE and reading; only deep sleep/off destroy the session.
+void ps_dual_power_commit(bool locked);
+void ps_dual_power_service(void);
+void ps_dual_power_pause_data(void);
 
 void ps_dual_status(dl_status_t* out);
 bool ps_dual_usb_command(const char* line, char* out, size_t capacity);
 
 #ifdef PICO_NATIVE_PREVIEW
 void ps_dual_native_wifi(bool online);
+void ps_dual_root_native(unsigned *kind,unsigned *page,unsigned *pages);
 void pico_dual_ble_test_enabled(bool enabled);
 #endif
+
+/// 已认证BLE上的书架/家庭双页；action为0轮询、1下一组、2上一组、3提交外观/筛选。
+/// Shelf/home spreads over authenticated BLE; action 0 polls, 1 next, 2 previous, 3 layout/filter proposal.
+int ps_dual_root_page(unsigned kind,int page,int count,uint32_t *layout,int action);
+/// 退出根页只停止根页联动，不修改阅读会话。/ Leave root paging without changing the reading session.
+void ps_dual_root_leave(void);
+bool ps_dual_root_active(void);

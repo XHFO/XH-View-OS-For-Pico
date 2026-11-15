@@ -5,7 +5,11 @@
  * 冻结：只绘制传入模型；不分配内存、读盘、联网、修改状态或加载交互应用。
  * Frozen: Paint only the supplied model; never allocate, read files, network, mutate state or load an interactive app.
  */
+#ifdef PICO_BOARD_MODULE
+#include "pico_app_board.h"
+#else
 #include "pico_board_data.h"
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -212,11 +216,16 @@ static void card(const paint_t *p, const ps_board_model_t *model, const ps_board
         fill(p, bar, p->ink); r.h -= 15;
     }
     if (m->kind == PS_BOARD_CLOCK || m->kind == PS_BOARD_DATE) {
+#ifdef PICO_BOARD_MODULE
+        char value[64];
+        if (H->board_time(model->display_time + model->utc_offset_minutes * 60.,m->kind==PS_BOARD_CLOCK,value,sizeof(value))) {
+#else
         time_t epoch = (time_t)(model->display_time + model->utc_offset_minutes * 60.);
         struct tm local;
         char value[64];
         if (gmtime_r(&epoch, &local)) {
             strftime(value, sizeof(value), m->kind == PS_BOARD_CLOCK ? "%H:%M" : "%Y-%m-%d", &local);
+#endif
             int size = m->kind == PS_BOARD_CLOCK ? min(76, min(r.h - 4, r.w / 3)) : min(32, r.h - 4);
             if (size >= 18) {
                 int y = r.y + (r.h > 130 ? (r.h - size) / 3 : 0);

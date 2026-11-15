@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include "pico_system.h"
+#include "dual_link.h"
 #include "book_store.h"
 #include "book_progress.h"
 #include "book_cover.h"
@@ -77,6 +78,7 @@ typedef struct { char key[40];void *bytes;size_t size; } blob_t;
 #define MOCK_BLOBS 4096
 static blob_t blobs[MOCK_BLOBS],source_blobs[MOCK_BLOBS];
 static bool mock_current_is_source;
+static bool mock_record_on_flash;
 static bool mock_filesystem;
 static char mock_fs_roots[2][80];
 #include "pico_reader_disk_test.inc"
@@ -104,11 +106,15 @@ static bool blob_load(blob_t *bank,const char *key,void *bytes,size_t size){blob
 static blob_t *root_bank(const char *root){return !strcmp(root,"/mock/current")?blobs:!strcmp(root,"/mock/source")?source_blobs:NULL;}
 bool ps_storage_record_roots(char *current,char *other,size_t capacity,bool *sd){
     if(record_roots_unavailable||storage_held||usb_held)return false;
-    if(mock_filesystem){snprintf(current,capacity,"%s",mock_fs_roots[mock_current_is_source]);snprintf(other,capacity,"%s",mock_fs_roots[!mock_current_is_source]);if(sd)*sd=!mock_current_is_source;return true;}
-    snprintf(current,capacity,"%s",mock_current_is_source?"/mock/source":"/mock/current");snprintf(other,capacity,"%s",mock_current_is_source?"/mock/current":"/mock/source");if(sd)*sd=!mock_current_is_source;return true;
+    if(mock_filesystem){snprintf(current,capacity,"%s",mock_fs_roots[mock_current_is_source]);snprintf(other,capacity,"%s",mock_fs_roots[!mock_current_is_source]);if(sd)*sd=!mock_record_on_flash;return true;}
+    snprintf(current,capacity,"%s",mock_current_is_source?"/mock/source":"/mock/current");snprintf(other,capacity,"%s",mock_current_is_source?"/mock/current":"/mock/source");if(sd)*sd=!mock_record_on_flash;return true;
 }
 bool ps_load_at(const char *root,const char *key,void *out,size_t bytes){if(mock_filesystem)return mock_fs_load(root,key,out,bytes);blob_t *bank=root_bank(root);return bank&&!record_roots_unavailable&&blob_load(bank,key,out,bytes);}
-bool ps_store_at(const char *root,const char *key,const void *out,size_t bytes){if(mock_filesystem)return mock_fs_store(root,key,out,bytes);blob_t *bank=root_bank(root);return bank&&!record_roots_unavailable&&blob_store(bank,key,out,bytes);}
+bool ps_store_at(const char *root,const char *key,const void *out,size_t bytes){
+    stores++;if(fail_store||(fail_store_key&&!strcmp(fail_store_key,key)))return false;
+    if(fail_store_after==0)return false;
+    if(fail_store_after>0)fail_store_after--;
+    if(mock_filesystem)return mock_fs_store(root,key,out,bytes);blob_t *bank=root_bank(root);return bank&&!record_roots_unavailable&&blob_store(bank,key,out,bytes);}
 bool ps_store_exists_at(const char *root,const char *key,bool *exists){if(mock_filesystem)return mock_fs_exists(root,key,exists);blob_t *bank=root_bank(root);if(!bank||record_roots_unavailable||record_exists_failed)return false;*exists=blob_find(bank,key)!=NULL;return true;}
 static const char *snapshot_fail_key;
 static unsigned snapshot_writes;
@@ -134,6 +140,9 @@ void ps_toast(const char *s){snprintf(last_toast,sizeof(last_toast),"%s",s);}
 void ps_dirty(void){}
 void ps_legacy(const app_desc_t *a){(void)a;legacy_calls++;}
 // 独立阅读器单测禁用双机；真实联动由双进程集成验证。/ Reader-only tests disable dual mode; two-process integration verifies linking.
+const char* ps_dual_path(void){return NULL;}
+void ps_dual_status(dl_status_t* out){memset(out,0,sizeof(*out));}
+void ps_line_thin(uint8_t* fb,int x0,int y0,int x1,int y1,int gray){(void)fb;(void)x0;(void)y0;(void)x1;(void)y1;(void)gray;}
 bool ps_dual_enabled(void){return false;}
 bool ps_dual_open(const char *path){(void)path;return true;}
 bool ps_store(const char *key,const void *bytes,size_t size){
@@ -162,6 +171,17 @@ bool app_book_open_annotation(const char *path,uint64_t size,uint32_t chapter,ui
     if(!annotation_open_ok)return false;snprintf(opened_path,sizeof(opened_path),"%s",path);annotation_size=size;annotation_chapter=chapter;annotation_start=start;annotation_end=end;return true;
 }
 bool app_book_open_path(const char *path){snprintf(opened_path,sizeof(opened_path),"%s",path);return true;}
+bool app_book_open_path_single(const char *path){return app_book_open_path(path);}
+bool app_book_local_only_path(char *out,size_t capacity){if(!out||!capacity)return false;out[0]=0;return false;}
+void app_book_dual_pause(void){}
+bool ps_dual_synced(void){return false;}
+bool ps_dual_secondary_shelf(void){return false;}
+bool ps_dual_has_reading(void){return false;}
+bool ps_dual_book_progress(const char *path,uint32_t bytes,bool *started,uint8_t *pct,uint32_t *recent){(void)path;(void)bytes;if(started)*started=false;if(pct)*pct=0;if(recent)*recent=0;return false;}
+uint32_t ps_dual_progress_revision(void){return 0;}
+void ps_dual_sync_annotation(uint8_t type,uint32_t chapter,uint32_t start,uint32_t end,const char *text){(void)type;(void)chapter;(void)start;(void)end;(void)text;}
+void ps_dual_set_local_away(bool away){(void)away;}
+bool ps_global_resume_reading(void){return false;}
 #ifndef PICO_READER_REAL_RENDER
 const char *ttf_font_path(void){return mock_font;}
 const char *ttf_font_display_name(void){return "Mock actual font";}
@@ -181,6 +201,8 @@ void ps_fill(uint8_t *f,int x,int y,int w,int h,int g){(void)f;(void)g;rect_ok(x
 void ps_line(uint8_t *f,int x,int y,int x1,int y1,int g){(void)f;(void)g;assert(x>=0&&x<=view.w&&x1>=0&&x1<=view.w&&y>=0&&y<=view.h&&y1>=0&&y1<=view.h);draws++;}
 void ps_box(uint8_t *f,int x,int y,int w,int h,int r,int g,bool fill){(void)f;(void)r;(void)g;(void)fill;rect_ok(x,y,w,h);}
 void ps_text(uint8_t *f,int x,int y,int size,const char *s,int g){(void)f;render_hash((unsigned)x);render_hash((unsigned)y);render_hash((unsigned)size);render_hash((unsigned)g);for(;*s;s++)render_hash((unsigned char)*s);rect_ok(x,y,0,size);}
+void ps_text_fixed(uint8_t *f,int x,int y,int size,const char *s,int g){ps_text(f,x,y,size,s,g);}
+uint8_t ps_shelf_card_style(void){return 0;}
 void ps_body_text(uint8_t *f,int x,int y,int size,const char *s,int g){body_draws++;body_last_size=size;body_last_weight=weight;ps_text(f,x,y,size,s,g);}
 void ps_center(uint8_t *f,int x,int y,int size,const char *s,int g){ps_text(f,x,y,size,s,g);}
 void ps_wrap(uint8_t *f,int x,int y,int w,int size,int lines,const char *s,int g){(void)w;(void)lines;ps_text(f,x,y,size,s,g);}

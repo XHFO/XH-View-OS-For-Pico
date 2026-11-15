@@ -15,11 +15,13 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-GAME_IDS = ("gomoku", "go", "xiangqi", "chess", "2048", "snake")
+GAME_IDS = ("gomoku", "go", "xiangqi", "chess", "2048", "snake", "tetris", "pacman")
 MODULE_INPUTS = (
     "games/src/builtin_games.c",
     "games/sdk/pico_game_module_compat.h",
     "components/read_pico_apps/include/pico_app_sdk.h",
+    "games/src/ink_arcade.c",
+    "games/sdk/pico_game_pad.h",
 )
 
 
@@ -181,7 +183,7 @@ def build(output: Path, *, cc: Path | None = None, source: Path | None = None) -
                        "-shared", "-nostdlib", "-nostartfiles", "-Wl,-e,pico_app_query",
                        "-Wl,--gc-sections", "-Wl,-Bsymbolic", "-Wl,--build-id=none", "-Wl,--no-undefined",
                        "-Wl,-T," + str(linker), "-Wl,--version-script=" + str(exports),
-                       str(source), "-lgcc", "-o", str(raw)]
+                       str(ROOT/"games/src/ink_arcade.c" if kind>=6 else source), "-lgcc", "-o", str(raw)]
             subprocess.run(command, cwd=ROOT, check=True)
             destination = output / (game_id + ".elf")
             staged = temporary / (game_id + "-stripped.elf")

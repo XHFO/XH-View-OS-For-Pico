@@ -71,7 +71,7 @@ def main():
     args = parser.parse_args()
     names = ['main/system/pico_maintenance.c', 'main/system/pico_desktop.c', 'main/system/pico_desktop.h', 'main/system/pico_system.c', 'tools/pico_maintenance_host_test.c']
     hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in names}
-    version = re.search(r'#define PS_VERSION \"([^\"]+)\"', (ROOT / 'main/system/pico_system.c').read_text()).group(1)
+    version = re.search(r'#define PICO_FIRMWARE_VERSION \"([^\"]+)\"', (ROOT / 'main/system/pico_version.h').read_text()).group(1)
     with tempfile.TemporaryDirectory(prefix='pico-maintenance-test-') as scratch:
         build = Path(scratch)
         (build / 'app.h').write_text('#pragma once\n#include <stdbool.h>\n#include <stdint.h>\ntypedef enum {APP_REDRAW_NONE,APP_REDRAW_AREA,APP_REDRAW_PAGE,APP_REDRAW_FULL,APP_REDRAW_DONE} app_redraw_t;\ntypedef struct {int unused;} app_ctx_t;\ntypedef struct {int unused;} app_desc_t;\ntypedef struct {int x,y,width,height;} EpdRect;\n')

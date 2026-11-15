@@ -39,8 +39,30 @@ settings.nav.full	首页最多保留五个入口，请先隐藏或替换	Home ho
 settings.nav.none_left	所有可用入口都已显示	Every item is already on Home
 settings.nav.save_failed	未能保存，调整内容已保留，请重试	Couldn't save. Your edits are kept.
 launcher.title	应用集	Apps
-launcher.refresh	刷新	Refresh
-launcher.summary	系统与工具 %u · TF 游戏 %u	System %u · TF games %u
+launcher.refresh	扫描	Scan
+launcher.summary	系统 %u · TF 应用 %u · 长按管理	System %u · TF apps %u · Hold to manage
+launcher.download.title	应用下载与更新	App downloads & updates
+launcher.download.action	检查	Check
+launcher.download.picker	选择要安装或更新的应用	Choose apps to install or update
+launcher.download.update	可更新	Update available
+launcher.download.latest	已是最新	Up to date
+launcher.download.all	全选	All
+launcher.download.selected	下载 %u 项	Download %u
+launcher.download.installed	已安装	Installed
+launcher.download.chosen	已选择	Selected
+launcher.download.available	可下载	Available
+launcher.download.need_selection	请先选择要下载的应用	Choose at least one app
+launcher.download.started	已开始下载所选应用	Selected app downloads started
+launcher.app.gomoku	五子棋	Gomoku
+launcher.app.go	围棋	Go
+launcher.app.xiangqi	中国象棋	Xiangqi
+launcher.app.chess	国际象棋	Chess
+launcher.app.2048	2048	2048
+launcher.app.snake	贪吃蛇	Snake
+launcher.app.drawing	画板笔记	Drawing notes
+launcher.app.weread	微信读书	WeRead
+launcher.app.home	家庭连接	Home Link
+launcher.app.printer	3D 打印机	3D printers
 launcher.settings	系统设置	Settings
 launcher.source.settings	设置	Settings
 launcher.source.system	系统应用	System
@@ -262,7 +284,7 @@ settings.home_link.syncing	同步中…	Syncing…
 settings.home_link.local	本地	Local
 settings.home_link.external	外部	External
 settings.home_link.host_old	当前固件宿主过旧，缺少 home_link 服务。请刷含 PGA 桥的固件后再打开本工具包。	This firmware host is too old for Home Link. Flash a build with the PGA bridge, then open this package.
-settings.home_link.status	%s · 实体 %u/%u · Wi‑Fi %s	%s · entities %u/%u · Wi-Fi %s
+settings.home_link.status	%s · 实体 %u/%u · Wi-Fi %s	%s · entities %u/%u · Wi-Fi %s
 settings.home_link.wifi_on	已连接	Connected
 settings.home_link.wifi_off	未连接	Not connected
 settings.home_link.access	Cloudflare Access 拦截：请在设置中填写 Service Token（非浏览器登录）。	Cloudflare Access blocked the request. Enter a Service Token in Settings (not a browser login).
@@ -280,7 +302,7 @@ settings.home_link.field.external	外部 HTTPS	External HTTPS
 settings.home_link.field.token	HA 令牌	HA token
 settings.home_link.field.cf_id	CF Client ID	CF Client ID
 settings.home_link.field.cf_secret	CF Client Secret	CF Client Secret
-settings.home_link.field.wifi	家庭 Wi‑Fi	Home Wi-Fi
+settings.home_link.field.wifi	家庭 Wi-Fi	Home Wi-Fi
 settings.home_link.field_line	%s：%s	%s: %s
 settings.home_link.unset	（未设）	(not set)
 settings.home_link.saved	已保存	Saved

@@ -14,6 +14,12 @@ static int dirties;
 static char last_toast[96];
 static int navigated, controls, status_reads, config_reads, syncs, inputs, rendered_entities;
 static unsigned entity_count;
+static uint32_t entity_revision=1;
+static unsigned entity_shift;
+static unsigned hidden_writes;
+static bool hidden_saved,hidden_fail;
+static unsigned char saved_hidden[264];
+static bool drawn[128];
 static pico_app_view_t viewport = {360, 640, false};
 static bool legacy_status;  /* Old host: ENTRY returns a normal status without ENTRY_OK. */
 
@@ -22,8 +28,15 @@ static int32_t page(void) { return PGA_PAGE_APP; }
 static void navigate(int32_t p) { navigated = p; }
 static void dirty(void) { dirties++; }
 static void toast(const char *text) { snprintf(last_toast, sizeof(last_toast), "%s", text); }
-static bool load(const char *key, void *out, size_t bytes) { (void)key; (void)out; (void)bytes; return false; }
-static bool store(const char *key, const void *data, size_t bytes) { (void)key; (void)data; (void)bytes; return false; }
+static bool load(const char *key, void *out, size_t bytes) {
+    if(strcmp(key,"homehidden1")||!hidden_saved)return false;
+    assert(bytes==sizeof(saved_hidden));memcpy(out,saved_hidden,bytes);return true;
+}
+static bool store(const char *key, const void *data, size_t bytes) {
+    if(strcmp(key,"homehidden1"))return false;
+    hidden_writes++;assert(bytes==sizeof(saved_hidden));if(hidden_fail)return false;
+    memcpy(saved_hidden,data,bytes);hidden_saved=true;return true;
+}
 static bool legacy_load(const char *key, void *out, size_t bytes) { (void)key; (void)out; (void)bytes; return false; }
 static int64_t time_us(void) { return 0; }
 static uint32_t random_u32(void) { return 1; }
@@ -40,6 +53,7 @@ static void center(uint8_t *fb, int x, int y, int size, const char *s, int gray)
 static void wrap(uint8_t *fb, int x, int y, int w, int size, int lines, const char *s, int gray) {
     (void)fb; (void)x; (void)y; (void)w; (void)size; (void)lines; (void)gray;
     if (strstr(s, "尚未配置")) saw_empty = true;
+    unsigned id;if(sscanf(s,"Device %u",&id)==1&&id<128)drawn[id]=true;
 }
 static void button(uint8_t *fb, int x, int y, int w, int h, const char *label, bool selected) {
     (void)fb; (void)label; (void)selected;
@@ -77,7 +91,7 @@ static bool home_link(uint32_t command, pico_app_home_status_t *out) {
         out->flags = (configured ? PGA_HOME_CFG : 0) | (connected ? PGA_HOME_WIFI : 0);
         out->busy = busy;
         out->entity_count = out->entity_total = (uint16_t)entity_count;
-        out->revision = 1;
+        out->revision = entity_revision;
         status_reads++;
         syncs += command == PGA_HOME_SYNC;
         return true;
@@ -99,6 +113,7 @@ static bool home_config(uint32_t command, pico_app_home_config_t *cfg) {
 }
 static bool home_entity(uint32_t index, pico_app_home_entity_t *out) {
     if (index >= entity_count) return false;
+    index=(index+entity_shift)%entity_count;
     memset(out, 0, sizeof(*out)); out->bytes = sizeof(*out);
     snprintf(out->name, sizeof(out->name), "Device %u", index);
     snprintf(out->id, sizeof(out->id), "demo.room_%u", index);
@@ -170,13 +185,13 @@ static void navigation_contract(const pico_app_exports_t *app) {
         (void)app->tick(); assert(syncs > 0);
         int old_controls = controls;
         assert(tap(app, viewport.w - 50, viewport.h - 32));
-        assert(controls == old_controls); render_pure(app, "打印机");
-        assert(!tap(app, 120, 180)); render_pure(app, "打印机");
-        assert(tap(app, viewport.w - 50, viewport.h - 32)); render_pure(app, "家庭连接");
+        assert(controls == old_controls); render_pure(app, "添加与管理设备");
+        assert(tap(app, 120, 180)); render_pure(app, "添加与管理设备");
+        assert(app->key(-1)); render_pure(app, "家庭连接");
         assert(tap(app, 50, viewport.h - 32)); render_pure(app, "连接设置");
         int old_inputs = inputs;
-        if (landscape) assert(tap(app, viewport.w - 50, 160));
-        else assert(tap(app, 50, 196));
+        if (landscape) assert(tap(app, 50, 160));
+        else assert(tap(app, 50, 232));
         assert(inputs == old_inputs + 1);
         assert(app->key(-1)); render_pure(app, "家庭连接");
         assert(app->key(-1) && navigated == PGA_PAGE_LAUNCHER);
@@ -248,6 +263,32 @@ static void drag_contract(const pico_app_exports_t *app) {
     puts("PASS: HA card long-press drag, order commit and suppressed synthetic tap");
 }
 
+static void management_contract(const pico_app_exports_t *app) {
+    for(int landscape=0;landscape<2;landscape++) {
+        viewport=landscape?(pico_app_view_t){640,360,true}:(pico_app_view_t){360,640,false};
+        configured=true;entity_count=16;entity_shift=0;entity_revision++;hidden_saved=hidden_fail=false;hidden_writes=0;
+        assert(app->start(&host));int prior=controls;
+        assert(tap(app,viewport.w-40,viewport.h-32));
+        int row_y=landscape?130:178;assert(tap(app,40,row_y));
+        assert(tap(app,40,viewport.h-32));assert(!hidden_writes&&controls==prior);
+        assert(tap(app,viewport.w-40,viewport.h-32));
+        memset(drawn,0,sizeof(drawn));app->render(NULL);assert(drawn[0]);
+        assert(tap(app,40,row_y));
+        assert(raw_event(app,PGA_SWIPE_L,180,180));assert(tap(app,40,row_y));
+        hidden_fail=true;assert(tap(app,viewport.w-40,viewport.h-32));render_pure(app,"添加与管理设备");assert(!hidden_saved);
+        hidden_fail=false;assert(tap(app,viewport.w-40,viewport.h-32));render_pure(app,"家庭连接");assert(hidden_saved&&hidden_writes==2&&controls==prior);
+        memset(drawn,0,sizeof(drawn));app->render(NULL);assert(!drawn[0]);
+        app->stop();assert(app->start(&host));memset(drawn,0,sizeof(drawn));app->render(NULL);assert(!drawn[0]);
+        entity_shift=8;entity_revision++;app->tick();memset(drawn,0,sizeof(drawn));app->render(NULL);assert(!drawn[0]);
+        assert(tap(app,viewport.w-40,viewport.h-32));assert(raw_event(app,PGA_SWIPE_L,180,180));
+        memset(drawn,0,sizeof(drawn));app->render(NULL);assert(drawn[0]);
+        assert(tap(app,40,row_y+(landscape?46:0)));assert(tap(app,viewport.w-40,viewport.h-32));
+        entity_shift=0;entity_revision++;app->tick();memset(drawn,0,sizeof(drawn));app->render(NULL);assert(drawn[0]);
+        app->stop();hidden_saved=false;entity_shift=0;
+    }
+    puts("PASS: HA device visibility cancel, failed save/retry, cross-page selection, restart persistence, entity reorder and no real-device control");
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     void *library = dlopen(argv[1], RTLD_NOW);
@@ -255,14 +296,15 @@ int main(int argc, char **argv) {
     pico_app_query_t query = (pico_app_query_t)dlsym(library, "pico_app_query");
     assert(query);
     const pico_app_exports_t *app = query();
-    assert(app && app->version == 10106 && app->kind == 130 && !strcmp(app->id, "home-link"));
+    assert(app && app->version == 10109 && app->kind == 130 && !strcmp(app->id, "home-link"));
     expect(app, -1, false, "家庭连接");
     expect(app, 1, false, "连接设置");
-    expect(app, 2, false, "打印机");
+    expect(app, 2, false, "家庭连接");
     expect(app, 1, true, "家庭连接");
     puts("PASS: home-link entry opens setup/printers once and ignores a host without ENTRY_OK");
     navigation_contract(app);
     network_contract(app);
     drag_contract(app);
+    management_contract(app);
     return 0;
 }

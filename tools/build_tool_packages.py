@@ -16,11 +16,14 @@ from build_game_packages import ROOT, native_target, package_bytes, write_atomic
 from build_game_elf import compiler, check_elf, normalize_relocations
 
 TOOLS = (
+    ("lingxi-board", "灵犀画板", "多屏灵犀语义看板 · 独立 TF 渲染引擎", 132, "apps/src/lingxi_board.c", 10001, ("main/system/pico_board_render.c", "components/read_pico_apps/include/pico_app_board.h")),
+    ("website-traffic", "网站访问看板", "Cloudflare 站点数据 · 扫码配置、设备独立更新", 133, "apps/src/website_traffic.c", 10100, ("apps/src/lingxi_board.c", "apps/include/traffic_app.h", "apps/include/traffic_json.h", "apps/include/traffic_ui.h", "apps/assets/website_traffic.html", "main/system/pico_board_render.c", "components/read_pico_apps/include/pico_app_board.h")),
     ("drawing-notes", "画板笔记", "画笔、橡皮和撤销 · 保存原稿后继续绘画", 128, "apps/src/drawing_notes.c", 10002, ()),
     ("weread", "微信读书", "在线搜书、图书资料、推荐与阅读统计 · 离线划线与想法", 129, "apps/src/weread.c", 10200,
      ("apps/include/weread_snapshot.h", "apps/include/weread_explore.h", "apps/include/weread_explore_json.h")),
-    ("home-link", "家庭连接", "Home Assistant 与打印机监看 · 可扫码填写", 130, "apps/src/home_link.c", 10106,
-     ("main/system/pico_scroll.h",)),
+    ("home-link", "家庭连接", "Home Assistant 房间选择、设备管理与控制 · 可扫码填写", 130, "apps/src/home_link.c", 10112,
+     ("main/system/pico_scroll.h", "components/read_pico_apps/include/pico_app_switch.h")),
+    ("printer-link", "3D 打印机", "独立打印机发现、添加与管理 · 保留已有配置", 131, "apps/src/printer_link.c", 10002, ()),
 )
 
 
@@ -36,6 +39,9 @@ def build_packages(output: Path, *, device: bool = False, cc: Path | None = None
     for app_id, title, description, kind, source_name, version, extra_inputs in TOOLS:
         if app_ids is not None and app_id not in app_ids:
             continue
+        if kind == 133:
+            from build_traffic_ui import check
+            check()
         source = ROOT / source_name
         inputs = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in
                   ((source_name, source), ('components/read_pico_apps/include/pico_app_sdk.h', sdk))}
@@ -82,6 +88,7 @@ def build_packages(output: Path, *, device: bool = False, cc: Path | None = None
             raise RuntimeError('Utility source changed during the build; rebuild the package')
         reports.append({'id': app_id, 'kind': kind, 'title': title, 'description': description,
                         'file': app_id + '.pga', 'version': version, 'abi': 1, 'directory': 'apps/tools',
+                        **({'minimum_firmware': '0.40.0-dual112' if kind==133 else '0.40.0-dual109', 'board_model_abi': 1} if kind in (132, 133) else {}),
                         'bytes': len(package), 'sha256': hashlib.sha256(package).hexdigest(),
                         'source_sha256': digest.hex(), 'inputs': inputs, 'targets': [name for name, _ in payloads]})
     report = {'schema': 1, 'device_ready': device, 'apps': reports}

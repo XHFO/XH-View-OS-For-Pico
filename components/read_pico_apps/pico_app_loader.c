@@ -266,7 +266,13 @@ bool pico_app_code_open(const uint8_t *image,size_t bytes,const pico_app_exports
             uintptr_t callbacks[]={(uintptr_t)api->start,(uintptr_t)api->render,(uintptr_t)api->event,(uintptr_t)api->key,
                 (uintptr_t)api->tick,(uintptr_t)api->action,(uintptr_t)api->status,(uintptr_t)api->save,(uintptr_t)api->stop};
             for(size_t i=0;i<sizeof(callbacks)/sizeof(callbacks[0]);i++)valid=valid&&pga_loaded_function(&code->elf,callbacks[i]);
-            if(api->bytes>=sizeof(*api)&&api->ink)valid=valid&&pga_loaded_function(&code->elf,(uintptr_t)api->ink);
+            // 每个可选尾部独立检查长度，保持旧笔迹包与新版看板的地址验证。/ Check optional tails separately for legacy ink and new board callbacks.
+            if(api->bytes>=offsetof(pico_app_exports_t,ink)+sizeof(api->ink)&&api->ink)
+                valid=valid&&pga_loaded_function(&code->elf,(uintptr_t)api->ink);
+            if(api->bytes>=offsetof(pico_app_exports_t,board_paint)+sizeof(api->board_paint)&&api->board_paint)
+                valid=valid&&pga_loaded_function(&code->elf,(uintptr_t)api->board_paint);
+            if(api->bytes>=offsetof(pico_app_exports_t,manage)+sizeof(api->manage)&&api->manage)
+                valid=valid&&pga_loaded_function(&code->elf,(uintptr_t)api->manage);
         }
     }
     if(!valid){pico_app_code_close(code);return pga_error(error,error_bytes,"Game exports do not match the supported ABI");}

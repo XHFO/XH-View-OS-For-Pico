@@ -1,3 +1,274 @@
+## 0.40.0-dual112 · 测试频道 / Test channel
+
+- “网站流量”更名为“网站访问看板”；配套TF应用1.1.0增加设置、手机扫码配置Cloudflare直连、三种外观与前台自动刷新。仅验证和TF事务保存成功后替换配置，失败保留旧配置及最近快照；令牌只写不回显。保留独立的多屏灵犀电脑快照来源。/ Rename Website Traffic to Website Dashboard; TF app1.1.0 adds settings, QR-configured direct Cloudflare analytics, three layouts and foreground refresh. Validate and persist before replacing configuration, retain previous data on failure and never echo tokens. Preserve independent desktop snapshots.
+- 配置页、JSON解析及记录在TF包内；宿主追加有界TLS和鉴权邮箱，兼容已发布ABI1应用，阅读、游戏、接力和分区策略保持。/ Keep configuration UI, parsing and records in TF; append bounded TLS/authenticated mailbox capabilities while retaining ABI1 apps and existing reader/game/relay/partition behavior.
+
+## 0.40.0-dual111 · 测试频道 / Test channel
+
+- 2048 开始前选择3×3、4×4（默认）或5×5；更换已有对局需确认，取消保留原局，最高分保留。贪吃蛇新增无限穿墙，撞到自身仍结束；新版本存档迁移保留旧记录。/ Choose 3×3, default 4×4 or 5×5 before 2048; replacing a played game requires confirmation and retains the best score. Snake adds edge wrapping while self-collision still ends play; versioned saves migrate without overwriting legacy records.
+- 四款动作游戏均支持任一端打开，主机运行与存档，副机使用十字键、A/B、SELECT/START手柄；断连暂停，重连不自动续跑或补执行旧按键。方向输入使用有界队列，设置与状态低频同步。需配套1.0.3动作游戏包；阅读、接力、波形及分区策略保持。/ All four arcade games can launch from either reader: the primary runs/saves play and the peer offers a D-pad, A/B and SELECT/START controller. Disconnection pauses; reconnection neither auto-resumes nor replays old inputs. Use bounded input queues and low-rate status, with 1.0.3 arcade packages and preserved reader/relay/waveform/partition behavior.
+
+## 0.40.0-dual110 · 测试频道 / Test channel
+
+- 优化四款动作游戏：方块与迷宫按下或滑动越阈值即响应，避免松手重复执行；迷宫有效转向提前完整步进，方向输入不额外单独推进追逐者。操作键移出底角快捷手势区。/ Blocks and maze respond on press or thresholded swipe without duplicate release actions; valid maze turns bring a complete step forward. Controls sit above corner gestures.
+- 2048 先用快速差分反馈，停止操作约900毫秒后恢复灰阶；数字块保留深色边框。2048与贪吃蛇自动存档合并为最多约5秒一次，暂停、退出与锁屏仍强制保存，失败保留旧存档并限频重试。突然断电可能丢失最近5秒游戏变化。/ 2048 uses fast differential feedback and settles grayscale after about 900 ms idle, with outlined tiles. Batch 2048/Snake checkpoints at about five-second intervals; pause/exit/lock force saving, failed writes retain old saves and back off. Abrupt power loss may lose the last five seconds of play.
+- 动作游戏期间延后可选后台轮询，保留游戏步进、存储安全与双机全局服务。阅读控制、接力参数、分区、波形与硬件时序保持不变。需配套更新四款游戏至1.0.2。/ Defer optional polling during arcade play while retaining ticks, storage safety and global dual service. Preserve reader controls/relay, partitions, waveforms and board timing; update all four arcade packages to 1.0.2.
+
+## 0.40.0-dual109 · 本地候选 / Local candidate
+
+- 电源短按改为双机联动锁屏/唤醒，普通锁屏保留认证蓝牙、阅读实例与全书锚点；独立电源状态消息带确认、重传及过期过滤。触摸/方向键翻页、双页位置与 dual107 接力参数保持不变。/ Short power clicks link lock/wake, retaining authenticated BLE, reader instances and whole-book anchors; dedicated power messages add ACK/retry/stale filtering while touch/direction turns and dual107 relay timing remain unchanged.
+- 联动锁屏暂停 Wi-Fi 数据连接与后台轮询，延长 BLE 连接间隔并启用主晶振 modem sleep；深度休眠另设入口，唤醒后沿用已保存配对自动连接。实际续航与无线唤醒需实机验证。/ Linked locks park Wi-Fi data/polling, lengthen BLE intervals and enable main-crystal modem sleep; a separate deep-sleep entry retains pairing for automatic reconnection. Battery life and radio wake require hardware validation.
+- 灵犀画板与网站流量的语义卡片排版移至各自 TF 应用包，固件保留鉴权、严格数据校验、事务存储和绘图桥；未安装时引导下载，卸载/升级保留快照与自定义锁屏。旧画板笔记、家庭、打印机、微信读书与六款游戏继续使用独立 TF 包。/ Move Lingxi/traffic card layout into independent TF packages; retain authentication, strict validation, transactional storage and draw bridges. Missing packages prompt installation; updates/removal preserve snapshots and lock images. Existing utility/game packages remain independent.
+- 新增适配墨水屏的俄罗斯方块及原创吃豆人迷宫 TF 包，支持暂停、存档和续玩；计时不补跑积压帧，不逐帧写卡。新游戏仅单机运行，不改变原有双机游戏控制。/ Add e-paper falling-block and original pellet-maze TF games with pause/save/resume, bounded timers and no per-frame storage writes; run independently without changing existing dual-game control.
+- 应用目录容量增至16项；SDK能力仅追加可选尾部，保留旧包的笔迹接口长度检查。/ Expand app catalogs to 16; append optional SDK tails while retaining legacy ink-length checks.
+
+## 0.40.0-dual108 · 测试频道 / Test channel · 2026-11-13
+
+- 普通页面统一纯白底，增强灰阶边界与文字层次；封面增加深色抗锯齿描边，百分比、收藏与进度条分开排布。/ Use white page backgrounds with stronger grayscale hierarchy and antialiased cover outlines; reserve separate progress, favorite and bar space.
+- 双机换书询问沿用系统白底选项、勾选和圆角面板，使用纯白背景、深描边和等边距取消按钮，并显示单侧/双侧高亮的设备图示；保留单侧/双机打开行为与逐书进度。/ Isolate the paired shelf open-choice dialog with a white background, paired-device illustrations, system-style outlined option rows with checkmarks and equal cancel margins while preserving local/paired opening and per-book history.
+
+- 书架页数说明下移至距底部6逻辑像素，标题、百分比、收藏与进度条紧凑分组；应用集TF游戏复用小游戏目录的专属图案。/ Lower shelf pagination to a 6-unit bottom margin, group each book’s metadata, and share game artwork between both launchers.
+
+- 顶部导航移除文字，图标在原点击区域居中；封面按原图比例贴边描边，封面与书名共用列中心线，进度条统一列宽，收藏桃心对齐右缘，空心/实心区分状态；导航和书架使用相同左右留白。/ Center icon-only top navigation within its existing hit areas; outline original-aspect covers, center titles in their columns, and align bars and hollow/filled hearts with equal page margins.
+
+- 修复从机打开书架排序时提示与排序控件重复绘制；主机正常排序，从机明确跟随主机，横竖屏分开预留文字与按钮区域。/ Prevent secondary shelf-sort hints and controls from overpainting; keep primary sorting and a clear secondary follow-primary state with separate text and button regions.
+
+- 临时提示统一显示在顶部状态栏；快捷菜单仅由底角向内滑动触发，可在设置隐藏指示标识。/ Show transient notices in the top status bar; require inward corner swipes for quick menus and allow hiding their indicators.
+- 书架、家庭、应用集与游戏目录统一左右分页；顶部图标切换栏目。书架排序合入“书架样式”，笔记与样式入口等宽同色。/ Use horizontal content pagination and top icons for destinations; place sorting inside Shelf Style with matching Notes and Style buttons.
+- 两端同时停留书架或家庭控制页时，主机显示当前页、副机显示下一页；任一端翻动一组，尾页副屏明确留空，离页后独立操作，重新合流保留主机当前页。/ Pair shelf and Home monitor pages as current/next with group turns, an explicit empty trailing page, independent operation after departure and no primary-page rewind on rejoin.
+- 返回按钮统一圆角矩形，与状态栏、分隔线及内容左右边界对齐；设置图标与两行文字按共同中心排布。家庭连接应用移除重复返回入口，需配套更新TF应用包。/ Align rounded Back controls with status and content margins, center settings icons with text blocks, and remove duplicate Home Link Back actions via the accompanying TF package.
+
+## 0.40.0-dual107 · 本地候选 / Local candidate
+
+- 双屏后启动端在前屏扫描预计剩余约500毫秒时开始接力，下一页右→左、上一页左→右，两端发起一致。保持原扫描相位、波形及电源稳定等待；允许动画部分重叠，实际提前量取决于扫描估计、绘制和通信耗时。/ Start the trailing screen with about 500 ms of estimated lead scanning left, right→left for next and left→right for previous from either initiator. Retain scan phases, waveform and rail settling; actual overlap depends on scan estimates, rendering and transport.
+- 提前接力与真实推屏完成分别确认；旧修订、丢包或早到确认不能放行新页组，仍需两端真正完成才接受下一次翻页。控制协议v11，需两台一起升级。/ Acknowledge early relay separately from actual completion; stale revisions, loss or early ACKs cannot release a newer spread, and both displays must finish before another turn. Require protocol v11 on both devices.
+
+- 修复重连时首个状态已是合并后的修订、从机却仍等待另一个修订的卡点；主机布局就绪后应用当前版本，实际推屏成功再确认，避免同页恢复后下一次翻页一直等待。/ Apply an already-reconciled first reconnect state once primary layout is ready instead of waiting for another revision; confirm only after successful presentation so same-page recovery cannot strand the next turn.
+
+## 0.40.0-dual106 · 本地候选 / Local candidate
+
+- 双机上一页和下一页均在前屏动画期间准备后屏；后屏预先绘制并完成电源启动，仍在前屏实际完成后推屏，不改变波形、扫描时序或电源稳定等待。/ Prepare the trailing screen in both directions during the lead animation, including rendering and rail startup; gate presentation on actual lead completion without changing waveforms, scan timing or rail settling.
+- 翻页控制包入队即唤醒现有 BLE 发送循环，减少20毫秒轮询等待；预绘线程保留原核、优先级与12KiB栈，栈改用PSRAM，分配失败仍同步回退。/ Wake the existing BLE loop on enqueue instead of waiting up to20ms; retain prefetch core, priority and12KiB stack, allocate the stack in PSRAM and keep synchronous fallback.
+- 控制协议 v10，避免旧版从机把提前准备信号误作立即推屏；两台需同时升级。保留原分区、阅读进度及缓存数量。/ Require control protocol v10 on both devices so older peers cannot mistake preparation for permission to present; retain partitions, progress and buffer counts.
+
+## 0.40.0-dual105 · 本地候选 / Local candidate
+
+- 双机翻页按实际动画完成接力：下一页右屏先完整刷新、左屏后开始；上一页左屏先、右屏后，两端发起一致。移除固定120毫秒让行，右屏动画期间复用现有单帧缓存准备左屏。/ Relay by actual completion: right then left for next, left then right for previous, from either initiator; remove the fixed 120 ms lead and stage the left screen in the existing single-frame cache during the right animation.
+- 布局放行与推屏完成分离；完成通知携带当前修订号并可靠重发，失败推屏不放行后屏，旧通知不推进新页组，断连可结束本机等待。双方完成后才接收下一次翻页。/ Separate layout release from display completion; retry revision-bound completion, retain failure guards, reject stale release, finish local waiting on disconnect, and admit a new turn only after both displays complete.
+- 控制协议 v9，需两台同时升级；保留原分区、波形与硬件时序，沿用原线程和帧缓存。/ Both peers require control protocol v9; retain partitions, waveforms, hardware timing, existing workers and frame buffers.
+
+## 0.40.0-dual104 · 本地候选 / Local candidate
+
+- 修复真实书架“双设备打开”绕过历史记录、换书从第1／2页开始的问题；统一先交换并合并正文锚点再恢复共享双页。/ Restore saved source anchors through the actual paired shelf entry before opening a shared spread.
+- 双机预绘改为下一组的两页步幅；自推屏动画后在空闲补齐预绘，沿用单帧缓存与已有工作线程。预绘页眉使用目标页码。/ Prefetch the next paired spread using the existing single frame and worker, rewarm after self-presented turns, and draw the target page number.
+- 共享会话存档改为停翻1.5秒或退出时保存，避免逐页同步写卡阻塞起手；保存失败仍保留重试。/ Defer session checkpoints until 1.5 seconds of idle or exit, retaining failed writes for retry.
+
+## 0.40.0-dual103 · 本地候选 / Local candidate
+
+- 翻页请求与页面就绪状态立即交给 BLE 线程，新增版本优先于后台共享；重复状态与方向消息仍公平调度。双机翻页的 TF 进度写入移到停翻或退出时。/ Enqueue turn requests and ready snapshots before blocking display work, prioritize new revisions with fair repeat/orientation scheduling, and checkpoint paired progress on idle or exit.
+- BLE 接收溢出不再主动断联，对端写入背压保留队首延后重试；仅认证失败执行地址退避，重新配置清除旧退避。增加只读队列压力诊断。/ Retain authenticated connections on notification overflow, retry peer write backpressure, restrict address backoff to authentication failures, reset backoff on reconfiguration and expose read-only pressure counters.
+- 进度在页面就绪后发送，以保存成功的确认结束传输；丢包或丢确认重发同一序号，旧确认不丢弃新记录。任一设备阅读时暂停全书库进度遍历。控制协议 v8，需两台同时升级。/ Send resolved anchors reliably with durable-save acknowledgements, retry lost packets/ACKs without accepting stale acknowledgements, and pause full-library progress enumeration while either reader is active. Both readers require protocol v8.
+
+## 0.40.0-dual102 · 本地候选 / Local candidate
+
+- 修复局域网先发现主机后蓝牙仍停留在仅搜索模式、双端等待连接的问题；两种发现路径统一停止搜索并释放套接字，再进入配对确认。/ Stop scan-only BLE and release the discovery socket on both UDP-first and BLE-first discovery before pairing confirmation, fixing LAN pairs stuck waiting for control connectivity.
+
+## 0.40.0-dual101 · 测试频道 / Test channel
+
+- 统一镜像、系统界面与更新比较的版本来源，修复 dual100 仍显示 dual99。/ Share one version source across image metadata, system UI and update comparison.
+- 修复主机重开书未唤回从机和进度帧长度错误；开书前交换该书正文锚点，断联重连先合并较远位置再显示双页。/ Repair explicit peer opens and truncated progress frames; exchange text anchors before opens and reconcile furthest positions before reconnect presentation.
+- TF 分别保留单机/双机及最远进度；保留旧 NVS 进度源迁移，统一书架进度条，批注和草稿保存失败保留内容。/ Persist solo/paired/furthest records on TF with source-preserving NVS migration, consistent shelf bars and retained edits on failed annotation/draft saves.
+
+## 0.40.0-dual100 · 本地候选 / Local candidate
+
+- 系统与 Home Link 的二态开关统一为灰阶滑块，左关右开；Home Link 松手只提交一次，不把滑动交给卡片翻页或排序。/ Share grayscale switches across system and Home Link; commit once on release without paging or reordering.
+- 电池与百分比按文字实际宽度紧邻排列，状态栏与样式预览共用间距。/ Keep the battery and percentage together using measured text width in both live status and previews.
+
+## 0.40.0-dual99 · 本地候选 / Local candidate
+
+- 双机恢复直接采用主机最新全书双页与修订；家庭页只暂停本机显示，书架点击恢复；四种票根外观共用。/ Resume the primary's current book-wide spread and revision; Home pauses local display and shelf resumes explicitly using any of the four card styles.
+- 状态栏保留墨线极简与书页索引；样式弹窗内提供电量百分比独立开关，旧第三主题自动迁移；Wi-Fi 采用带迟滞的三档图标，当前双机角色加深。/ Keep two status themes with a shared percentage toggle inside the style picker, migrate the legacy theme, add hysteretic signal tiers and emphasize the local role.
+- 家庭目录每批24项，常态最多96个选中实体；保留旧隐藏与顺序。认证双机BLE分块同步主机权威配置、选择与排序，副机离线编辑保留草稿，冲突采用主机。/ Page the catalog by 24 and retain at most 96 selected entities, migrating visibility/order; authenticated BLE shares primary-authoritative settings with durable secondary drafts and primary-wins conflicts.
+- 灯光卡片增加松手单次提交的亮度滑杆；空调模式弹窗只列支持值；控制失败不重放。阅读时暂停家庭轮询和低优先级共享。/ Add release-only brightness and supported HVAC modes without command replay; pause polling and bulk sharing during reading.
+
+## 0.40.0-dual98 · 测试频道 / Test channel
+
+- 应用目录与包地址随更新频道切换，测试包与稳定设备隔离；切换后清除旧目录选择，下载或安装期间禁止切换。/ Isolate test app feeds/packages, discard stale channel selections and reject channel changes during downloads/installation.
+- 打印机移除页只保留取消与移除两个按钮；查找完成清除加载提示，空结果正确显示。/ Use two removal actions and clear the discovery loading message when results arrive.
+
+- 家庭设备首次同步先选房间，HA 在服务端按范围投影，限制64项并显示数量；支持未分配房间、取消、失败重试及更换HA后重新选择。/ Select rooms before first sync, project server-side with a visible 64-item limit, and support unassigned rooms, cancel/retry and reselection after HA changes.
+- 打印机增加来源选择、HA发现和确认添加，自动匹配完整打印状态实体及相关字段；高级入口保留手动前缀。/ Add source selection, HA discovery and confirmation with complete printer-status suffix matching and an optional manual prefix.
+- 修复 Wi-Fi 特殊连字符缺字；横屏房间与设备管理说明不再叠字。/ Use a supported Wi-Fi hyphen and remove overlapping landscape room/device headings.
+
+- 双机配对与主机向导适配横竖屏，共用绘制和触摸几何；同步显示统一本文件进度与 KB 单位。/ Adapt pairing/setup to both orientations with shared hit geometry and accurate per-file progress.
+- 系统更新只由更新按钮触发；测试频道与安装使用可取消的持久确认，安装目标取自 TF 镜像。/ Updates require the explicit button and persistent, cancellable confirmation showing the cached image version.
+- 应用集增加可见管理与明确排序，移除显示具体目标并保留数据；已安装项与不可用下载状态更清楚。/ Add visible app management, explicit sorting, named removal with preserved data and clear download states.
+- 修复选中应用的下载任务在安装接力后变成全量下载，整批保留选择并固定目录快照。/ Preserve selected-only downloads and their catalog snapshot through every installation handoff.
+- 应用集增加独立的应用版本检查与选择更新；兼容旧网站清单的包头探测，同版或更旧版本不重复安装，更新保留存档。/ Add app version checks and selective upgrades, legacy-feed header probing, same/older-version skipping and preserved app data.
+- 家庭连接提供本机设备显示管理，保存不再强制启用服务；3D 打印机拆为独立包，支持 HA 来源添加、改名与移除，手机填写分别保存。旧直连凭据保留，未迁入协议明确提示暂不可用。/ Add local HA-device visibility management without forcing the service on; split Printers into its own package with HA setup, rename/removal and separate phone saves. Preserve legacy direct credentials and mark unavailable protocols honestly.
+- 统一开关与选择弹层，单机隐藏双机状态图标，完善电量对齐与四种票根内容边距；家庭连接高级认证按需展开。/ Unify toggles/pickers, hide unlinked pair icons, refine battery/card spacing and disclose advanced home authentication on demand.
+- 更新器失败页不再显示满格进度，保留低频刷新和现有轻量字模。/ Failed installs no longer show full progress; keep throttled refresh and the small existing font.
+
+## 0.40.0-dual97（独立双机实验版）
+
+- 顶部状态栏统一 WiFi、双机和电池的视觉尺寸与垂直中心；电池外框、内部电量和右侧触点均使用小屏可辨识的圆角，并加入像素级圆角回归。
+- “设置 → 外观与操作 → 状态栏图标”提供“墨线极简、书页索引、墨线·电量”三套外观；第三套显示实时电池百分比，默认仍为墨线极简。
+- 新增“设置 → 外观与操作 → 上次阅读卡片”，提供默认、登机牌、火车票和电影院票根四种外观；选择独立持久化，重启后恢复。
+- 四种续读卡共用同一份书名、格式、存储与进度数据，仅增加静态线条和标题修饰；不创建额外帧缓冲、后台任务或网络请求。
+
+## 0.40.0-dual96（独立双机实验版）
+
+- 顶部状态栏移除 Wi-Fi、双机角色和电量文字，改为网络、双机连接和电池图标；主机/从机通过双书页图标的左右填充区分，离线显示断开标记，充电显示闪电。
+- “设置 → 外观与操作”新增“状态栏图标”，提供“墨线极简”和“书页索引”两套外观；默认墨线极简，选择独立持久化并在重启后恢复。
+- 书页索引使用带下划线的网络/双书页图标与分段电量，墨线极简使用连续电量填充；两者均保持 24 像素状态栏和单色电子纸绘制。
+
+## 0.40.0-dual95（独立双机实验版）
+
+- 从双机正文返回书架后，再点任意书籍会先询问“仅在本机打开”或“两台一起打开”。单机选项不切换对端，并保留本地翻页、字号、跳页与进度保存；双机选项继续使用主设备权威页组。
+- 修复从机只要仍配置双机就丢弃本机待保存进度的问题；显式单机阅读现在会把进度写入本机。
+- 修复快速换书时主设备全书页数尚未统计、双机进度短暂发布为 0% 的问题；在页数未知期间沿用已保存进度。
+- 双机切换到另一本书时显示“正在打开图书”，在目标页定位完成前不再闪出上一本书的旧页。
+
+## 0.40.0-dual94（独立双机实验版）
+
+- 修复启动约 8 秒后自动检查更新时反复重启的问题。更新、应用下载和固件下载任务会访问 NVS、FATFS 与闪存，现改用内部 RAM 任务栈，避免 ESP-IDF 在关闭缓存执行闪存操作时触发栈完整性断言。
+- OTA 安装页面绘制已按面板旋转转换坐标，使用实心进度条并保留安全边距；安装阶段明确显示校验、写入、完成或失败状态。
+
+## 0.40.0-dual93（独立双机实验版）
+
+- 切换“热点/局域网”同步方式时强制重建相同角色与配对码下的 BLE 会话，并清除旧热点地址，修复蓝牙卡在等待连接。
+- 固件启动后若 TF 缓存镜像等于或旧于正在运行的版本，会自动删除 `update.bin` 与 `update.sha256`；安装入口再次拒绝相同或旧版本。
+- 全局顶部状态栏仅在 BLE 双机连接完成后显示“双机·主机”或“双机·从机”，未连接时保持原网络与电量栏。
+- 系统更新新增稳定和测试频道。设备默认稳定频道；首次选择测试频道会提示“可能不稳定”，必须再次轻点确认风险。
+- 两个频道使用独立版本清单与固件镜像，当前稳定频道为 dual91，测试频道为本版 dual93。
+
+## 0.40.0-dual92（独立双机实验版）
+
+- 修复从机在双机阅读中从书架选择另一本旧书时无法打开、并覆盖旧进度的问题。用户换书会先恢复本机或主设备已发布的进度，再由共享页索引把同一位置交给主机。
+- 用户换书请求可以覆盖尚未完成的旧请求；远端同步切书仍使用独立状态，不再与用户书架选择互相竞争。
+- 文件同步完成后立即停止主机热点并清除 BLE 热点信息；已同步的从机忽略残留热点广播，避免反复发现和重连。
+- 下一页由右侧先开始；右侧开始布局时就发布共享翻页状态，左侧延迟 120 ms 再起动画，给右侧留出布局和动画起手时间。
+## 0.40.0-dual91（独立双机实验版）
+
+- 修复“仅保留蓝牙”同步完成后的假错误提示：数据通道按设计关闭后，不再把旧错误状态覆盖在“书库已同步”之上。
+- 双机状态标题以实际同步结果为准；USB 状态中的错误标志也只在尚未完成同步时报告，避免自动化与界面看到互相矛盾的结果。
+
+## 0.40.0-dual90（独立双机实验版）
+
+- 重做双机阅读设置页：连接状态、同步进度、地址、配对码与网络状态归入状态卡；翻转、防误触、方向锁定和校准归入控制卡。
+- 主机与从机使用同一信息结构，仅角色徽标、数据来源和“同步设置／修改配对”文案不同；底部的重新同步、设置和书架操作改为等宽对齐。
+- 同步阶段改为可直接阅读的自然语言，避免步骤编号、技术状态和操作按钮在单列中混杂。
+
+## 0.40.0-dual89（独立双机实验版）
+
+- 系统更新与应用下载彻底拆分：关于本机只保留“系统更新”卡片，不再显示或触发应用包下载。
+- 应用集新增独立“应用下载”横幅；轻点后先显示应用选择层，可逐项勾选、全选缺失项，再只下载选中的应用。
+- 重做“关于本机”：系统更新并入最上方系统名称卡，加入版本迁移、状态动作和下载进度条；设备信息与首次引导统一对齐。
+- 重做应用集布局：顶部“扫描/应用下载”工具栏与两列/三列自适应网格分离，竖屏和横屏触摸命中、翻页与模块返回保持通过。
+- 用户可见域名统一为 `XHFO.NET`；HTTPS 请求地址仍保留协议规范的大小写形式。
+
+## 0.40.0-dual88（独立双机实验版）
+
+- 完成设备端 Wi-Fi OTA：启用证书包交叉签名验证，解决 `xhfo.net` 的 GTS Root R4 链校验；TLS 输入/输出记录为 16 KiB / 4 KiB，缓冲走 PSRAM。
+- 固件下载在写入 TF 前检查可用空间；本地缓存只有在大小和 SHA-256 都与网站一致时才显示“已就绪”，避免误装旧镜像。
+- 下载仍按 5% 更新，完整响应、长度、fsync 和 SHA-256 通过后才按顺序发布镜像与 SHA；再次确认后由 `ota_1` 更新器写入 `ota_0`，失败返回原系统。
+- 已用同一下载/校验流程实测 `ota_1 → ota_0` 重启切换；`dual88` 最终镜像为 4,137,920 字节，主从设备均使用同一 `dual88` 协议版本。
+
+## 0.40.0-dual87（独立双机实验版）
+
+- “设置 → 关于本机”新增可见的 Wi-Fi 固件更新卡片，不再依赖隐藏的长按状态文字。
+- 固件卡片读取网站版本、镜像字节数和 SHA-256，下载到 TF 的 `/readpico/firmware/update.bin` 与 `update.sha256`；下载期间原系统保持运行。
+- 下载按 5% 更新进度，完整长度和 SHA-256 校验通过后才发布 TF 文件；再次轻点确认后进入 `ota_1` 更新器。
+- 原有轻点应用包行改为独立按钮；TF 离线更新、失败回退和启动确认逻辑保持。
+
+## 0.40.0-dual85（独立双机实验版）
+
+- 新增 TF 固件更新：将 `update.bin` 与 64 字节 `update.sha256` 放入 `/readpico/firmware/`，在“关于本机”长按更新行后重启进入 `ota_1` 小型更新器。
+- 更新器先确认自身有效，流式校验 SHA-256 并只写 `ota_0`；写入完成后才切换启动分区。失败时显示错误并切回原 `ota_0` 系统，避免停留在更新器。Bootloader 开启 APP rollback，新版本通过启动检查后才确认有效。
+- 更新进度按 10% 刷新，4 MiB 镜像最多 11 次电子纸更新，避免每 16 KiB 触发一次整屏 GC16。
+- 应用删除从小游戏页移入“设置 → 应用与服务 → 应用集”；长按 TF 应用进入确认，删除包仍保留 `apps/data`。
+
+## 0.40.0-dual84（独立双机实验版）
+
+- “设置 → 关于本机”轻点后从 `xhfo.net` 读取应用目录，在设备端下载缺失的 PGA 应用包，并逐个显示下载、校验和安装进度。
+- 下载只写入 `apps/.staging/<id>.tmp`，由现有安装事务核对包头、payload、ABI、CRC、目标芯片和稳定 ID 后再原子替换；失败不会发布半个应用。
+- 网站应用目录扩展到 9 个包：六款游戏、画板笔记、微信读书和家庭连接。已安装的文件不会重复下载；需要重装时先在设备或网页管理器移除。
+- 双机发布版把固定 APP 槽中的工厂自检页面移出产品映像，为设备端下载器腾出空间；需要工厂自检时使用非双机产品构建。
+
+## 0.40.0-dual83（独立双机实验版）
+
+- TF 应用包新增“默认、名称、最近、安装、版本”五种排序；轻点标题栏的排序按钮循环切换并持久化偏好。
+- “最近”按成功打开或继续应用的持久序列排序，不依赖系统时间；扫描仍只做一次内存排序，不增加重绘时的文件或 NVS 读取。
+- 长按移除继续只删除 `.pga`，保留 `apps/data/<id>/` 中的应用存档。
+
+## 0.40.0-dual82（独立双机实验版）
+
+- “设置 → 关于本机”加入在线版本检查；联网后后台读取 `xhfo.net` 的有界版本清单，轻点状态行可重新检查。
+- 页面显示当前固件、网站最新固件、网站应用包数量和更新状态；发现新版时给出提示，不自动下载或覆写正在运行的固件。
+- 固件仍由电脑网页管理器核对设备、分区、SHA-256 后只写 `0x20000` APP 分区；PGA 应用包继续从网站下载到 TF 的 `apps/games` 或 `apps/tools`。
+- 固定 HTTPS 来源、证书验证、8 秒超时和 512 字节响应上限；检查任务运行于后台，不阻塞阅读或双机控制。
+
+## 0.40.0-dual81（独立双机实验版）
+
+- 翻页方向固定为上一页从左到右、下一页从右到左，统一 E0470 波形与回退动画的调用语义。
+- 下一页先由右侧从设备起动画：主设备提前放行 revision，并让出约两轮 UI tick；上一页仍由左侧主设备先起。
+- 翻页等待期间收到的新翻页输入排队到当前动画完成后处理，不丢键，也不会覆盖正在显示的页组；排队请求被接受后补播本机按键提示音。
+- 新增按实际推屏页比较的主从起手顺序测试和 `LTR/RTL` 方向回归；BLE 控制协议仍为 6。
+
+## 0.40.0-dual80（独立双机实验版）
+
+- 主设备书架也显示“返回两台设备的当前双页”；离开阅读会清除残留远端开书标记，不再被旧请求立即拉回正文。
+- 任一端单读时持续接力当前页：主机直接更新权威页组，从机每页只发送一个小控制包；断线重连后仅在页码确实分叉时补发。
+- 主机单读成功推屏后确认 `left_ready`；返回端先等到该权威 revision 可应用，再直接打开目标双页，移除旧页先显示、随后 seek 跳转的路径。
+- 单读正文顶部显示“单机续读 · 等待另一台”，主设备书架当前共享书百分比同步使用权威页组；从设备仍不写本地阅读进度。
+- 新增双向离架、书架返回和首帧页面轨迹回归；BLE 控制协议仍为 6，双端继续使用同一固件。
+
+## 0.40.0-dual79（独立双机实验版）
+
+- BLE 控制协议升级为 6，交换稳定设备 ID 与目录摘要；同一设备、未变化书库报告快速校验完成。
+- 保留上次对端设备 ID 和目录摘要；界面可区分“上次设备与目录一致”和普通目录相同。
+- 修复从双机页或阅读页手动返回书架时恢复标志仍生效、自动打开上一本书的问题。
+- 双方文件列表同步完成后自动返回书架；若用户正打开浮层，则不抢占当前操作。
+- 原有“仅蓝牙”策略继续在同步完成后关闭主机热点或本次 TCP 数据通道；“保持数据连接”保留热点。
+
+## 0.40.0-dual78（独立双机实验版）
+
+- BLE 主广播直接携带版本、局域网/热点模式、IPv4 与热点名称，不再依赖扫描响应才能取得连接信息。
+- 修复未配置从机角色时双机服务提前退出、配对扫描结果无人处理的问题。
+- 选择“从机”后自动开始 BLE 发现；收到主机广播后直接进入六位配对码输入，热点与地址自动填入。
+- 已配对从机继续自动连接主机热点并恢复同步；局域网与热点两种发现均加入原生触摸回归。
+
+## 0.40.0-dual77（独立双机实验版）
+
+- 已配对从机通过 BLE 自动取得主机热点名，再用配对码派生密码连接热点并恢复数据同步。
+- BLE 重连先等扫描响应取得端点/热点信息，避免连接建立后才发现子机不在主机热点上。
+- 从机书架原本隐藏“上次读到”后的空位改为“返回两台设备的当前双页”，点击恢复双机共享页。
+- 书架浮动按钮不再覆盖书单；双机返回入口固定在原续读卡位置。
+
+## 0.40.0-dual76（独立双机实验版）
+
+- 主机配对新增两步向导：明确选择同一局域网或主机热点，再选择同步后保持数据连接或仅保留蓝牙。
+- 同步页显示阶段、本机/对端项目数、已读取/已接收数据量和文件补齐百分比；传输期间按有界节流刷新。
+- 非自动网络模式和同步后策略持久化；旧 `dualconfig1` 配置可迁移并保持原配对。
+- 热点可强制使用；选择仅蓝牙后，在双方文件列表一致时关闭热点或停止本次 TCP 数据通道。
+
+## 0.40.0-dual75（独立双机实验版）
+
+- 主设备空书库也能启动双机会话，并从从设备双向补入缺失的 TXT、EPUB 与 TTF；双方清单最终一致，不再因主设备缺少共享字体而死锁。
+- 从设备字体加入共享清单；任一端缺书或缺字体均由对端补齐，仍保留同名不同内容。
+- BLE 发现早于书库会话启动，空卡或字体待补时也可找到主机；广播成功会清除旧的临时蓝牙错误。
+- 选择从机后直接显示自动搜索与手动输入；已配置页面增加“修改配对”，搜索中和搜索失败页均可直接切到手动输入。
+
+## 0.40.0-dual73（独立双机实验版）
+
+- 无现有局域网时，主机可建立短时直连热点；从机经蓝牙发现后输入屏幕六位码并自动连接。配对码不再出现在 BLE/UDP 广播中。
+- 从机连接后仍使用用户原有书架样式，但阅读进度改由主设备进度表覆盖；连接状态下不显示本机“最近阅读”入口。打开图书后主机显示正常左页、从机显示紧接的第二页。
+- 阅读进度只由主设备持久化。从机通过 BLE 接收主设备进度表，仅用于显示和续读目标，不再写第二份本地进度。
+- 批注与棋类状态加入应用层 ACK、750 ms 重试和重复吸收；TCP 端点变化可通过 BLE 自动更新并重连。
+- 文件分块从 4 KiB 增至 16 KiB，缓冲移入会话 PSRAM；模拟慢卡 10 MiB 前缀校验由约 54.7 秒降至约 13.4 秒。
+- 双机设置页不再被阅读页触摸拦截；显式远端开书可解除本机书库停留锁存。
+- Bump to dual73; BLE control protocol 5.
+
 ## 0.40.0-dual72（独立双机实验版）
 
 - 任一端发起游戏时重发打开请求，解决副机发起丢包/不联动。

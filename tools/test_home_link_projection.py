@@ -32,6 +32,7 @@ def main():
                         "-I", str(ROOT / "components/read_pico_home_link/include"), "-I", str(ROOT / "managed_components/espressif__cjson/cJSON"),
                         str(ROOT / "tools/home_link_projection_host_test.c"), str(ROOT / "components/read_pico_home_link/home_link_json.c"), "-lm", "-o", str(binary)]
         subprocess.run(command, check=True)
+        subprocess.run([str(binary),'controls'],check=True)
         request = json.loads(subprocess.check_output([str(binary), "template"]))
         env = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
         # HA exposes to_json; controls exercise the largest six-byte escaped representation.
@@ -42,7 +43,9 @@ def main():
         env.globals["is_number"] = is_number
         template = env.from_string(request["template"])
         def render(rows, printers=None):
-            return template.render(states=States(rows), printers=printers if printers is not None else request["variables"]["printers"], area_name=lambda entity: "书房" if entity == "light.first" else None)
+            variables=dict(request["variables"])
+            if printers is not None:variables["printers"]=printers
+            return template.render(states=States(rows), **variables, area_name=lambda entity: "书房" if entity == "light.first" else None)
         huge = "x" * 300000
         rows = [state("light.first", friendly_name="阅读灯", huge_unused=huge, temperature="NaN")]
         rows += [state("sensor.noise_"+str(i), "1", device_class="power", history=huge) for i in range(600)]
@@ -74,5 +77,37 @@ def main():
         assert discovered[-1]["pico_cut"] and len(discovered)==9
         subprocess.run(command+["-DPICO_HOME_LINK_FULL=0"],check=True)
         subprocess.run([str(binary),str(small),"6","6"],check=True)
-        print(f"Jinja: 1603 entities / huge individual attributes projected to {len(rendered.encode())} bytes; adversarial max {len(worst_json.encode())} / {192*1024} bytes; empty/overflow/long IDs passed")
+        scoped=json.loads(subprocess.check_output([str(binary),"scoped-template"]))
+        limited=env.from_string(scoped['template'])
+        large=[state('light.office_'+str(i),friendly_name='书房灯') for i in range(5000)]
+        large += [state('light.other_'+str(i)) for i in range(1500)]
+        large += [state('sensor.bad_sdcard_status','idle'),state('sensor.p1_print_status','printing'),state('sensor.p1_print_progress','42')]
+        area_id=lambda entity:'office' if 'office_' in entity or '.p1_' in entity else 'other'
+        kwargs=dict(states=States(large),area_id=area_id,area_name=lambda entity:'书房',is_number=is_number)
+        selected=json.loads(limited.render(**kwargs,**scoped['variables']))
+        assert selected[-1]['pico_total']==5000 and len([x for x in selected if not x.get('pico_printer') and 'entity_id' in x])==96
+        assert not any('other_' in x.get('entity_id','') or 'sdcard' in x.get('entity_id','') for x in selected)
+        assert any(x.get('entity_id')=='sensor.p1_print_status' for x in selected)
+        # 每批24项覆盖所有目录；日常只回传选中ID，不取其他属性。
+        # Page the entire catalog in batches of 24; daily projection includes only selected IDs.
+        found=[]
+        for offset in range(0,5000,24):
+            batch=json.loads(limited.render(**kwargs,**dict(scoped['variables'],offset=offset,limit=24)))
+            found += [x['entity_id'] for x in batch if 'entity_id' in x and not x.get('pico_printer')]
+        assert len(found)==5000 and len(set(found))==5000
+        wanted=found[:96:7]
+        daily=json.loads(limited.render(**kwargs,**dict(scoped['variables'],selected=True,entities=wanted)))
+        assert [x['entity_id'] for x in daily if 'entity_id' in x and not x.get('pico_printer')]==wanted
+        empty_scope=dict(scoped['variables'],areas=[],printer_only=True)
+        no_home=json.loads(limited.render(**kwargs,**empty_scope))
+        assert no_home[-1]['pico_total']==0 and all(x.get('pico_printer') for x in no_home[:-1])
+        area_template=env.from_string(subprocess.check_output([str(binary),'areas-template'],text=True))
+        catalog=json.loads(area_template.render(states=States(large),area_id=area_id,area_name=lambda entity:'书房'))
+        assert catalog['total']==2 and sum(x['devices'] for x in catalog['items'])==6500
+        many=[state('light.room_'+str(i)) for i in range(40)]
+        catalog=json.loads(area_template.render(states=States(many),area_id=lambda e:e,area_name=lambda e:'房间'))
+        assert catalog['total']==40 and len(catalog['items'])==32
+        catalog=json.loads(area_template.render(states=States([state('light.no_area')]),area_id=lambda e:None,area_name=lambda e:None))
+        assert catalog['items']==[dict(id='',name='未分配房间',devices=1)]
+        print(f"Jinja: legacy projection {len(rendered.encode())} bytes; scoped 6500 entities filtered, 5000-item catalog paged before response, 96 cap, zero selection, printer suffix matching, room counts/overflow/unassigned passed")
 if __name__ == "__main__": main()

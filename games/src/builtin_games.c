@@ -21,6 +21,7 @@
 
 #if defined(PICO_GAME_MODULE)
 #include "../sdk/pico_game_module_compat.h"
+#include "../sdk/pico_game_pad.h"
 #elif !defined(PICO_GAMES_CORE_ONLY)
 #include "../../main/system/pico_system.h"
 #ifndef PICO_GAMES_UI_HOST
@@ -818,31 +819,47 @@ typedef struct {
     uint8_t initialized,snake_initialized,over,won,keep_playing,snake_over,speed,reserved;
 } pa_save_t;
 static pa_save_t a_save;
+typedef struct {pa_save_t base;uint32_t extra[25];uint32_t magic;uint8_t grid,wrap,reserved[2];} pa_state2_t;
+static uint32_t a_extra[25];
+static uint8_t a_grid=4,a_wrap,a_choice=4,a_mode;
+static bool a_setup,a_confirm,a_controller;
+#ifdef PICO_GAME_MODULE
+static pga_pad_state_t a_remote,a_sent;
+static int64_t a_status_at;
+#endif
+static uint32_t *pa_cells(void){return a_grid==4?a_save.board:a_extra;}
 static int a_kind,a_dir,a_next,a_follow=-1;
 static int a_duo_role;
 static int pa_duo_role_now(void);
 static bool a_paused=true,a_turned,a_unsaved,a_was_active,a_swipe_tracking,a_contact_handled;
-static int64_t a_due;
+static int64_t a_due,a_save_due,a_settle_due;
+static bool a_changed;
 static uint32_t a_rng=0x45a109e7u;
 static uint32_t pa_random(void){a_rng^=a_rng<<13;a_rng^=a_rng>>17;a_rng^=a_rng<<5;return a_rng;}
-static bool pa_persist(void){a_unsaved=!ps_store("arcade1",&a_save,sizeof(a_save));return !a_unsaved;}
-static bool pa_has_move(void){for(int i=0;i<16;i++){if(!a_save.board[i])return true;if(i%4<3&&a_save.board[i]==a_save.board[i+1])return true;if(i<12&&a_save.board[i]==a_save.board[i+4])return true;}return false;}
-static void pa_spawn(void){int free_cells[16],n=0;for(int i=0;i<16;i++)if(!a_save.board[i])free_cells[n++]=i;if(n)a_save.board[free_cells[pa_random()%(unsigned)n]]=pa_random()%10?2:4;}
+static bool pa_persist(void){
+    pa_state2_t state={.base=a_save,.magic=0x50415232u,.grid=a_grid,.wrap=a_wrap};memcpy(state.extra,a_extra,sizeof(a_extra));
+    a_unsaved=!ps_store("arcade2",&state,sizeof(state));if(!a_unsaved)a_changed=false;a_save_due=pg_millis()+5000;return !a_unsaved;
+}
+// 合并自动存档，输入与每次吃食不再同步写卡；退出和锁屏仍强制保存。
+// Batch checkpoints off input/food events; exit and lock still force a save.
+static void pa_changed(void){if(!a_changed)a_save_due=pg_millis()+5000;a_changed=true;}
+static bool pa_has_move(void){uint32_t *board=pa_cells();int n=a_grid;for(int i=0;i<n*n;i++){if(!board[i])return true;if(i%n<n-1&&board[i]==board[i+1])return true;if(i<n*(n-1)&&board[i]==board[i+n])return true;}return false;}
+static void pa_spawn(void){int free_cells[25],n=0;uint32_t *board=pa_cells();for(int i=0;i<a_grid*a_grid;i++)if(!board[i])free_cells[n++]=i;if(n)board[free_cells[pa_random()%(unsigned)n]]=pa_random()%10?2:4;}
 static bool pa_shift(int direction){
     if(a_save.over||(a_save.won&&!a_save.keep_playing))return false;
-    uint32_t before[16];memcpy(before,a_save.board,sizeof(before));
-    for(int line=0;line<4;line++){
-        int ids[4],n=0;uint32_t values[4]={0},out[4]={0};
-        for(int j=0;j<4;j++){ids[j]=direction==0?j*4+line:direction==1?line*4+3-j:direction==2?(3-j)*4+line:line*4+j;if(a_save.board[ids[j]])values[n++]=a_save.board[ids[j]];}
-        int at=0;for(int j=0;j<n;j++){uint32_t value=values[j];if(j+1<n&&values[j+1]==value&&value<=UINT32_MAX/2){value*=2;j++;a_save.score+=value;if(value>=2048)a_save.won=1;}out[at++]=value;}
-        for(int j=0;j<4;j++)a_save.board[ids[j]]=out[j];
+    int n=a_grid;uint32_t *board=pa_cells(),before[25];memcpy(before,board,(size_t)n*n*sizeof(*board));
+    for(int line=0;line<n;line++){
+        int ids[5],count=0;uint32_t values[5]={0},out[5]={0};
+        for(int j=0;j<n;j++){ids[j]=direction==0?j*n+line:direction==1?line*n+n-1-j:direction==2?(n-1-j)*n+line:line*n+j;if(board[ids[j]])values[count++]=board[ids[j]];}
+        int at=0;for(int j=0;j<count;j++){uint32_t value=values[j];if(j+1<count&&values[j+1]==value&&value<=UINT32_MAX/2){value*=2;j++;a_save.score+=value;if(value>=2048)a_save.won=1;}out[at++]=value;}
+        for(int j=0;j<n;j++)board[ids[j]]=out[j];
     }
-    if(!memcmp(before,a_save.board,sizeof(before)))return false;
-    a_save.moves++;if(a_save.score>a_save.best)a_save.best=a_save.score;pa_spawn();a_save.over=!pa_has_move();pa_persist();return true;
+    if(!memcmp(before,board,(size_t)n*n*sizeof(*board)))return false;
+    a_save.moves++;if(a_save.score>a_save.best)a_save.best=a_save.score;pa_spawn();a_save.over=!pa_has_move();pa_changed();a_settle_due=pg_millis()+900;return true;
 }
 static void pa_food(void){int n=0;uint16_t free_cells[PA_CELLS];for(int p=0;p<PA_CELLS;p++){bool occupied=false;for(int i=0;i<a_save.length;i++)if(a_save.snake[i]==p){occupied=true;break;}if(!occupied)free_cells[n++]=(uint16_t)p;}a_save.food=n?free_cells[pa_random()%(unsigned)n]:UINT16_MAX;}
 static void pa_reset(void){
-    if(a_kind==PA_2048){memset(a_save.board,0,sizeof(a_save.board));a_save.score=a_save.moves=0;a_save.over=a_save.won=a_save.keep_playing=0;a_save.initialized=1;pa_spawn();pa_spawn();}
+    if(a_kind==PA_2048){memset(a_save.board,0,sizeof(a_save.board));memset(a_extra,0,sizeof(a_extra));a_settle_due=0;a_save.score=a_save.moves=0;a_save.over=a_save.won=a_save.keep_playing=0;a_save.initialized=1;pa_spawn();pa_spawn();}
     else{a_save.length=4;for(int i=0;i<4;i++)a_save.snake[i]=(uint16_t)(10*20+8-i);a_save.snake_score=a_save.snake_moves=0;a_save.snake_over=0;a_save.snake_initialized=1;a_dir=a_next=1;a_follow=-1;a_paused=true;a_turned=false;a_swipe_tracking=a_contact_handled=false;pa_food();}
     pa_persist();ps_dirty();
 }
@@ -869,6 +886,7 @@ static bool pa_step(void){
     if(a_follow>=0){a_next=a_follow;a_follow=-1;a_turned=true;}else{a_next=a_dir;a_turned=false;}
     int head=a_save.snake[0],x=head%20,y=head/20;
     x+=a_dir==1?1:a_dir==3?-1:0;y+=a_dir==2?1:a_dir==0?-1:0;
+    if(a_wrap){x=(x+20)%20;y=(y+20)%20;}
     bool dead=x<0||x>=20||y<0||y>=20;int p=y*20+x;bool grow=p==a_save.food;
     for(int i=0;i<(int)a_save.length-(grow?0:1);i++)if(a_save.snake[i]==p)dead=true;
     if(dead){a_save.snake_over=1;a_paused=true;pa_clear_input();pa_persist();return true;}
@@ -876,31 +894,39 @@ static bool pa_step(void){
     for(int i=a_save.length-1;i>0;i--){a_save.snake[i]=a_save.snake[i-1];}
     a_save.snake[0]=(uint16_t)p;a_save.snake_moves++;
     if(grow){a_save.snake_score+=10;if(a_save.snake_score>a_save.snake_best)a_save.snake_best=a_save.snake_score;pa_food();if(a_save.food==UINT16_MAX){a_save.snake_over=1;a_paused=true;pa_clear_input();}}
-    if(grow||a_save.snake_moves%32==0){pa_persist();}
+    pa_changed();
     return true;
 }
 static bool pa_valid(void){
-    if(a_save.magic!=0x50415231u||a_save.speed>2||a_save.length>PA_CELLS)return false;
-    for(int i=0;i<16;i++){uint32_t v=a_save.board[i];if(v&&(v<2||(v&(v-1))))return false;}
-    if(a_save.snake_initialized){if(a_save.length<2)return false;for(int i=0;i<a_save.length;i++){if(a_save.snake[i]>=PA_CELLS)return false;for(int j=0;j<i;j++)if(a_save.snake[i]==a_save.snake[j])return false;if(i){int a=a_save.snake[i],b=a_save.snake[i-1];if(abs(a%20-b%20)+abs(a/20-b/20)!=1)return false;}}if(a_save.food>=PA_CELLS&&a_save.length<PA_CELLS)return false;for(int i=0;i<a_save.length;i++)if(a_save.snake[i]==a_save.food)return false;}
+    if(a_save.magic!=0x50415231u||a_save.speed>2||a_save.length>PA_CELLS||a_grid<3||a_grid>5||a_wrap>1)return false;
+    for(int i=0;i<a_grid*a_grid;i++){uint32_t v=pa_cells()[i];if(v&&(v<2||(v&(v-1))))return false;}
+    if(a_save.snake_initialized){if(a_save.length<2)return false;for(int i=0;i<a_save.length;i++){if(a_save.snake[i]>=PA_CELLS)return false;for(int j=0;j<i;j++)if(a_save.snake[i]==a_save.snake[j])return false;if(i){int a=a_save.snake[i],b=a_save.snake[i-1];int dx=abs(a%20-b%20),dy=abs(a/20-b/20);if(dx+dy!=1&&!(a_wrap&&((dx==19&&!dy)||(dy==19&&!dx))))return false;}}if(a_save.food>=PA_CELLS&&a_save.length<PA_CELLS)return false;for(int i=0;i<a_save.length;i++)if(a_save.snake[i]==a_save.food)return false;}
     return true;
 }
-static void pa_init(void){memset(&a_save,0,sizeof(a_save));bool loaded=ps_load("arcade1",&a_save,sizeof(a_save));
+static void pa_init(void){
+    memset(&a_save,0,sizeof(a_save));memset(a_extra,0,sizeof(a_extra));a_grid=4;a_wrap=0;
+    pa_state2_t state;bool loaded=ps_load("arcade2",&state,sizeof(state));
+    if(loaded&&state.magic==0x50415232u){a_save=state.base;a_grid=state.grid;a_wrap=state.wrap;memcpy(a_extra,state.extra,sizeof(a_extra));loaded=pa_valid();}else loaded=false;
+    if(!loaded){a_grid=4;a_wrap=0;loaded=ps_load("arcade1",&a_save,sizeof(a_save));}
 #ifdef PICO_GAME_MODULE
     if(!loaded)loaded=pga_host->legacy_load("arcade1",&a_save,sizeof(a_save));
 #endif
-    if(!loaded||!pa_valid()){memset(&a_save,0,sizeof(a_save));a_save.magic=0x50415231u;a_save.speed=1;}
+    if(!loaded||!pa_valid()){memset(&a_save,0,sizeof(a_save));a_save.magic=0x50415231u;a_save.speed=1;a_grid=4;a_wrap=0;}
 #ifdef PICO_GAME_MODULE
     if(PICO_GAME_KIND==PGA_2048){memset(a_save.snake,0,sizeof(a_save.snake));a_save.length=a_save.food=0;a_save.snake_initialized=a_save.snake_over=0;a_save.snake_score=a_save.snake_best=a_save.snake_moves=0;}
     else{memset(a_save.board,0,sizeof(a_save.board));a_save.score=a_save.best=a_save.moves=0;a_save.initialized=a_save.over=a_save.won=a_save.keep_playing=0;}
 #endif
-    a_paused=true;a_turned=false;a_follow=-1;a_swipe_tracking=a_contact_handled=false;a_was_active=false;a_rng=esp_random()|1u;
-    if(a_save.snake_initialized){int h=a_save.snake[0],n=a_save.snake[1];a_dir=h==n+1?1:h==n-1?3:h==n+20?2:0;a_next=a_dir;}}
+    a_changed=false;a_save_due=a_settle_due=0;a_setup=a_confirm=a_controller=false;a_paused=true;a_turned=false;a_follow=-1;a_swipe_tracking=a_contact_handled=false;a_was_active=false;a_rng=esp_random()|1u;
+    if(a_save.snake_initialized){int h=a_save.snake[0],n=a_save.snake[1];int dx=(h%20-n%20+20)%20,dy=(h/20-n/20+20)%20;a_dir=dx==1?1:dx==19?3:dy==1?2:0;a_next=a_dir;}}
 static void pa_open(int kind){
 #ifdef PICO_GAME_MODULE
     if(PICO_GAME_KIND<PG_TYPES||kind!=PICO_GAME_KIND-PG_TYPES)return;
 #endif
-    a_duo_role=pa_duo_role_now();a_kind=kind;a_paused=true;pa_clear_input();if(kind==PA_2048?!a_save.initialized:!a_save.snake_initialized)pa_reset();ps_navigate(PS_ARCADEGAME);}
+    a_duo_role=pa_duo_role_now();a_controller=a_duo_role==PGA_DUO_CONTROLLER;
+#ifdef PICO_GAME_MODULE
+    memset(&a_remote,0,sizeof(a_remote));memset(&a_sent,0,sizeof(a_sent));a_remote.kind=PICO_GAME_KIND;a_remote.choice=a_grid;a_remote.paused=1;a_status_at=0;
+#endif
+    a_kind=kind;a_setup=true;a_confirm=false;a_choice=a_grid;a_mode=a_wrap;a_paused=true;pa_clear_input();if(kind==PA_2048?!a_save.initialized:!a_save.snake_initialized)pa_reset();ps_navigate(PS_ARCADEGAME);}
 bool ps_games_is_arcade(void){return ps_route()==PS_ARCADEGAME;}
 bool ps_games_is_snake(void){return ps_route()==PS_ARCADEGAME&&a_kind==PA_SNAKE;}
 bool ps_games_paused(void){return a_kind==PA_SNAKE&&a_paused;}
@@ -911,7 +937,7 @@ void ps_games_action(int action){
     if(action==0||action==1){pa_open(action);return;}
     if(action==5){pa_pause();return;}
     if(ps_route()!=PS_ARCADEGAME){if(action==3){if(ps_route()==PS_PLAYGAME){g_modal=1;ps_dirty();}else ps_toast("请先打开一局游戏");}else if(action==4&&ps_route()==PS_PLAYGAME){g_modal=2;ps_dirty();}return;}
-    if(action==2&&a_kind==PA_SNAKE&&!a_save.snake_over){a_paused=!a_paused;pa_clear_input();a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();ps_dirty();}
+    if(action==2&&a_kind==PA_SNAKE&&!a_save.snake_over){a_setup=false;a_paused=!a_paused;pa_clear_input();a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();ps_dirty();}
     else if(action==3)pa_reset();
     else if(action==4)ps_toast(a_kind==PA_2048?"左右上下滑动合并数字，目标2048":"先点开始，再滑动或点方向；撞墙或自己结束");
 }
@@ -942,72 +968,87 @@ static int pa_duo_role_now(void)
     return PGA_DUO_NONE;
 #endif
 }
-static void pa_controller_rect(int direction,int *x,int *y,int *w,int *h)
-{
-    ps_view_t v=ps_view();
-    if(v.landscape){
-        // 左侧独立上下，右侧独立左右，中间留给功能键。
-        // Separate up/down on the left, left/right on the right, with function keys between them.
-        if(direction==0){*x=34;*y=92;*w=155;*h=88;}
-        else if(direction==2){*x=34;*y=202;*w=155;*h=88;}
-        else if(direction==3){*x=416;*y=128;*w=82;*h=124;}
-        else {*x=512;*y=128;*w=82;*h=124;}
-    }else{
-        if(direction==0){*x=30;*y=160;*w=120;*h=80;}
-        else if(direction==2){*x=30;*y=260;*w=120;*h=80;}
-        else if(direction==3){*x=200;*y=190;*w=60;*h=100;}
-        else {*x=270;*y=190;*w=60;*h=100;}
-    }
-}
 static void pa_snake_single_rect(int direction,int *x,int *y,int *w,int *h)
 {
-    if(direction==0){*x=48;*y=112;*w=64;*h=40;}
-    else if(direction==2){*x=48;*y=176;*w=64;*h=40;}
+    if(direction==0){*x=48;*y=68;*w=64;*h=44;}
+    else if(direction==2){*x=48;*y=120;*w=64;*h=44;}
     else if(direction==3){*x=488;*y=144;*w=48;*h=72;}
     else {*x=560;*y=144;*w=48;*h=72;}
 }
-static void pa_draw_controller(uint8_t *fb)
-{
-    ps_view_t v=ps_view();
-    // 说明并入右侧连接状态，避免副标题占用控制区顶部。
-    // The subtitle is folded into the right-side status to keep the control area clear.
-    ps_heading(fb,"贪吃蛇 · 控制",NULL);
-    // 连接状态放标题栏右侧，避开系统状态栏和中间功能键。
-    // Put connection status at the right of the title bar, clear of the OS status bar and center controls.
-    ps_text(fb,v.w-124,36,11,"蓝牙已连接",4);
-    const char *arrows[]={"↑","→","↓","←"};
-    for(int d=0;d<4;d++){int x,y,w,h;pa_controller_rect(d,&x,&y,&w,&h);ps_button(fb,x,y,w,h,arrows[d],false);}
-    if(v.landscape){
-        ps_button(fb,224,96,160,54,"暂停 / 继续",false);
-        ps_button(fb,224,160,160,54,"切换速度",false);
-        ps_button(fb,224,224,160,54,"重新开始",false);
-    }else{
-        ps_button(fb,40,390,120,52,"暂停 / 继续",false);
-        ps_button(fb,180,390,120,52,"切换速度",false);
-        ps_button(fb,40,456,260,52,"重新开始",false);
-    }
-}
-static void pa_poll_duo(void)
-{
-#ifdef PICO_GAME_MODULE
-    if(a_duo_role!=PGA_DUO_SCREEN)return;
-    for(int i=0;i<4;i++){
-        int input=pga_duo_recv();if(input<0)break;
-        if(input<=3){
-            if(a_paused&&!a_save.snake_over){a_paused=false;ps_dirty();}
-            pa_direction(input);
+// 新局设置只修改草稿；确认后才替换对局，保留最高分与旧格式迁移。
+// Setup edits a draft; only confirmation replaces a run, retaining best scores and legacy migration.
+static void pa_options(void){pa_pause();a_setup=true;a_confirm=false;a_choice=a_grid;a_mode=a_wrap;}
+static bool pa_control(int code){
+    if(a_setup){
+        if(code==9){if(a_confirm)a_confirm=false;else a_setup=false;return true;}
+        if(code<4||code==7){
+            if(a_kind==PA_2048)a_choice=(uint8_t)(3+(a_choice-3+(code==0||code==3?2:1))%3);else a_mode=!a_mode;
+            a_confirm=false;return true;
         }
-        else if(input==PGA_DUO_PAUSE&&a_kind==PA_SNAKE&&!a_save.snake_over){a_paused=!a_paused;pa_clear_input();a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();ps_dirty();}
-        else if(input==PGA_DUO_SPEED&&a_kind==PA_SNAKE){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();ps_dirty();}
-        else if(input==PGA_DUO_RESTART){pa_reset();}
+        if(code>=10&&code<=12&&a_kind==PA_2048){a_choice=(uint8_t)(code-7);a_confirm=false;return true;}
+        if(code==4&&a_choice==a_grid&&a_mode==a_wrap){a_setup=false;if(a_kind==PA_SNAKE&&!a_save.snake_over){a_paused=false;a_due=pg_millis()+pa_delay();}return true;}
+        if(code==8||code==4||code==6){
+            bool played=a_kind==PA_2048?a_save.moves>0:a_save.snake_moves>0;
+            if(played&&!a_confirm){a_confirm=true;return true;}
+            a_grid=a_choice;a_wrap=a_mode;pa_reset();a_setup=a_confirm=false;
+            if(a_kind==PA_SNAKE){a_paused=false;a_due=pg_millis()+pa_delay();}return true;
+        }
+        return false;
     }
+    if(code==7||code==6||(a_kind==PA_2048&&(code==4||code==8||code==9))){pa_options();return true;}
+    if(code<4){if(a_kind==PA_2048)return pa_shift(code);return pa_direction(code);}
+    if(a_kind==PA_SNAKE){
+        if(code==4||code==8){ps_games_action(2);return true;}
+        if(code==5||code==9){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_changed();return true;}
+    }
+    return false;
+}
+static void pa_setup_draw(uint8_t *fb){
+    ps_view_t v=ps_view();ps_heading(fb,a_kind==PA_2048?"2048":"贪吃蛇",NULL);
+    ps_center(fb,v.w/2,v.landscape?78:112,15,a_confirm?"开始新局将替换当前对局":a_kind==PA_2048?"开始前选择棋盘格数":"选择游戏模式",0);
+    int y=v.landscape?112:168,n=a_kind==PA_2048?3:2,w=(v.w-32-(n-1)*8)/n;
+    const char *grids[]={"3 × 3","4 × 4","5 × 5"};const char *modes[]={"经典边界","无限穿墙"};
+    for(int i=0;i<n;i++)ps_button(fb,16+i*(w+8),y,w,48,a_kind==PA_2048?grids[i]:modes[i],a_kind==PA_2048?a_choice==i+3:a_mode==i);
+    ps_center(fb,v.w/2,y+68,12,a_kind==PA_2048?"格数仅作用于新局 · 最高分保留":"穿过边缘从对侧出现 · 撞到自己仍结束",3);
+    ps_button(fb,16,v.h-132,v.w-32,44,a_confirm?"取消更换":"继续当前对局",false);
+    ps_button(fb,16,v.h-76,v.w-32,44,a_confirm?"确认开始新局":"开始新局",true);
+}
+static bool pa_setup_event(const ps_event_t *e){
+    if(e->type!=PS_TAP)return false;
+    ps_view_t v=ps_view();int y=v.landscape?112:168,n=a_kind==PA_2048?3:2,w=(v.w-32-(n-1)*8)/n;
+    for(int i=0;i<n;i++)if(ps_hit(e->x,e->y,16+i*(w+8),y,w,48)){if(a_kind==PA_2048)a_choice=(uint8_t)(i+3);else a_mode=(uint8_t)i;a_confirm=false;return true;}
+    if(ps_hit(e->x,e->y,16,v.h-132,v.w-32,44)){if(a_confirm)a_confirm=false;else a_setup=false;return true;}
+    if(ps_hit(e->x,e->y,16,v.h-76,v.w-32,44))return pa_control(8);
+    return false;
+}
+static bool pa_poll_duo(void){
+#ifdef PICO_GAME_MODULE
+    int role=pa_duo_role_now();bool changed=false;
+    if(role==PGA_DUO_CONTROLLER)a_controller=true;
+    if(a_controller){
+        changed=a_duo_role!=role;a_duo_role=role;
+        if(pad_receive(pga_host,&a_remote,PICO_GAME_KIND))changed=true;
+        return changed;
+    }
+    if(a_duo_role==PGA_DUO_SCREEN&&role==PGA_DUO_NONE){pa_pause();changed=true;}
+    a_duo_role=role;
+    if(role!=PGA_DUO_SCREEN)return changed;
+    for(int i=0;i<4;i++){int input=pga_duo_recv();if(input<0)break;if(pa_control(input))changed=true;}
+    pga_pad_state_t next={.kind=PICO_GAME_KIND,.paused=a_kind==PA_SNAKE?a_paused:0,.over=a_kind==PA_SNAKE?a_save.snake_over:a_save.over,.setup=a_setup,.choice=a_setup?a_choice:a_grid,.confirm=a_confirm,.mode=a_setup?a_mode:a_wrap,.score=a_kind==PA_SNAKE?a_save.snake_score:a_save.score,.best=a_kind==PA_SNAKE?a_save.snake_best:a_save.best,.moves=a_kind==PA_SNAKE?a_save.snake_moves:a_save.moves};
+    int64_t now=pg_millis();bool urgent=next.setup!=a_sent.setup||next.choice!=a_sent.choice||next.mode!=a_sent.mode||next.paused!=a_sent.paused||next.confirm!=a_sent.confirm;
+    if((urgent||now>=a_status_at)&&memcmp(&next,&a_sent,sizeof(next))&&pad_publish(pga_host,&next)){a_sent=next;a_status_at=now+750;}
+    return changed;
+#else
+    return false;
 #endif
 }
 static void pa_draw(uint8_t *fb){
-    a_duo_role=pa_duo_role_now();
-    if(a_duo_role==PGA_DUO_CONTROLLER&&a_kind==PA_SNAKE){pa_draw_controller(fb);return;}
+#ifdef PICO_GAME_MODULE
+    if(a_controller){pad_draw(pga_host,fb,a_kind==PA_2048?"2048 · 手柄":"贪吃蛇 · 手柄",&a_remote,pa_duo_role_now()==PGA_DUO_CONTROLLER);return;}
+#endif
+    if(a_setup){pa_setup_draw(fb);return;}
     ps_view_t v=ps_view();char b[80];
-    bool remote=a_kind==PA_SNAKE&&a_duo_role==PGA_DUO_SCREEN;
+    bool remote=a_kind==PA_SNAKE&&pa_duo_role_now()==PGA_DUO_SCREEN;
     bool snake_single=a_kind==PA_SNAKE&&!remote&&v.landscape;
     if(snake_single){
         ps_button(fb,10,30,28,26,"‹",false);
@@ -1027,16 +1068,18 @@ static void pa_draw(uint8_t *fb){
     } else if(snake_single){bw=296;bh=288;x=168;y=64;size=bw;}
     else { pa_board(&x,&y,&size); bw=bh=size; }
     ps_box(fb,x,y,bw,bh,5,0,false);
-    if(a_kind==PA_2048){int cell=(size-12)/4;for(int i=0;i<16;i++){int xx=x+6+(i%4)*cell,yy=y+6+(i/4)*cell;uint32_t value=a_save.board[i];int gray=value>=128?2:value>=16?10:14;ps_box(fb,xx+2,yy+2,cell-4,cell-4,4,gray,true);if(value){snprintf(b,sizeof(b),"%u",(unsigned)value);ps_center(fb,xx+cell/2,yy+(cell-23)/2,value>=10000?14:value>=1000?18:25,b,value>=128?15:0);}}}
+    if(a_kind==PA_2048){int cell=(size-12)/a_grid;for(int i=0;i<a_grid*a_grid;i++){int xx=x+6+(i%a_grid)*cell,yy=y+6+(i/a_grid)*cell;uint32_t value=pa_cells()[i];int gray=a_settle_due?(value>=128?0:15):(value>=128?2:value>=16?10:14);ps_box(fb,xx+2,yy+2,cell-4,cell-4,4,gray,true);if(value)ps_box(fb,xx+2,yy+2,cell-4,cell-4,4,0,false);if(value){snprintf(b,sizeof(b),"%u",(unsigned)value);ps_center(fb,xx+cell/2,yy+(cell-23)/2,a_grid==5?18:value>=10000?14:value>=1000?18:25,b,value>=128?15:0);}}}
     else{int cw=(bw-8)/20,ch=(bh-8)/20,px=(bw-cw*20)/2,py=(bh-ch*20)/2;for(int i=0;i<a_save.length;i++){int p=a_save.snake[i];ps_fill(fb,x+px+(p%20)*cw,y+py+(p/20)*ch,cw-1,ch-1,i?3:0);}if(a_save.food<PA_CELLS){int p=a_save.food;ps_box(fb,x+px+(p%20)*cw,y+py+(p/20)*ch,cw-1,ch-1,2,0,false);}if(a_paused||a_save.snake_over){int ow=bw-30;ps_box(fb,x+15,y+bh/2-22,ow,44,5,15,true);ps_box(fb,x+15,y+bh/2-22,ow,44,5,0,false);ps_center(fb,x+bw/2,y+bh/2-9,15,a_save.snake_over?"本局结束":a_save.snake_moves?"已暂停 · 点继续":"点击开始游戏",0);}}
     if(a_kind==PA_2048&&(a_save.over||(a_save.won&&!a_save.keep_playing))){ps_box(fb,x+12,y+size/2-30,size-24,60,5,15,true);ps_box(fb,x+12,y+size/2-30,size-24,60,5,0,false);ps_center(fb,x+size/2,y+size/2-16,20,a_save.over?"本局结束":"达成2048",0);ps_center(fb,x+size/2,y+size/2+9,12,a_save.over?"点重开再试一次":"点棋盘继续挑战",3);}
     if(!remote&&snake_single){
         const char *arrows[]={"↑","→","↓","←"};
         for(int d=0;d<4;d++){int xx,yy,ww,hh;pa_snake_single_rect(d,&xx,&yy,&ww,&hh);ps_button(fb,xx,yy,ww,hh,arrows[d],false);}
-        ps_button(fb,24,264,112,40,a_save.speed==0?"速度 · 慢":a_save.speed==1?"速度 · 中":"速度 · 快",false);
-        ps_button(fb,24,312,112,40,"重新开始",false);
-        ps_button(fb,488,312,120,40,a_save.snake_over?"本局结束":a_paused?(a_save.snake_moves?"继续":"开始"):"暂停",!a_paused);
+        ps_button(fb,24,176,112,40,a_wrap?"无限穿墙":"经典边界",false);
+        ps_button(fb,24,224,112,40,a_save.speed==0?"速度 · 慢":a_save.speed==1?"速度 · 中":"速度 · 快",false);
+        ps_button(fb,24,272,112,40,"重新开始",false);
+        ps_button(fb,488,272,120,40,a_save.snake_over?"本局结束":a_paused?(a_save.snake_moves?"继续":"开始"):"暂停",!a_paused);
     } else if(!remote){
+        if(a_kind==PA_SNAKE)ps_button(fb,16,400,104,40,a_wrap?"无限穿墙":"经典边界",false);
         const char *arrows[]={"↑","→","↓","←"};for(int d=0;d<4;d++){int xx,yy;pa_direction_rect(d,&xx,&yy);ps_button(fb,xx,yy,44,44,arrows[d],a_kind==PA_SNAKE&&!a_paused&&!a_save.snake_over&&d==(a_follow>=0?a_follow:a_next));}
         int bx=v.landscape?306:62,by=v.landscape?240:530,bw=v.landscape?146:114;
         ps_button(fb,bx,by,bw,v.landscape?40:40,"重新开始",false);ps_button(fb,bx+bw+8,by,bw,v.landscape?40:40,"返回小游戏",false);
@@ -1064,33 +1107,21 @@ static void pa_draw(uint8_t *fb){
     if(a_unsaved)ps_center(fb,v.w/2,v.h-30,11,"游戏未保存，请检查存储空间",0);
 }
 static bool pa_event(const ps_event_t *e){
-    if(e->type==PS_CANCEL){a_swipe_tracking=a_contact_handled=false;return true;}
+    if(e->type==PS_CANCEL){a_swipe_tracking=a_contact_handled=false;
 #ifdef PICO_GAME_MODULE
-    a_duo_role=pa_duo_role_now();
-    if(a_duo_role==PGA_DUO_CONTROLLER&&a_kind==PA_SNAKE){
-        if(e->type==PS_SWIPE_U||e->type==PS_SWIPE_R||e->type==PS_SWIPE_D||e->type==PS_SWIPE_L){
-            int d=e->type==PS_SWIPE_U?0:e->type==PS_SWIPE_R?1:e->type==PS_SWIPE_D?2:3;
-            pga_duo_send((uint8_t)d);return true;
-        }
-        if(e->type==PS_PRESS){
-            // 按下即发送，不再等抬手后的 TAP；这是方向延迟最大的来源。
-            // Send on press, not on release-generated TAP; that was the main direction latency.
-            for(int d=0;d<4;d++){int x,y,w,h;pa_controller_rect(d,&x,&y,&w,&h);if(ps_hit(e->x,e->y,x,y,w,h)){pga_duo_send((uint8_t)d);return true;}}
-            ps_view_t v=ps_view();
-            if(v.landscape){
-                if(ps_hit(e->x,e->y,224,96,160,54)){pga_duo_send(PGA_DUO_PAUSE);return true;}
-                if(ps_hit(e->x,e->y,224,160,160,54)){pga_duo_send(PGA_DUO_SPEED);return true;}
-                if(ps_hit(e->x,e->y,224,224,160,54)){pga_duo_send(PGA_DUO_RESTART);return true;}
-            }else{
-                if(ps_hit(e->x,e->y,40,390,120,52)){pga_duo_send(PGA_DUO_PAUSE);return true;}
-                if(ps_hit(e->x,e->y,180,390,120,52)){pga_duo_send(PGA_DUO_SPEED);return true;}
-                if(ps_hit(e->x,e->y,40,456,260,52)){pga_duo_send(PGA_DUO_RESTART);return true;}
-            }
-        }
-        if(e->type==PS_TAP)return true;
-        return e->type==PS_PRESS||e->type==PS_RELEASE||e->type==PS_MOVE;
+        (void)pad_input(pga_host,e);
+#endif
+        return true;}
+#ifdef PICO_GAME_MODULE
+    if(a_controller||pa_duo_role_now()==PGA_DUO_CONTROLLER){
+        a_controller=true;int input=pad_input(pga_host,e);
+        if(input>=0&&!pad_send(pga_host,(uint8_t)input))ps_toast("手柄未连接，请等待重连");
+        return false;
     }
 #endif
+    if(a_setup)return pa_setup_event(e);
+    ps_view_t controls=ps_view();
+    if(a_kind==PA_SNAKE&&e->type==PS_TAP&&ps_hit(e->x,e->y,controls.landscape?24:16,controls.landscape?176:400,controls.landscape?112:104,40)){pa_options();return true;}
     if(a_kind==PA_2048){
         // 2048 只用手指滑动棋盘，不绘制也不响应十字键。
         // 2048 is swipe-only: no D-pad is drawn or handled.
@@ -1129,9 +1160,9 @@ static bool pa_event(const ps_event_t *e){
         }
         if(e->type==PS_RELEASE){a_swipe_tracking=false;return false;}
         if(e->type==PS_TAP){
-            if(ps_hit(e->x,e->y,24,264,112,40)){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();return true;}
-            if(ps_hit(e->x,e->y,24,312,112,40)){pa_reset();return true;}
-            if(ps_hit(e->x,e->y,488,312,120,40)){a_paused=!a_paused;a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();return true;}
+            if(ps_hit(e->x,e->y,24,224,112,40)){a_save.speed=(a_save.speed+1)%3;a_due=pg_millis()+pa_delay();pa_persist();return true;}
+            if(ps_hit(e->x,e->y,24,272,112,40)){pa_reset();return true;}
+            if(ps_hit(e->x,e->y,488,272,120,40)){a_paused=!a_paused;a_due=pg_millis()+pa_delay();if(a_paused)pa_persist();return true;}
         }
         return false;
     }
@@ -1683,7 +1714,11 @@ bool ps_games_event(const ps_event_t *event)
 
 bool ps_games_key(int key)
 {
-    if(ps_route()==PS_ARCADEGAME){if(key==-1){pa_pause();return false;}if(key==0){if(a_kind==PA_2048)pa_shift(3);else pa_direction(3);ps_dirty();return true;}if(key==2){if(a_kind==PA_2048)pa_shift(1);else pa_direction(1);ps_dirty();return true;}return false;}
+    if(ps_route()==PS_ARCADEGAME){
+#ifdef PICO_GAME_MODULE
+    if(a_controller&&(key==0||key==2)){if(!pad_send(pga_host,(uint8_t)(key==0?3:1)))ps_toast("手柄未连接，请等待重连");return false;}
+#endif
+    if(key==-1){pa_pause();return false;}if(key==0){if(a_kind==PA_2048)pa_shift(3);else pa_direction(3);ps_dirty();return true;}if(key==2){if(a_kind==PA_2048)pa_shift(1);else pa_direction(1);ps_dirty();return true;}return false;}
     if(ps_route()!=PS_GAMES&&ps_route()!=PS_PLAYGAME)return false;
     if(key==-1){if(g_modal){g_modal=0;g_promotion_to=-1;ps_dirty();return true;}
         if(g_selected>=0){g_selected=-1;ps_dirty();return true;}return false;}
@@ -1708,7 +1743,11 @@ bool ps_games_tick(void)
             if(g_job.success){if(!pg_commit(g_job.answer)){g_ai_error=true;snprintf(g_feedback,sizeof(g_feedback),"对手无法完成落子，请点击重试");}}
             else{g_ai_error=true;snprintf(g_feedback,sizeof(g_feedback),"对手计算中断，请点击重试");}changed=true;}
     }
-    if(ps_route()==PS_ARCADEGAME){pa_poll_duo();if(a_kind==PA_SNAKE&&!a_paused&&!a_save.snake_over&&pg_millis()>=a_due){a_due=pg_millis()+pa_delay();return pa_step();}return changed;}
+    if(ps_route()==PS_ARCADEGAME){changed=pa_poll_duo();if(a_controller||a_setup)return changed;
+        int64_t now=pg_millis();
+        if(a_kind==PA_2048&&a_settle_due&&now>=a_settle_due){a_settle_due=0;return true;}
+        if(a_changed&&now>=a_save_due&&!a_swipe_tracking){bool failed=a_unsaved;pa_persist();changed=failed!=a_unsaved;}
+        if(a_kind==PA_SNAKE&&!a_paused&&!a_save.snake_over&&pg_millis()>=a_due){a_due=pg_millis()+pa_delay();return pa_step();}return changed;}
     if(ps_route()==PS_PLAYGAME&&g_save.active&&g_pos.turn==-1&&!g_pos.result&&!g_busy&&!g_ai_error){pg_request_ai();changed=true;}
     return changed;
 }
@@ -1747,7 +1786,7 @@ static bool pga_event(const pico_app_event_t *event)
 static uint32_t pga_status(void)
 {
     uint32_t status=0;
-    if(PICO_GAME_KIND>=PG_TYPES){status=PGA_STATUS_ARCADE;if(PICO_GAME_KIND==PGA_SNAKE){status|=PGA_STATUS_SNAKE;if(a_paused)status|=PGA_STATUS_PAUSED;}if(a_unsaved)status|=PGA_STATUS_UNSAVED;}
+    if(PICO_GAME_KIND>=PG_TYPES){status=PGA_STATUS_ARCADE;if(PICO_GAME_KIND==PGA_2048&&a_settle_due)status|=PGA_STATUS_REALTIME;if(PICO_GAME_KIND==PGA_SNAKE){status|=PGA_STATUS_SNAKE;if(a_paused)status|=PGA_STATUS_PAUSED;}if(a_setup)status|=PGA_STATUS_PAUSED;if(a_controller){status|=PGA_STATUS_REALTIME;if(!a_duo_role||a_remote.paused||a_remote.setup)status|=PGA_STATUS_PAUSED;else status&=~PGA_STATUS_PAUSED;}if(a_unsaved)status|=PGA_STATUS_UNSAVED;}
     else{if(g_busy)status|=PGA_STATUS_BUSY;if(g_unsaved)status|=PGA_STATUS_UNSAVED;}
     return status;
 }
@@ -1764,7 +1803,7 @@ static void pga_stop(void)
 }
 
 static const pico_app_exports_t pga_exports={
-    .abi=PICO_APP_ABI,.bytes=sizeof(pico_app_exports_t),.version=10001,.kind=PICO_GAME_KIND,.id=PICO_GAME_ID,
+    .abi=PICO_APP_ABI,.bytes=sizeof(pico_app_exports_t),.version=PICO_GAME_KIND>=PG_TYPES?10003:10001,.kind=PICO_GAME_KIND,.id=PICO_GAME_ID,
     .start=pga_start,.render=ps_games_render,.event=pga_event,.key=ps_games_key,.tick=ps_games_tick,
     .action=ps_games_action,.status=pga_status,.save=ps_games_storage_save,.stop=pga_stop
 };

@@ -325,14 +325,18 @@ USB 使用 `RPICO BOARD BEGINPAIR <task> <totalBytes> <totalCRC32hex> <show0or1>
 USB uses `RPICO BOARD BEGINPAIR <task> <totalBytes> <totalCRC32hex> <show0or1>` followed by existing CHUNK, COMMIT and ABORT. HTTP uses `POST /api/manage/pico/canvas/pair` or `/api/manage/pico/canvas/pair/show` with Content-Type `application/vnd.readpico.canvas-pair`. STATUS includes one `revision` and current `orientation` (portrait/landscape), retaining pending→saved/displayed receipt boundaries. Background reception never navigates; explicit show never unlocks.
 
 
-## 应用集与网站流量 / Apps and website analytics
+## 应用集与网站访问看板 / Apps and website analytics
 
-「设置 → 应用集」集中展示现有系统入口和 TF 应用。新配置默认将应用集加入首页；已有首页顺序保持，可通过「首页导航」自行添加。上下翻页选择应用，打开 TF 模块后返回应用集。刷新只重读已有目录，不下载应用。
+「设置 → 应用集」集中展示现有系统入口和 TF 应用。新配置默认将应用集加入首页；已有首页顺序保持，可通过「首页导航」自行添加。左右翻页选择应用，打开 TF 模块后返回应用集。刷新只重读已有目录，不下载应用。
 
-网站流量为独立的 Cloudflare 快照应用。数据源、账户令牌和刷新由多屏灵犀管理，设备离线展示最后成功保存的横竖双版，旋转时本地选择布局。设备不保存 Cloudflare 令牌，不把推送图中的地图和图表当作可点击控件。
+“网站访问看板”1.1.0（ID `website-traffic`，kind133）需要dual112。打开应用→设置→手机扫码配置数据源，手机与设备使用同一网络。填写站点名称、32位Cloudflare区域ID和只读API令牌，验证成功并写卡后才替换旧配置。令牌写入该应用独立TF记录，不回传给手机；请妥善保管TF卡。支持概览、七日趋势、极简三种样式和5/15/30/60分钟刷新，仅应用打开时更新，离页与休眠不继续轮询；失败保留最近成功数据。数据以UTC日汇总，Cloudflare可能有统计延迟。
+
+扫码窗口使用现有临时鉴权：`/manage#key=<32hex>&view=traffic`。固件只引导加载TF包内页面；`/api/manage/pico/traffic/ui`、`config`（GET/PUT/DELETE）、`refresh`（POST）均须携带`X-Pico-Setup-Key`。关闭扫码窗口、锁屏或退出应用立即撤销本次配置入口。状态接口不回显令牌，PUT带revision拒绝旧页面覆盖；异步验证期间返回202并轮询busy，失败不会假报已保存。GraphQL仅访问固定Cloudflare HTTPS端点，证书校验、不跟随跳转，响应上限32KiB。
+
+仍可选择“多屏灵犀电脑快照”，其数据源和排版在电脑端编辑，设备离线显示上次成功的横竖快照。电脑推送与直连配置独立，不互相覆盖；快照图片中的地图、图表没有交互。更新或卸载TF应用保留配置与快照，清除数据源会清除直连令牌及缓存，不删除电脑推送。
 
 独立频道通过 HTTP `canvas.app_channels:["cloudflare"]` 或 USB STATUS 根对象的同名字段协商。HTTP `POST /api/manage/pico/apps/cloudflare/pair[/show]` 接收同一 PICOPAIR 格式与840032字节上限，保存到固定自有文件 `/sdcard/readpico/desktop/cloudflare.bmp`；普通画板的 `canvas.bmp` 保持独立。USB 使用 `RPICO BOARD BEGINAPP cloudflare <task> <length> <crc32hex> <show0or1>`，其余 CHUNK/COMMIT/ABORT 不变。旧固件缺少能力时客户端应提示更新，不退回覆盖普通画板。
 
 HTTP 按 `canvas.app_receipts.cloudflare` 的 state/revision/orientation 确认；普通画板继续使用 canvas 的原字段。USB 回执携带 channel，STATUS 的 task/channel/revision/state 对应最后一次 USB 提交。后台接收只保存或更新同一可见应用，不能覆盖另一应用的已载入画面、切换阅读或唤醒锁屏；只有显式 show 才在 UI 可用时导航到该应用。另一应用的推屏不能满足本次频道回执。
 
-The Apps grid reuses existing system destinations and TF module loaders. Cloudflare is a separate retained snapshot channel; the Mac owns its data source and credentials. HTTP app receipts and USB task/channel receipts must be checked independently. Both channels retain the existing atomic pair validation, storage failure recovery, authorization and background presentation contract.
+The Apps grid reuses existing destinations and TF loaders. Website Dashboard 1.1.0 requires dual112 and offers device-owned Cloudflare analytics or the retained desktop snapshot channel. Configure through the authenticated QR window; direct credentials/cache live in isolated TF storage and are never echoed. Poll only while the app is open, retaining prior data on failure. Desktop snapshots retain Mac-owned editing and data sources. HTTP app receipts and USB task/channel receipts must be checked independently. Both channels retain the existing atomic pair validation, storage failure recovery, authorization and background presentation contract.

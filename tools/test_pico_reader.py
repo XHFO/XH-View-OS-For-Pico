@@ -21,7 +21,7 @@ def main():
             assembly+=f'.global _binary_{stem}_start\n_binary_{stem}_start:\n.incbin "{name}"\n.global _binary_{stem}_end\n_binary_{stem}_end:\n'
         if sys.platform.startswith('linux'):assembly+='.section .note.GNU-stack,"",@progbits\n'
         (build/'assets.S').write_text(assembly)
-        cmd=[os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-g']
+        cmd=[os.environ.get('CC','cc'),'-std=gnu11','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-g']
         if args.sanitize:cmd+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
         for include in ['tools/pico_reader_stubs','tools/preview_reading_stubs','main/system','main/book']:cmd+=['-I',str(ROOT/include)]
         exe=build/'reader-test'

@@ -52,7 +52,9 @@ void native_preview_last_refresh(EpdRect *area,int *mode,bool *partial){if(area)
 const char *native_preview_refresh_waveform(void){return host_refresh_continuous?"CONTINUOUS":host_refresh_follow?"FOLLOW":"DEFAULT";}
 void native_preview_refresh_counts(unsigned *follow,unsigned *standard,unsigned *gc16){if(follow)*follow=host_follow_presents;if(standard)*standard=host_default_presents;if(gc16)*gc16=host_gc16_presents;}
 unsigned native_preview_continuous_count(void){return host_continuous_presents;}
+void native_preview_display_event(int result);
 static bool host_fail_body;
+bool native_preview_body_will_fail(void){return host_fail_body;}
 void native_preview_fail_body(bool enabled){host_fail_body=enabled;}
 static enum EpdDrawError record_present(EpdiyHighlevelState *hl,enum EpdDrawMode mode,bool partial,EpdRect area,const EpdWaveform *waveform){
     host_refresh_continuous=false;
@@ -60,7 +62,7 @@ static enum EpdDrawError record_present(EpdiyHighlevelState *hl,enum EpdDrawMode
     if(host_refresh_follow)host_follow_presents++;else host_default_presents++;
     if((mode&15)==MODE_GC16)host_gc16_presents++;
     host_presents++;host_refresh_mode=mode;host_refresh_area=area;host_refresh_partial=partial;
-    if(host_fail_body && (!partial || area.height>84)) return (enum EpdDrawError)1;
+    if(host_fail_body && (!partial || area.height>84)) { native_preview_display_event(1); return (enum EpdDrawError)1; }
     if(hl){hl->front_fb=host_frame;hl->back_fb=host_previous;}
     if(!host_frame)return EPD_DRAW_SUCCESS;
     EpdRect physical=partial?ui_rotate_rect_to_fb(area):(EpdRect){0,0,1216,684};
@@ -74,6 +76,7 @@ static enum EpdDrawError record_present(EpdiyHighlevelState *hl,enum EpdDrawMode
     if(y1>684)y1=684;
     for(int y=y0;y<y1&&x1>x0;y++)
         memcpy(host_previous+(size_t)y*608+x0/2,host_frame+(size_t)y*608+x0/2,(size_t)(x1-x0)/2);
+    if(!partial || area.height>84)native_preview_display_event(0);
     return EPD_DRAW_SUCCESS;
 }
 static enum EpdDrawError record_full(EpdiyHighlevelState *h,enum EpdDrawMode m,const EpdWaveform *w){return record_present(h,m,false,(EpdRect){0,0,epd_rotated_display_width(),epd_rotated_display_height()},w);}

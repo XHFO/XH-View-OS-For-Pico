@@ -31,6 +31,7 @@ bool ps_load(const char *key,void *out,size_t size){loads++;int i=record(key);if
 bool ps_store(const char *key,const void *data,size_t size){stores++;int i=record(key);if(failed_key&&!strcmp(key,failed_key))return false;assert(size<=sizeof(persisted[i].data));memcpy(persisted[i].data,data,size);persisted[i].size=size;persisted[i].set=true;return true;}
 bool ps_storage_save_allowed(void){return allow_store;}
 void ps_i18n_init(void){}
+void ps_home_portal_set_printers(bool printers){(void)printers;}
 const char *ps_tr(const char *key){return key;}
 void ps_i18n_chip(uint8_t *fb,int x,int y){(void)fb;(void)x;(void)y;}
 bool ps_i18n_chip_hit(int x,int y,int rx,int ry){(void)x;(void)y;(void)rx;(void)ry;return false;}
@@ -67,7 +68,7 @@ int ps_reader_excerpt_count(void){return 2;}
 bool ps_reader_excerpt(int index,char *text,size_t size,char *source,size_t source_size){excerpt_reads++;snprintf(text,size,"excerpt %d",index);snprintf(source,source_size,"book %d",index);return true;}
 void ps_apps_prepare_home(uint8_t page){entry=page;}
 void ps_apps_expect_home_route(ps_route_t next){assert(next==route);}
-bool ps_apps_open(const char *id){assert(!strcmp(id,"home-link"));opens++;return true;}
+bool ps_apps_open(const char *id){assert(!strcmp(id,route==PS_PRINTERS||route==PS_PRINTER_SETTINGS?"printer-link":"home-link"));opens++;return true;}
 bool ps_home_portal_start(int owner){(void)owner;portal_calls++;return false;}
 void ps_home_portal_stop(void){portal_calls++;}
 void ps_home_portal_stop_if_home(void){portal_calls++;}

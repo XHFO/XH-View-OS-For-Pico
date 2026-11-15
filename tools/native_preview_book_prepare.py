@@ -27,6 +27,8 @@ def prepare_book(build: Path):
     # 所有绘制/事件函数和4位framebuffer长度原样保留。
     # Preserve all paint/event functions and the packed 4-bit framebuffer size.
     source = re.sub(r'^#include "[^"\n]+"\n', '', source, flags=re.M)
+    # 包装绘制边界以注入冷绘制耗时；生产函数体保持原样。/ Wrap only the draw boundary for cold-render delay injection, preserving its production body.
+    source=source.replace('static void draw_reader(uint8_t* fb, size_t page) {', 'static void actual_draw_reader(uint8_t* fb, size_t page) {')
     (build / "native-preview-book-source.inc").write_text(source)
     # 删除确认后的业务逻辑直接复用生产实现，包含传书覆盖备份的处理。
     # Reuse production deletion exactly, including replacement-backup recovery.
@@ -47,7 +49,7 @@ def prepare_book(build: Path):
         "book_delete_source_sha256": hashlib.sha256(store_original.read_bytes()).hexdigest(),
         "actual_book_delete_and_backup_recovery": True,
         "actual_parser_layout_progress": True,
-        "host_only_adaptations": ["platform includes supplied by host", "foreground rendering without hardware page-preparation worker", "preview-only TF roots and file-backed NVS", "VFS maps unchanged firmware /sdcard paths to session-private tf directory"],
+        "host_only_adaptations": ["platform includes supplied by host", "draw boundary timestamps and opt-in cold-render delay injection", "foreground rendering without hardware page-preparation worker", "preview-only TF roots and file-backed NVS", "VFS maps unchanged firmware /sdcard paths to session-private tf directory"],
         "modules": {name: hashlib.sha256((ROOT / "main/book" / name).read_bytes()).hexdigest() for name in BOOK_SOURCES},
     }
     (build / "native-preview-book-source-evidence.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

@@ -15,7 +15,7 @@ static ps_route_t test_route=PS_GAMES;
 static unsigned test_draws,test_stores,test_dirties;
 static bool test_save_available=true,test_have_save,test_have_arcade;
 static uint8_t test_storage[sizeof(pg_save_t)];
-static uint8_t test_arcade_storage[sizeof(pa_save_t)];
+static uint8_t test_arcade_storage[sizeof(pa_state2_t)];
 static void (*test_pending_task)(void *);
 static char test_toast[128];
 static bool test_create_failure,test_worker_running,test_worker_suspended,test_task_allocated;
@@ -28,8 +28,8 @@ ps_route_t ps_route(void){return test_route;}
 void ps_navigate(ps_route_t route){test_route=route;ps_games_enter(route);}
 void ps_dirty(void){test_dirties++;}
 void ps_toast(const char *s){snprintf(test_toast,sizeof(test_toast),"%s",s);}
-bool ps_load(const char *key,void *out,size_t size){if(!strcmp(key,"arcade1")){assert(size==sizeof(pa_save_t));if(!test_have_arcade)return false;memcpy(out,test_arcade_storage,size);return true;}assert(!strcmp(key,"games"));assert(size==sizeof(test_storage));if(!test_have_save)return false;memcpy(out,test_storage,size);return true;}
-bool ps_store(const char *key,const void *data,size_t size){if(!strcmp(key,"arcade1")){assert(size==sizeof(pa_save_t));test_stores++;if(!test_save_available)return false;memcpy(test_arcade_storage,data,size);test_have_arcade=true;return true;}assert(!strcmp(key,"games"));assert(size==sizeof(test_storage));test_stores++;if(!test_save_available)return false;memcpy(test_storage,data,size);test_have_save=true;return true;}
+bool ps_load(const char *key,void *out,size_t size){if(!strcmp(key,"arcade1")||!strcmp(key,"arcade2")){assert(size==(!strcmp(key,"arcade1")?sizeof(pa_save_t):sizeof(pa_state2_t)));if(!test_have_arcade)return false;memcpy(out,test_arcade_storage,size);return true;}assert(!strcmp(key,"games"));assert(size==sizeof(test_storage));if(!test_have_save)return false;memcpy(out,test_storage,size);return true;}
+bool ps_store(const char *key,const void *data,size_t size){if(!strcmp(key,"arcade1")||!strcmp(key,"arcade2")){assert(size==(!strcmp(key,"arcade1")?sizeof(pa_save_t):sizeof(pa_state2_t)));test_stores++;if(!test_save_available)return false;memcpy(test_arcade_storage,data,size);test_have_arcade=true;return true;}assert(!strcmp(key,"games"));assert(size==sizeof(test_storage));test_stores++;if(!test_save_available)return false;memcpy(test_storage,data,size);test_have_save=true;return true;}
 bool ps_hit(int x,int y,int rx,int ry,int rw,int rh){return x>=rx&&y>=ry&&x<rx+rw&&y<ry+rh;}
 
 static void test_rect(int x,int y,int w,int h)

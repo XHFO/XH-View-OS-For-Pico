@@ -35,17 +35,17 @@ static uint32_t config_crc(const unsigned char *p, size_t bytes) {
     }
     return ~crc;
 }
-size_t rp_home_config_pack(const rp_home_config_t *c, void *output, size_t capacity) {
-    if (!c || !output || capacity < 12 || !rp_home_config_valid(c))
+size_t rp_home_blob_pack(const void *c,size_t raw_bytes,void *output,size_t capacity) {
+    if (!c || !output || capacity < 12)
         return 0;
     unsigned char *out = output;
     const unsigned char *raw = (const unsigned char *)c;
-    uint32_t header[] = {0x48504b31u, (uint32_t)sizeof(*c), config_crc(raw, sizeof(*c))};
+    uint32_t header[] = {0x48504b31u, (uint32_t)raw_bytes, config_crc(raw, raw_bytes)};
     memcpy(out, header, 12);
     size_t used = 12, at = 0;
-    while (at < sizeof(*c)) {
+    while (at < raw_bytes) {
         size_t run = 0;
-        while (at + run < sizeof(*c) && !raw[at + run] && run < 128)
+        while (at + run < raw_bytes && !raw[at + run] && run < 128)
             run++;
         if (run >= 3) {
             if (used == capacity)
@@ -57,10 +57,10 @@ size_t rp_home_config_pack(const rp_home_config_t *c, void *output, size_t capac
         size_t start = at;
         do {
             at++;
-            if (at == sizeof(*c) || at - start == 128)
+            if (at == raw_bytes || at - start == 128)
                 break;
             run = 0;
-            while (at + run < sizeof(*c) && !raw[at + run] && run < 3)
+            while (at + run < raw_bytes && !raw[at + run] && run < 3)
                 run++;
         } while (run < 3);
         size_t n = at - start;
@@ -71,6 +71,21 @@ size_t rp_home_config_pack(const rp_home_config_t *c, void *output, size_t capac
         used += n;
     }
     return used;
+}
+size_t rp_home_config_pack(const rp_home_config_t *c,void *output,size_t capacity){
+    return c&&rp_home_config_valid(c)?rp_home_blob_pack(c,sizeof(*c),output,capacity):0;
+}
+bool rp_home_blob_unpack(const void *input,size_t bytes,void *output,size_t capacity){
+    if(!input||!output||bytes<12)return false;
+    const unsigned char *in=input;unsigned char *out=output;uint32_t header[3];memcpy(header,in,12);
+    if(header[0]!=0x48504b31u||header[1]!=capacity)return false;
+    size_t at=12,used=0;memset(out,0,capacity);
+    while(at<bytes){unsigned ctrl=in[at++];size_t n=(ctrl&127u)+1;
+        if(n>capacity-used)goto bad;
+        if(!(ctrl&128u)){if(n>bytes-at)goto bad;memcpy(out+used,in+at,n);at+=n;}used+=n;
+    }
+    if(used==capacity&&config_crc(out,capacity)==header[2])return true;
+bad:memset(out,0,capacity);return false;
 }
 bool rp_home_config_unpack_version(const void *input, size_t bytes, rp_home_config_t *c, uint32_t *stored_version) {
     if (!input || !c || bytes < 12 || bytes > RP_HOME_CONFIG_PACK_LIMIT)
@@ -403,7 +418,7 @@ static void import_candidate(const cJSON *e, rp_home_snapshot_t *s) {
     if (!tail)
         return;
     size_t len = strlen(id) - strlen(tail);
-    if (len >= sizeof(s->imports[0].serial) || !len)
+    if (len >= sizeof(((rp_home_printer_config_t *)0)->serial) || !len)
         return;
     for (unsigned i = 0; i < s->import_count; i++)
         if (strlen(s->imports[i].serial) == len && !strncmp(s->imports[i].serial, id, len))
@@ -571,6 +586,18 @@ rp_home_result_t rp_home_parse_ha(const char *json, size_t bytes, const rp_home_
                     v->available = strcmp(state_, "unavailable") && strcmp(state_, "unknown");
                     v->on = !strcmp(state_, "on") || (k == RP_HOME_CLIMATE && strcmp(state_, "off") && v->available);
                     v->number = (float)number(e, "state");
+                    v->brightness=(uint8_t)fmax(0,fmin(255,number(attrs,"brightness")));
+                    const char *mode_names[]={"off","heat","cool","heat_cool","auto","dry","fan_only"};
+                    cJSON *modes=get(attrs,"hvac_modes");
+                    for(int m=0;m<cJSON_GetArraySize(modes);m++){
+                        cJSON *mode=cJSON_GetArrayItem(modes,m);
+                        if(cJSON_IsString(mode))for(unsigned j=0;j<7;j++)if(!strcmp(mode->valuestring,mode_names[j]))v->hvac_modes|=1u<<j;
+                    }
+                    modes=get(attrs,"supported_color_modes");
+                    for(int m=0;m<cJSON_GetArraySize(modes);m++){
+                        cJSON *mode=cJSON_GetArrayItem(modes,m);
+                        if(cJSON_IsString(mode)&&strcmp(mode->valuestring,"onoff")&&strcmp(mode->valuestring,"unknown"))v->dimmable=1;
+                    }
                     if (k == RP_HOME_CLIMATE)
                         v->number = (float)number(attrs, "temperature");
                 }
@@ -827,18 +854,21 @@ static bool endpoint(const rp_home_config_t *c, bool at_home, char *out, size_t 
 // The official HA template projects display fields, totals and independent printer prefixes without bulky attributes.
 static const char ha_states_template[] =
     "{% set ns=namespace(items=[],total=0,printers=printers|unique|list,cut=false) %}"
-    "{% for e in states %}{% set a=e.attributes %}{% set id=e.entity_id %}"
+    "{% for e in states|sort(attribute='entity_id') %}{% set a=e.attributes %}{% set id=e.entity_id %}"
     "{% if id|length<96 %}"
+    "{% set included=(not scoped or (area_id(id) or '') in areas) and (not selected|default(false) or id in entities|default([])) %}"
     "{% if e.domain in ['light','switch','climate','fan'] or "
     "(e.domain=='sensor' and a.get('device_class') in ['temperature','humidity']) %}"
-    "{% set ns.total=ns.total+1 %}{% if ns.total<=96 %}"
+    "{% if included %}{% set ns.total=ns.total+1 %}{% if ns.total>offset|default(0) and ns.total<=offset|default(0)+limit %}"
     "{% set ns.items=ns.items+[dict(entity_id=id,state=(e.state|string)[:63],attributes=dict("
     "friendly_name=((a.get('friendly_name') or '')|string)[:79],"
     "device_class=((a.get('device_class') or '')|string)[:11],"
     "unit_of_measurement=((a.get('unit_of_measurement') or '')|string)[:15],"
     "area_name=((area_name(id) or a.get('room') or '')|string)[:39],"
-    "temperature=a.get('temperature')|float(none) if is_number(a.get('temperature')) else none))] %}{% endif %}{% endif %}"
-    "{% if id.endswith('_print_status') or id.endswith('_printing_state') %}"
+    "brightness=a.get('brightness')|int(0),supported_color_modes=a.get('supported_color_modes',[]) if e.domain=='light' else [],"
+    "hvac_modes=a.get('hvac_modes',[]) if e.domain=='climate' else [],"
+    "temperature=a.get('temperature')|float(none) if is_number(a.get('temperature')) else none))] %}{% endif %}{% endif %}{% endif %}"
+    "{% if (included or printer_only) and (id.endswith('_print_status') or id.endswith('_printing_state')) %}"
     "{% set prefix=id.rsplit('_',2)[0] %}"
     "{% if prefix not in ns.printers %}{% if ns.printers|length<8 %}"
     "{% set ns.printers=ns.printers+[prefix] %}"
@@ -853,14 +883,28 @@ static const char ha_states_template[] =
     "friendly_name=((e.attributes.get('friendly_name') or '')|string)[:47] if label else ''))] %}"
     "{% endif %}{% endfor %}{% endfor %}"
     "{{(ns.items+[dict(pico_total=[ns.total,65535]|min,pico_cut=ns.cut)])|to_json(ensure_ascii=false)}}";
-static char *states_body(const rp_home_config_t *c) {
+static char *projection_body(const rp_home_config_t *c,const rp_home_area_scope_t *scope,const rp_home_selection_t *selection,uint32_t offset,uint32_t limit,bool catalog) {
     cJSON *payload = cJSON_CreateObject();
     cJSON *variables = cJSON_AddObjectToObject(payload, "variables");
     cJSON *printers = cJSON_AddArrayToObject(variables, "printers");
     char *body = NULL;
     if (!payload || !variables || !printers || !cJSON_AddStringToObject(payload, "template", ha_states_template))
         goto done;
-    for (unsigned i = 0; i < RP_HOME_PRINTERS; i++)
+    cJSON *areas=cJSON_AddArrayToObject(variables,"areas");
+    if(!areas||!cJSON_AddBoolToObject(variables,"scoped",scope!=NULL)||
+       !cJSON_AddBoolToObject(variables,"printer_only",!catalog&&scope&&(!scope->version||!scope->count))||
+       !cJSON_AddNumberToObject(variables,"offset",offset)||!cJSON_AddBoolToObject(variables,"selected",selection!=NULL)||
+       !cJSON_AddNumberToObject(variables,"limit",limit))goto done;
+    if(scope&&scope->version==1&&scope->count<=RP_HOME_AREA_MAX)
+        for(unsigned i=0;i<scope->count;i++){
+            cJSON *id=cJSON_CreateString(scope->ids[i]);if(!id)goto done;cJSON_AddItemToArray(areas,id);
+        }
+    cJSON *entities=cJSON_AddArrayToObject(variables,"entities");if(!entities)goto done;
+    if(selection&&selection->version==1&&selection->count<=RP_HOME_DEVICE_LIMIT)
+        for(unsigned i=0;i<selection->count;i++){
+            cJSON *id=cJSON_CreateString(selection->ids[i]);if(!id)goto done;cJSON_AddItemToArray(entities,id);
+        }
+    for (unsigned i = 0; !catalog && i < RP_HOME_PRINTERS; i++)
         if (c->printers[i].source == RP_HOME_HA && *c->printers[i].serial) {
             cJSON *prefix = cJSON_CreateString(c->printers[i].serial);
             if (!prefix) goto done;
@@ -871,9 +915,62 @@ done:
     cJSON_Delete(payload);
     return body;
 }
-rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
+
+// 只返回房间ID、名称与数量，不读取实体属性；内存分配在PSRAM。/ Return only room IDs, names and counts; allocate responses in PSRAM.
+static const char ha_areas_template[]=
+    "{% set ns=namespace(counts={},items=[],total=0) %}{% for e in states %}"
+    "{% if e.entity_id|length<96 and (e.domain in ['light','switch','climate','fan'] or "
+    "(e.domain=='sensor' and e.attributes.get('device_class') in ['temperature','humidity'])) %}"
+    "{% set a=area_id(e.entity_id) or '' %}{% if a|length<64 %}"
+    "{% set ns.counts=dict(ns.counts,**{a:ns.counts.get(a,0)+1}) %}{% endif %}{% endif %}{% endfor %}"
+    "{% for id,n in ns.counts|dictsort %}{% set ns.total=ns.total+1 %}"
+    "{% if ns.total<=32 %}{% set ns.items=ns.items+[dict(id=id,name=((area_name(id) or id) if id else '未分配房间')[:63],devices=[n,65535]|min)] %}"
+    "{% endif %}{% endfor %}{{dict(total=ns.total,items=ns.items)|to_json(ensure_ascii=false)}}";
+static rp_home_result_t template_request(const rp_home_config_t *c,const rp_home_transport_t *t,bool home,
+    const char *body,char *response,size_t capacity,size_t *bytes,int *status){
+    char base[192],target[224];bool external;
+    rp_home_result_t result=RP_HOME_OFFLINE;
+    for(unsigned i=0;i<2;i++){
+        if(endpoint(c,home&&i==0,base,sizeof(base),&external)){
+            snprintf(target,sizeof(target),"%s/api/template",base);
+            result=request(t,"POST",target,c->ha_token,body,response,capacity,bytes,status,
+                external?c->cf_access_client_id:NULL,external?c->cf_access_client_secret:NULL);
+        }
+        if(!home||result==RP_HOME_OK||result==RP_HOME_AUTH||!c->external_enabled)break;
+    }
+    return result;
+}
+rp_home_result_t rp_home_fetch_areas(const rp_home_config_t *c,rp_home_areas_t *out,const rp_home_transport_t *t,bool home,int *status){
+    if(!c||!out||!status||!rp_home_config_valid(c)||!*c->ha_token)return RP_HOME_INVALID;
+    cJSON *payload=cJSON_CreateObject();
+    if(!payload||!cJSON_AddStringToObject(payload,"template",ha_areas_template)){cJSON_Delete(payload);return RP_HOME_NOMEM;}
+    char *body=cJSON_PrintUnformatted(payload);cJSON_Delete(payload);
+    char *response=model_memory(16385);
+    if(!body||!response){free(body);free(response);return RP_HOME_NOMEM;}
+    size_t bytes=0;rp_home_result_t result=template_request(c,t,home,body,response,16385,&bytes,status);
+    if(result==RP_HOME_OK){
+        cJSON *json=parse(response,bytes),*items=cJSON_GetObjectItemCaseSensitive(json,"items");
+        double total=number(json,"total");unsigned count=cJSON_GetArraySize(items);
+        if(!cJSON_IsArray(items)||!isfinite(total)||total<0||total>65535||floor(total)!=total||count>RP_HOME_AREA_MAX||total<count)result=RP_HOME_INVALID;
+        else{
+            memset(out,0,sizeof(*out));out->count=count;out->total=(uint32_t)total;out->truncated=total>count;
+            for(unsigned i=0;i<count;i++){
+                cJSON *item=cJSON_GetArrayItem(items,i);const char *id=str(item,"id"),*name=str(item,"name");double n=number(item,"devices");
+                if(!cJSON_IsString(cJSON_GetObjectItemCaseSensitive(item,"id"))||strlen(id)>=64||!isfinite(n)||n<0||n>65535||floor(n)!=n){result=RP_HOME_INVALID;break;}
+                for(unsigned j=0;j<i;j++)if(!strcmp(id,out->items[j].id))result=RP_HOME_INVALID;
+                copy(out->items[i].id,64,id);copy(out->items[i].name,64,name);
+                size_t used=strlen(out->items[i].name);
+                if(strlen(name)>used){while(used&&((unsigned char)name[used]&0xc0)==0x80)used--;out->items[i].name[used]=0;}
+                out->items[i].devices=(uint16_t)n;
+            }
+        }
+        cJSON_Delete(json);
+    }
+    free(body);free(response);return result;
+}
+static rp_home_result_t fetch_projection(const rp_home_config_t *c, rp_home_snapshot_t *s,
                                rp_home_token_t tokens[RP_HOME_PRINTERS], const rp_home_transport_t *t, bool online,
-                               bool at_home, int64_t now) {
+                               bool at_home, int64_t now,const rp_home_area_scope_t *scope,const rp_home_selection_t *selection,uint32_t offset,uint32_t limit,bool catalog) {
     if (!c || !s || !tokens || !rp_home_config_valid(c))
         return RP_HOME_INVALID;
     if (!c->enabled)
@@ -889,7 +986,7 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
     bool external = false;
     s->result = RP_HOME_EMPTY;
     if (*c->ha_token) {
-        char *body = states_body(c);
+        char *body = projection_body(c,scope,selection,offset,limit,catalog);
         rp_home_result_t result = body ? RP_HOME_OFFLINE : RP_HOME_NOMEM;
         if (body && endpoint(c, at_home, base, sizeof(base), &external)) {
             snprintf(target, sizeof(target), "%s/api/template", base);
@@ -1009,6 +1106,22 @@ rp_home_result_t rp_home_fetch(const rp_home_config_t *c, rp_home_snapshot_t *s,
     s->revision++;
     return s->result;
 }
+rp_home_result_t rp_home_fetch_selected(const rp_home_config_t *c,rp_home_snapshot_t *s,rp_home_token_t *tokens,
+ const rp_home_transport_t *t,bool online,bool home,int64_t now,const rp_home_area_scope_t *scope,const rp_home_selection_t *selection){
+    return fetch_projection(c,s,tokens,t,online,home,now,scope,selection,0,RP_HOME_DEVICE_LIMIT,false);
+}
+rp_home_result_t rp_home_fetch_catalog(const rp_home_config_t *c,rp_home_snapshot_t *s,rp_home_token_t *tokens,
+ const rp_home_transport_t *t,bool online,bool home,int64_t now,const rp_home_area_scope_t *scope,uint32_t offset){
+    return fetch_projection(c,s,tokens,t,online,home,now,scope,NULL,offset,RP_HOME_CATALOG_PAGE,true);
+}
+rp_home_result_t rp_home_fetch_scoped(const rp_home_config_t *c,rp_home_snapshot_t *s,rp_home_token_t tokens[RP_HOME_PRINTERS],
+ const rp_home_transport_t *t,bool online,bool home,int64_t now,const rp_home_area_scope_t *scope){
+    return fetch_projection(c,s,tokens,t,online,home,now,scope,NULL,0,scope?RP_HOME_DEVICE_LIMIT:RP_HOME_ENTITIES,false);
+}
+rp_home_result_t rp_home_fetch(const rp_home_config_t *c,rp_home_snapshot_t *s,rp_home_token_t tokens[RP_HOME_PRINTERS],
+    const rp_home_transport_t *t,bool online,bool home,int64_t now){
+    return rp_home_fetch_scoped(c,s,tokens,t,online,home,now,NULL);
+}
 rp_home_result_t rp_home_control(const rp_home_config_t *c, const rp_home_entity_t *e, const char *action, float value,
                                  const rp_home_transport_t *t, bool at_home, int *status) {
     if (!c || !e || !action || !status || !rp_home_config_valid(c) || !c->enabled || !*c->ha_token || !e->available ||
@@ -1022,7 +1135,11 @@ rp_home_result_t rp_home_control(const rp_home_config_t *c, const rp_home_entity
     if (strncmp(e->id, domain, prefix) || e->id[prefix] != '.')
         return RP_HOME_INVALID;
     bool temperature = e->kind == RP_HOME_CLIMATE && !strcmp(action, "set_temperature");
-    if (strcmp(action, "turn_on") && strcmp(action, "turn_off") && !temperature)
+    bool brightness=e->kind==RP_HOME_LIGHT&&e->dimmable&&!strcmp(action,"set_brightness");
+    bool mode=e->kind==RP_HOME_CLIMATE&&!strcmp(action,"set_hvac_mode");
+    if(brightness&&(!isfinite(value)||value<0||value>100))return RP_HOME_INVALID;
+    if(mode&&(!isfinite(value)||value<0||value>=7||value!=(int)value||!(e->hvac_modes&(1u<<(unsigned)value))))return RP_HOME_INVALID;
+    if (strcmp(action, "turn_on") && strcmp(action, "turn_off") && !temperature && !brightness && !mode)
         return RP_HOME_INVALID;
     if (temperature && (!isfinite(value) || value < 5 || value > 40))
         return RP_HOME_INVALID;
@@ -1030,8 +1147,12 @@ rp_home_result_t rp_home_control(const rp_home_config_t *c, const rp_home_entity
     bool external;
     if (!endpoint(c, at_home, base, sizeof(base), &external))
         return RP_HOME_OFFLINE;
-    snprintf(target, sizeof(target), "%s/api/services/%s/%s", base, domain, action);
-    if (temperature)
+    snprintf(target, sizeof(target), "%s/api/services/%s/%s", base, domain, brightness?"turn_on":action);
+    if(brightness)snprintf(body,sizeof(body),"{\"entity_id\":\"%s\",\"brightness_pct\":%u}",e->id,(unsigned)(value+0.5f));
+    else if(mode){
+        const char *modes[]={"off","heat","cool","heat_cool","auto","dry","fan_only"};
+        snprintf(body,sizeof(body),"{\"entity_id\":\"%s\",\"hvac_mode\":\"%s\"}",e->id,modes[(unsigned)value]);
+    }else if (temperature)
         snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"temperature\":%.1f}", e->id, (double)value);
     else
         snprintf(body, sizeof(body), "{\"entity_id\":\"%s\"}", e->id);

@@ -27,11 +27,15 @@ GAMES = (
     ("chess", "国际象棋", "国际象棋 · 离线 AI 对弈"),
     ("2048", "2048", "滑动合并 · 挑战高分"),
     ("snake", "贪吃蛇", "方向控制 · 三档速度"),
+    ("tetris", "俄罗斯方块", "七种方块 · 旋转消行与存档"),
+    ("pacman", "吃豆人", "原创墨水迷宫 · 能量豆与追逐"),
 )
 MODULE_INPUTS = (
     "games/src/builtin_games.c",
     "games/sdk/pico_game_module_compat.h",
     "components/read_pico_apps/include/pico_app_sdk.h",
+    "games/src/ink_arcade.c",
+    "games/sdk/pico_game_pad.h",
 )
 
 
@@ -118,7 +122,7 @@ def build_native(output: Path, game_id: str, kind: int) -> Path:
                '-DPICO_GAME_ID="' + game_id + '"',
                "-I", str(ROOT / "components/read_pico_apps/include"),
                "-I", str(ROOT / "games/sdk"),
-               str(ROOT / "games/src/builtin_games.c"), "-lm", "-o", str(temporary)]
+               str(ROOT / ("games/src/ink_arcade.c" if kind>=6 else "games/src/builtin_games.c")), "-lm", "-o", str(temporary)]
     if sys.platform.startswith("linux"):
         command.append("-Wl,-z,defs")
     elif sys.platform == "darwin":
@@ -172,11 +176,12 @@ def build_packages(output: Path, *, native_only: bool = False,
             if not code.startswith(b"\x7fELF"):
                 raise ValueError(f"Device payload is not ELF: {device}")
             payloads.insert(0, ("esp32s3-xtensa", code))
-        package = package_bytes(game_id, title, description, kind, payloads, digest)
+        version = 10003 if kind >= 4 else 10001
+        package = package_bytes(game_id, title, description, kind, payloads, digest, version=version)
         filename = game_id + ".pga"
         write_atomic(output / filename, package)
         items.append({"id": game_id, "kind": kind, "title": title,
-                      "description": description, "version": "1.0.1", "version_code": 10001,
+                      "description": description, "version": "1.0.3" if kind >= 4 else "1.0.1", "version_code": version,
                       "abi": 1, "file": filename, "url": url_prefix.rstrip("/") + "/" + filename,
                       "bytes": len(package), "sha256": hashlib.sha256(package).hexdigest(),
                       "source_sha256": digest.hex(), "targets": [name for name, _ in payloads],

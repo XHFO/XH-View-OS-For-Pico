@@ -169,13 +169,15 @@ static void reset(void) {
     memset(input_seed, 0, sizeof(input_seed));
     assert(app->start(&host));
     app->render(NULL);
+    assert(app->event(&(pico_app_event_t){.type=PGA_TAP,.x0=80,.y0=184,.x=80,.y=184}));
 }
 static void tap(int x, int y) {
     pico_app_event_t e = {.type = PGA_TAP, .x0 = x, .y0 = y, .x = x, .y = y};
     assert(app->event(&e));
 }
 static void edit(int field, const char *value) {
-    tap(80, 160 + field * 36);
+    static const int positions[]={0,3,1,4,5,2};
+    tap(80, 232 + positions[field] * 44);
     assert(input_open);
     if (field >= 2 && field <= 4) assert(!input_seed[0]);
     snprintf(input_value, sizeof(input_value), "%s", value);
@@ -200,7 +202,7 @@ static void assert_all(void) {
     assert(!strcmp(submitted.cf_access_client_id, client_id));
     assert(!strcmp(submitted.cf_access_client_secret, client_secret));
     assert(!strcmp(submitted.home_wifi, "Edited WiFi"));
-    assert(submitted.enabled);
+    assert(!submitted.enabled); /* 保存保留用户选择的关闭状态。/ Saving preserves the user's disabled choice. */
 }
 static void sequential(void) {
     reset();
@@ -252,7 +254,7 @@ static void lifecycle(void) {
     edit(3, client_id);
     edit(4, client_secret);
     int previous_token = token_wipes, previous_id = id_wipes, previous_secret = secret_wipes;
-    tap(80, 160); /* Exit while a further input session is open. */
+    tap(80, 232); /* Exit while a further input session is open. */
     assert(input_open);
     app->stop();
     assert(cancels == 1 && !input_open);

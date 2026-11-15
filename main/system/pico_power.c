@@ -3,8 +3,8 @@
  * English: One product entry for lock/sleep/off/restart, retaining the page instance and resume frame.
  * 冻结：没有经过真实外设休眠的预览不声称功耗；失败不丢弃未保存内容。
  * Frozen: A host preview never claims measured power savings; failures retain unsaved content.
- * 用户授权双机实验分支：配对正文的电源短按为主机上一组、从机下一组；长按仍开电源菜单。
- * User-authorized dual experiment: short power turns paired reading to the previous spread on the primary and next on the secondary; long press retains the power menu.
+ * 用户修订：电源短按联动锁屏/唤醒；保留触摸翻页、阅读时序及进度协议，长按仍开电源菜单。
+ * User revision: Short power links lock/wake; touch turns, reading timing and progress protocol remain unchanged; long opens the menu.
  * 用户新增：电源与锁屏是唯一设置入口，锁屏外观子页集中管理样式及各样式专属选项。
  * User addition: Power and Lock is the sole settings entry; its Appearance child owns styles and style-specific options.
  * 用户修订：返回优先关闭关机或重启确认框，保留电源设置页面且不提交操作。
@@ -97,7 +97,7 @@ bool ps_power_active(void) { return power_state!=0; }
 bool ps_power_board_visible(void) { return board_lock&&style==5&&power_state==1; }
 int ps_power_state(void) { return power_state; }
 bool ps_power_pending(void) { return requested>=0||power_state!=0||resume_frame!=NULL; }
-void ps_power_request(int action) { if(action>=0&&action<=3&&!power_state){ps_dual_suspend();requested=action;} }
+void ps_power_request(int action) { if(action>=0&&action<=3&&!power_state){requested=action;} }
 void ps_power_activity(int64_t now_ms) { last_activity_ms=now_ms;activity_valid=true; }
 static void network_recover_begin(void) {
     network_resume_pending=true;network_resume_waiting=false;network_retry_at=0;
@@ -140,10 +140,6 @@ void ps_power_poll(app_ctx_t *ctx,const app_desc_t *current) {
 bool ps_power_toggle(app_ctx_t *ctx,const app_desc_t *current) {
     (void)ctx;(void)current;
     if(ps_storage_busy()||ps_usb_busy()||ps_usb_held()||ps_content_held()||power_state>=3)return true;
-    if(!power_state&&ps_dual_enabled()&&current==&app_book&&app_book_global_is_open()){
-        if(app_book_external_turn(ctx,ps_dual_role()==1?-1:1)!=APP_REDRAW_NONE)ps_sound_key();
-        return true;
-    }
     if(power_state)ps_power_wake();else ps_power_request(PS_POWER_LOCK);
     return true;
 }
@@ -163,7 +159,7 @@ static void lock_hint(uint8_t *fb) {
     ps_box(fb,x,y,width,36,6,15,true);ps_box(fb,x,y,width,36,6,5,false);
     const char *label=power_state==4?ps_tr("settings.power.off_state"):power_state==2?ps_tr("settings.power.sleeping"):ps_power_doubletap()?ps_tr("settings.power.locked.doubletap"):ps_tr("settings.power.locked.key");
     ps_center(fb,v.w/2,y+11,12,label,0);
-    if(low_power_limited){ps_fill(fb,0,0,v.w,24,15);ps_center(fb,v.w/2,7,10,ps_tr("settings.power.low_power"),4);}
+    if(low_power_limited){ps_fill(fb,0,0,v.w,24,15);ps_center(fb,v.w/2,7,10,ps_dual_enabled()?"双机待机 · 蓝牙保持连接":ps_tr("settings.power.low_power"),4);}
 }
 static bool paint_lock(app_ctx_t *ctx,bool full) {
     // 原页与已提交基准完全一致、且没有余相或浮层债务时，只驱动新增锁屏标识。
@@ -180,11 +176,13 @@ static bool paint_lock(app_ctx_t *ctx,bool full) {
         full?update_display_full(ctx->hl):update_display_mode(ctx->hl,MODE_GL16);
     guard_draw_result(ctx->hl,result);return result==0;
 }
+void ps_power_remote(bool locked){if(locked)ps_power_request(PS_POWER_LOCK);else{requested=-1;ps_power_wake();}}
 void ps_power_wake(void) {
     if(!power_state||power_state==4)return;
 #ifndef PICO_NATIVE_PREVIEW
     app_product_lock_end();
 #endif
+    ps_dual_power_commit(false);
     power_state=0;requested=-1;radio_wait=board_lock=board_stopping=false;ps_sound_resume();
     ps_weread_resume();
     drain_pager();ps_global_cancel_input();
@@ -224,6 +222,7 @@ static bool abort_begin(app_ctx_t *ctx,const char *message,bool resume_network) 
     ps_weread_resume();
     board_lock=board_stopping=false;
     ps_sound_resume();
+    ps_dual_power_commit(false);
     ps_lock_image_release();
     if(resume_frame){free(resume_frame);resume_frame=NULL;}
     ps_games_power_resume();read_pico_home_link_resume();ps_home_pga_resume();ps_power_activity(ctx->now_ms);
@@ -245,6 +244,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
     }
     // 先禁止新的联网工作并请求现有后台收束，与必须落盘及绘制并行；最终仍检查真实完成。
     // Block new network work and request existing workers to stop in parallel with required saves/rendering; completion remains mandatory.
+    if(action==PS_POWER_LOCK)ps_dual_power_pause_data();else ps_dual_suspend();
     ps_home_portal_stop();
     (void)read_pico_home_link_suspend(0);(void)ps_home_pga_suspend(0);
     if(!board_lock)(void)read_pico_connectivity_quiesce(0);
@@ -294,7 +294,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
     power_state=action==PS_POWER_SLEEP?2:1;
     if(style==2)ps_lock_covers_prepare(ps_power_cover_layout());
     else if(style<=1)ps_home_standby_begin(style);
-    low_power_limited=!board_lock&&!read_pico_ble_pager_light_sleep_safe();radio_wait=low_power_limited;
+    low_power_limited=!board_lock&&!read_pico_ble_pager_light_sleep_safe();radio_wait=low_power_limited&&!ps_dual_enabled();
     const int64_t prepared=esp_timer_get_time();
     if(!paint_lock(ctx,true)){ps_power_wake();restore(ctx);ps_toast(ps_tr("settings.power.toast.lock_failed"));return false;}
     if(board_lock){board_revision=ps_desktop_revision();ps_desktop_presented(true);}
@@ -306,6 +306,7 @@ static bool begin(app_ctx_t *ctx,const app_desc_t *current,int action) {
 #else
     if(app_product_lock_begin(!board_lock&&!low_power_limited,power_state==1&&ps_power_doubletap())!=ESP_OK){ps_power_wake();restore(ctx);ps_toast(ps_tr("settings.power.toast.lock_failed"));return false;}
 #endif
+    if(action==PS_POWER_LOCK)ps_dual_power_commit(true);
     const int64_t armed=esp_timer_get_time();
     ESP_LOGI("pico_power","lock action=%d capture_ms=%lld save_ms=%lld network_ms=%lld prepare_ms=%lld paint_ms=%lld arm_ms=%lld total_ms=%lld",action,
         (long long)((captured-started)/1000),(long long)((saved-captured)/1000),(long long)((networked-saved)/1000),
@@ -338,6 +339,7 @@ static void board_lock_tick(app_ctx_t *ctx) {
 }
 bool ps_power_run(app_ctx_t *ctx,const app_desc_t *current) {
     ps_power_poll(ctx,current);
+    if(power_state==1)ps_dual_power_service();
     if(requested>=0){
         // 不在UI线程等短音；停收后下一轮检查空闲，进入低功耗前不留任务延时。
         // Never wait for a tone on the UI thread; stop admission and recheck next tick, leaving no audio deadline across sleep.
@@ -361,7 +363,13 @@ bool ps_power_run(app_ctx_t *ctx,const app_desc_t *current) {
         if(app_product_lock_begin(true,power_state==1&&ps_power_doubletap())!=ESP_OK)source=APP_WAKE_ERROR;
         else{low_power_limited=false;paint_lock(ctx,false);}
     }
-    if(source!=APP_WAKE_ERROR)source=app_product_lock_wait_step(style==0||board_lock?140:1000);
+    if(power_state==2&&read_pico_ble_pager_light_sleep_safe()){
+        app_product_lock_end();
+        esp_err_t result=app_enter_host_sleep(APP_SLEEP_DEEP);
+        if(result!=ESP_OK){power_state=1;ps_toast("深度休眠失败，已保留当前阅读");
+            (void)app_product_lock_begin(true,ps_power_doubletap());}
+    }
+    if(source!=APP_WAKE_ERROR)source=app_product_lock_wait_step(ps_dual_enabled()?40:style==0||board_lock?140:1000);
     ctx->now_ms=esp_timer_get_time()/1000;
     if(source==APP_WAKE_ERROR){radio_wait=false;app_product_lock_end();if(app_product_lock_begin(false,power_state==1&&ps_power_doubletap())!=ESP_OK){ps_power_wake();restore(ctx);return true;}low_power_limited=true;paint_lock(ctx,false);}
     if(source==APP_WAKE_KEY_LONG){ps_power_key_long(ctx,current);return true;}
@@ -399,15 +407,20 @@ void ps_power_render(uint8_t *fb) {
     for(int i=0;i<6;i++)ps_button(fb,16+(i%3)*(aw+6),ay+22+(i/3)*36,aw,32,labels[i],ps_power_auto_minutes()==auto_choices[i]);
     if(app_settings_test_awake())ps_wrap(fb,16,ay+98,col,11,2,ps_tr("settings.power.awake"),5);
     int ty=v.landscape?76:332;
-    ps_button(fb,right,ty,col,v.landscape?36:44,ps_tr(ps_power_doubletap()?"settings.power.doubletap.on":"settings.power.doubletap.off"),ps_power_doubletap());
+    ps_toggle(fb,right,ty,col,v.landscape?36:44,"双击唤醒",ps_power_doubletap(),true);
     ps_wrap(fb,right,ty+(v.landscape?46:54),col,11,3,ps_tr("settings.power.doubletap.hint"),5);
     int y=appearance_y(v);const char *names[]={"settings.power.style.clock","settings.power.style.quotes","settings.power.style.covers","settings.power.style.page","settings.power.style.image","settings.power.style.board"};
     char label[80];snprintf(label,sizeof(label),ps_tr("settings.power.appearance"),ps_tr(names[ps_sleep_style()]));
     ps_button(fb,right,y,col,40,label,false);
-    ps_button(fb,right,y+52,col,40,ps_tr(ps_rotation_locked()?"settings.power.rotation.on":"settings.power.rotation.off"),ps_rotation_locked());
+    ps_toggle(fb,right,y+52,col,40,"方向锁定",ps_rotation_locked(),true);
     if(!v.landscape)ps_wrap(fb,18,554,v.w-36,11,3,ps_tr("settings.power.hint"),5);
 }
 bool ps_power_event(const ps_event_t *e) {
+    ps_view_t sv=ps_view();int scol=settings_column(sv),sx=sv.landscape?32+scol:16;bool next;
+    if(!quick_menu&&confirmation<0){
+        if(ps_switch_swipe(e,sx+scol-66,sv.landscape?76:332,66,sv.landscape?36:44,&next)){ps_power_set_doubletap(next);return true;}
+        if(ps_switch_swipe(e,sx+scol-66,appearance_y(sv)+52,66,40,&next)){ps_rotation_lock(next);return true;}
+    }
     if(e->type!=PS_TAP)return false;
     ps_view_t v=ps_view();
     if(!quick_menu&&confirmation<0&&ps_i18n_chip_hit(e->x,e->y,v.w-16-PS_I18N_CHIP_W,32))return true;
